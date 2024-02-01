@@ -27,26 +27,6 @@ impl Device {
             Some(Protocol::from(ETH_P_ALL.to_be() as i32)),
         )?);
 
-        let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
-        req.ifr_name.copy_from_slice(
-            interface
-                .as_bytes()
-                .iter()
-                .map(|x| *x as i8)
-                .collect::<Vec<_>>()
-                .as_slice(),
-        );
-
-        const TUN_IOC_MAGIC: u8 = 'T' as u8;
-        const TUN_IOC_SET_IFF: u8 = 202;
-        ioctl!(write tun_set_iff with TUN_IOC_MAGIC, TUN_IOC_SET_IFF; u32);
-        unsafe { nix::sys::ioctl!(iface.as_raw_fd(), libc::SIOCGIFHWADDR, &req) }
-
-        // for( s = 0; s < 6; s++ )
-        // {
-        //     printf("%.2X ", (unsigned char)buffer.ifr_hwaddr.sa_data[s]);
-        // }
-
         let idx = nix::net::if_::if_nametoindex(interface)?;
         let mut saddr: sockaddr_ll = unsafe { std::mem::zeroed() };
         saddr.sll_family = AF_PACKET as u16;

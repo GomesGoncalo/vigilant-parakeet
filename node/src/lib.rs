@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio_tun::Tun;
 use uuid::Uuid;
 
@@ -33,22 +34,22 @@ pub async fn create(args: Args) -> Result<()> {
             .unwrap(),
     );
 
-    tracing::info!(name = %tun.name(), "Created tap device");
+    let name = tun.name().to_owned();
+    tracing::info!(name = name, "Created tap device");
 
-    let (device, mut receiver, sender) = Device::new(&args.bind).expect("created the device");
+    let (_device, mut receiver, sender) = Device::new(&args.bind).context("created the device")?;
 
     let tunc = tun.clone();
     let uuidc = uuid.clone();
     tokio::task::spawn(async move {
         let own_id = uuidc.to_bytes_le();
-        receiver.borrow_and_update();
+        let _ = *receiver.borrow_and_update();
         loop {
             if receiver.changed().await.is_err() {
                 break;
             }
 
             let pkt = receiver.borrow_and_update().clone();
-
             if pkt.len() < 14 {
                 continue;
             }
@@ -63,11 +64,11 @@ pub async fn create(args: Args) -> Result<()> {
             }
 
             tracing::trace!(
-                packet = ?pkt,
+                packet = ?&pkt[14 + 16..],
                 "received from the physical device"
             );
 
-            let _ = tunc.send_all(&pkt[14..]).await;
+            let _ = tunc.send_all(&pkt[14 + 16..]).await;
         }
     });
 
@@ -75,7 +76,7 @@ pub async fn create(args: Args) -> Result<()> {
         let mut buf = [0u8; 1500];
         let n = tun.recv(&mut buf).await.unwrap();
         tracing::debug!(
-            packet = ?buf[..n],
+            n = n, packet = ?buf[..n],
             "received from the virtual device"
         );
         let mut messages = Vec::new();

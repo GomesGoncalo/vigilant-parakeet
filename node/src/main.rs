@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
-use node::{args::Args, create};
+use node::args::Args;
+
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -11,8 +11,7 @@ async fn main() -> Result<()> {
         .with(EnvFilter::from_default_env())
         .init();
 
-    let mut args = Args::parse();
-    args.uuid = Some(Uuid::new_v4());
+    let args = Args::parse();
 
-    create(args).await
+    node::create(args).await
 }
