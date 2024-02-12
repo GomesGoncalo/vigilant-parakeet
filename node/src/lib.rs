@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio_tun::Tun;
 use uuid::Uuid;
 

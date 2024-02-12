@@ -2,10 +2,7 @@ use std::{io::IoSlice, os::fd::AsRawFd, sync::Arc};
 
 use anyhow::{Context, Result};
 use libc::{sockaddr, sockaddr_ll, AF_PACKET};
-use nix::sys::{
-    ioctl,
-    socket::{self, LinkAddr, SockaddrLike},
-};
+use nix::sys::socket::{self, LinkAddr, SockaddrLike};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::{mpsc::Sender, watch::Receiver};
 use uninit::uninit_array;
