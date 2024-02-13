@@ -17,7 +17,7 @@ pub enum OutgoingMessage {
 }
 
 impl Device {
-    pub fn new(interface: &str) -> Result<(Self, Receiver<Vec<u8>>, Sender<OutgoingMessage>)> {
+    pub fn new(interface: &str) -> Result<(Self, Receiver<Arc<Vec<u8>>>, Sender<OutgoingMessage>)> {
         let iface = Arc::new(Socket::new(
             Domain::PACKET,
             Type::RAW,
@@ -34,7 +34,7 @@ impl Device {
             unsafe { LinkAddr::from_raw(p_saddr, Some(std::mem::size_of::<sockaddr_ll>() as u32)) }
                 .context("casting link storage")?;
         let _ = socket::bind(iface.as_raw_fd(), &storage);
-        let (itx, rx) = tokio::sync::watch::channel(Vec::default());
+        let (itx, rx) = tokio::sync::watch::channel(Arc::new(Vec::default()));
         let (tx, mut irx): (Sender<_>, tokio::sync::mpsc::Receiver<_>) =
             tokio::sync::mpsc::channel(1024);
 
@@ -49,23 +49,22 @@ impl Device {
             let received = buf
                 .iter()
                 .take(n)
-                .map(|mu| unsafe { mu.assume_init_read() })
+                .map(|mu| unsafe { mu.assume_init() })
                 .collect::<Vec<_>>();
 
-            let _ = itx.send(received);
+            let _ = itx.send(Arc::new(received));
         });
 
-        let sockc = iface;
         tokio::spawn(async move {
             while let Some(i) = irx.recv().await {
                 match match i {
-                    OutgoingMessage::Simple(msg) => sockc.send(&msg),
+                    OutgoingMessage::Simple(msg) => iface.send(&msg),
                     OutgoingMessage::Vectored(vec_msg) => {
                         let vec: Vec<IoSlice> = vec_msg.iter().map(|x| IoSlice::new(&x)).collect();
-                        sockc.send_vectored(&vec)
+                        iface.send_vectored(&vec)
                     }
                 } {
-                    Ok(len) => tracing::trace!(len = len, "sent"),
+                    Ok(_) => (),
                     Err(e) => tracing::error!(e = %e, "error sending"),
                 }
             }

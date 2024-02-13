@@ -1,3 +1,5 @@
+use std::net::Ipv4Addr;
+
 use clap::Parser;
 use uuid::Uuid;
 
@@ -15,4 +17,8 @@ pub struct Args {
     /// Node identifier
     #[arg(short, long)]
     pub uuid: Option<Uuid>,
+
+    /// IP
+    #[arg(short, long)]
+    pub ip: Option<Ipv4Addr>,
 }
