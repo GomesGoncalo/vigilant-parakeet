@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Error, Result};
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, watch::Receiver};
 use tokio_tun::Tun;
@@ -29,7 +29,7 @@ pub async fn create_with_vdev(
         }
     });
 
-    let (_device, mut receiver, sender) = tuple;
+    let (device, mut receiver, sender) = tuple;
 
     let name = tun.name().to_owned();
     tracing::info!(name = name, "Created tap device");
@@ -41,7 +41,7 @@ pub async fn create_with_vdev(
         receiver.borrow_and_update();
         loop {
             if receiver.changed().await.is_err() {
-                break;
+                break Ok::<(), Error>(());
             }
 
             let pkt = receiver.borrow_and_update().clone();
@@ -49,7 +49,7 @@ pub async fn create_with_vdev(
                 continue;
             }
 
-            let ethertype = u16::from_be_bytes(pkt[12..14].try_into().unwrap());
+            let ethertype = u16::from_be_bytes(pkt[12..14].try_into()?);
             if ethertype != 0x3030 {
                 continue;
             }
@@ -69,10 +69,11 @@ pub async fn create_with_vdev(
             .take(1500)
             .map(|mu| unsafe { mu.assume_init() })
             .collect::<Vec<_>>();
-        let n = tun.recv(&mut buf).await.unwrap();
+        let n = tun.recv(&mut buf).await?;
         let mut messages = Vec::new();
-        let payload = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x30, 0x30];
-        messages.push(payload.to_vec());
+        messages.push(vec![255; 6]);
+        messages.push(device.mac_address.bytes().to_vec());
+        messages.push([0x30, 0x30].to_vec());
         messages.push(uuid.to_bytes_le().to_vec());
         messages.push(buf[..n].to_vec());
         let _ = sender.send(OutgoingMessage::Vectored(messages)).await;
@@ -86,17 +87,15 @@ pub async fn create(args: Args) -> Result<()> {
             .tap(true)
             .packet_info(false)
             .up()
-            .address(args.ip.unwrap())
-            .try_build()
-            .unwrap()
+            .address(args.ip.context("no ip")?)
+            .try_build()?
     } else {
         Tun::builder()
             .name(&args.tap_name.as_ref().unwrap_or(&"".to_string()))
             .tap(true)
             .packet_info(false)
             .up()
-            .try_build()
-            .unwrap()
+            .try_build()?
     });
 
     let tuple = Device::new(&args.bind).context("created the device")?;

@@ -2,6 +2,7 @@ use std::{io::IoSlice, os::fd::AsRawFd, sync::Arc};
 
 use anyhow::{Context, Result};
 use libc::{sockaddr, sockaddr_ll, AF_PACKET};
+use mac_address::MacAddress;
 use nix::sys::socket::{self, LinkAddr, SockaddrLike};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::{mpsc::Sender, watch::Receiver};
@@ -9,7 +10,9 @@ use uninit::uninit_array;
 
 const ETH_P_ALL: u16 = 0x0003;
 
-pub struct Device {}
+pub struct Device {
+    pub mac_address: MacAddress,
+}
 
 pub enum OutgoingMessage {
     Simple(Vec<u8>),
@@ -23,6 +26,9 @@ impl Device {
             Type::RAW,
             Some(Protocol::from(ETH_P_ALL.to_be() as i32)),
         )?);
+
+        let mac_address =
+            mac_address::mac_address_by_name(interface)?.context("needs mac address")?;
 
         let idx = nix::net::if_::if_nametoindex(interface)?;
         let mut saddr: sockaddr_ll = unsafe { std::mem::zeroed() };
@@ -70,6 +76,6 @@ impl Device {
             }
         });
 
-        Ok((Self {}, rx, tx))
+        Ok((Self { mac_address }, rx, tx))
     }
 }
