@@ -7,7 +7,7 @@ use futures::{stream::FuturesUnordered, StreamExt};
 use mac_address::MacAddress;
 use netns_rs::NetNs;
 use node::{args::Args, dev::Device};
-use tokio::signal;
+use tokio::{signal, sync::mpsc::Sender};
 use tokio_tun::Tun;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use uninit::uninit_array;
@@ -21,15 +21,74 @@ struct SimArgs {
     pub config_file: String,
 }
 
-#[derive(Debug)]
-struct Parameters {
+struct Channel {
+    tx: Sender<Arc<Vec<u8>>>,
     latency: Duration,
     loss: f64,
+    mac: MacAddress,
+    tun: Arc<Tun>,
+}
+
+impl Channel {
+    pub fn new(latency: Duration, loss: f64, mac: MacAddress, tun: Arc<Tun>) -> Arc<Self> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let this = Arc::new(Self {
+            tx,
+            latency,
+            loss,
+            mac,
+            tun,
+        });
+        let thisc = this.clone();
+        tokio::spawn(async move {
+            let bcast = vec![255; 6];
+            let unicast = thisc.mac.bytes();
+            loop {
+                let buf: Arc<Vec<u8>> = rx.recv().await.unwrap();
+                if buf[0..6] != bcast && buf[0..6] != unicast {
+                    continue;
+                }
+
+                {
+                    let mut rng = rand::thread_rng();
+                    if rand::Rng::gen::<f64>(&mut rng) < thisc.loss {
+                        continue;
+                    }
+                }
+
+                tokio::time::sleep(thisc.latency).await;
+
+                let _ = thisc.tun.send_all(&buf).await;
+            }
+        });
+        this
+    }
+
+    pub async fn send(&self, buf: Arc<Vec<u8>>) {
+        if !self.latency.is_zero() {
+            let _ = self.tx.send(buf).await;
+        } else {
+            let bcast = vec![255; 6];
+            let unicast = self.mac.bytes();
+            if buf[0..6] != bcast && buf[0..6] != unicast {
+                return;
+            }
+
+            {
+                let mut rng = rand::thread_rng();
+                if rand::Rng::gen::<f64>(&mut rng) < self.loss {
+                    return;
+                }
+            }
+
+            let _ = self.tun.send_all(&buf).await;
+        }
+    }
 }
 
 struct Topology {
-    map: HashMap<Uuid, (String, MacAddress, Arc<Tun>)>,
-    topology: HashMap<String, HashMap<String, Parameters>>,
+    map: HashMap<Uuid, (String, Arc<Tun>)>,
+    topology: HashMap<String, HashMap<String, Arc<Channel>>>,
 }
 
 fn parse_topology(config_file: &str) -> Result<(Topology, Vec<NetNs>)> {
@@ -50,7 +109,7 @@ fn parse_topology(config_file: &str) -> Result<(Topology, Vec<NetNs>)> {
     let mut namespaces = Vec::with_capacity(nodes.len());
     let mut map = HashMap::with_capacity(nodes.len());
 
-    let topology: HashMap<String, HashMap<String, Parameters>> = topology
+    let topology: HashMap<String, HashMap<String, (u64, f64)>> = topology
         .iter()
         .map(|(key, val)| {
             let val = val.clone().into_table().unwrap_or_default();
@@ -68,18 +127,14 @@ fn parse_topology(config_file: &str) -> Result<(Topology, Vec<NetNs>)> {
                             None => 0.0,
                         };
 
-                        (
-                            onode.clone(),
-                            Parameters {
-                                latency: Duration::from_millis(latency),
-                                loss,
-                            },
-                        )
+                        (onode.clone(), (latency, loss))
                     })
                     .collect(),
             )
         })
         .collect();
+
+    let mut ctopology = HashMap::new();
 
     nodes.iter().fold(1, |acc, node| {
         let ns = match NetNs::new(format!("sim_ns_{node}")) {
@@ -95,6 +150,31 @@ fn parse_topology(config_file: &str) -> Result<(Topology, Vec<NetNs>)> {
                     .up()
                     .try_build()?,
             );
+
+            let mac_address = mac_address::mac_address_by_name(tun.name())?.context("mac")?;
+            for (tnode, connections) in &topology {
+                for (onode, (latency, loss)) in connections {
+                    if onode != node {
+                        continue;
+                    }
+                    if !ctopology.contains_key(tnode) {
+                        ctopology.insert(tnode.clone(), HashMap::new());
+                    }
+
+                    let connection = ctopology.get_mut(tnode).unwrap();
+                    connection.insert(
+                        onode.clone(),
+                        Channel::new(
+                            Duration::from_millis(*latency),
+                            *loss,
+                            mac_address.clone(),
+                            tun.clone(),
+                        ),
+                    );
+                    break;
+                }
+            }
+
             let args = Args {
                 bind: tun.name().to_string(),
                 tap_name: None,
@@ -104,10 +184,7 @@ fn parse_topology(config_file: &str) -> Result<(Topology, Vec<NetNs>)> {
                         continue;
                     }
 
-                    let mac_address =
-                        mac_address::mac_address_by_name(tun.name())?.context("mac")?;
-
-                    map.insert(uuid.clone(), (node.clone(), mac_address, tun.clone()));
+                    map.insert(uuid.clone(), (node.clone(), tun.clone()));
                     break uuid;
                 }),
                 ip: Some(Ipv4Addr::from_str(&format!("10.0.0.{}", acc)).expect("Valid IP")),
@@ -135,7 +212,13 @@ fn parse_topology(config_file: &str) -> Result<(Topology, Vec<NetNs>)> {
         acc + 1
     });
 
-    Ok((Topology { map, topology }, namespaces))
+    Ok((
+        Topology {
+            map,
+            topology: ctopology,
+        },
+        namespaces,
+    ))
 }
 
 #[tokio::main]
@@ -151,7 +234,7 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         loop {
             let mut futureset = FuturesUnordered::new();
-            for (_, (node, _, tun)) in &topology.map {
+            for (_, (node, tun)) in &topology.map {
                 let tun = tun.clone();
                 futureset.push(async move {
                     let buf = uninit_array![u8; 1500];
@@ -161,29 +244,17 @@ async fn main() -> Result<()> {
                         .map(|mu| unsafe { mu.assume_init() })
                         .collect::<Vec<_>>();
                     let n = tun.recv(&mut buf).await?;
-                    Ok::<(Vec<u8>, usize, std::string::String), Error>((buf, n, node.clone()))
+                    buf.truncate(n);
+                    Ok::<(Vec<u8>, String), Error>((buf, node.clone()))
                 });
             }
 
-            if let Some(Ok((buf, n, node))) = futureset.next().await {
-                for (_, (onode, omac_address, otun)) in &topology.map {
+            if let Some(Ok((buf, node))) = futureset.next().await {
+                let buf = Arc::new(buf);
+                for (_, (onode, _)) in &topology.map {
                     if let Some(topology) = topology.topology.get(&node) {
-                        if let Some(parameters) = topology.get(onode) {
-                            if buf[0..6] != vec![255; 6] && buf[0..6] != omac_address.bytes() {
-                                continue;
-                            }
-
-                            {
-                                let mut rng = rand::thread_rng();
-                                if rand::Rng::gen::<f64>(&mut rng) < parameters.loss {
-                                    continue;
-                                }
-                            }
-
-                            if !parameters.latency.is_zero() {
-                                tokio::time::sleep(parameters.latency).await;
-                            }
-                            let _ = otun.send_all(&buf[..n]).await;
+                        if let Some(channel) = topology.get(onode) {
+                            channel.send(buf.clone()).await;
                         }
                     }
                 }
