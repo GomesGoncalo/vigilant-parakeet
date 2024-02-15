@@ -20,13 +20,12 @@ pub async fn create_with_vdev(
 ) -> Result<()> {
     tracing::info!(args = ?args, "created with args");
 
-    let uuid = Arc::new(match args.uuid {
-        Some(uuid) => uuid,
-        None => {
-            let uuid = Uuid::new_v4();
-            tracing::info!(uuid = %uuid, "set uuid");
-            uuid
-        }
+    let uuid = Arc::new(if let Some(uuid) = args.uuid {
+        uuid
+    } else {
+        let uuid = Uuid::new_v4();
+        tracing::info!(uuid = %uuid, "set uuid");
+        uuid
     });
 
     let (device, mut receiver, sender) = tuple;
@@ -70,12 +69,13 @@ pub async fn create_with_vdev(
             .map(|mu| unsafe { mu.assume_init() })
             .collect::<Vec<_>>();
         let n = tun.recv(&mut buf).await?;
-        let mut messages = Vec::new();
-        messages.push(vec![255; 6]);
-        messages.push(device.mac_address.bytes().to_vec());
-        messages.push([0x30, 0x30].to_vec());
-        messages.push(uuid.to_bytes_le().to_vec());
-        messages.push(buf[..n].to_vec());
+        let messages = vec![
+            vec![255; 6],
+            device.mac_address.bytes().to_vec(),
+            [0x30, 0x30].to_vec(),
+            uuid.to_bytes_le().to_vec(),
+            buf[..n].to_vec(),
+        ];
         let _ = sender.send(OutgoingMessage::Vectored(messages)).await;
     }
 }
@@ -83,7 +83,7 @@ pub async fn create_with_vdev(
 pub async fn create(args: Args) -> Result<()> {
     let tun = Arc::new(if args.ip.is_some() {
         Tun::builder()
-            .name(&args.tap_name.as_ref().unwrap_or(&"".to_string()))
+            .name(args.tap_name.as_ref().unwrap_or(&String::default()))
             .tap(true)
             .packet_info(false)
             .up()
@@ -91,7 +91,7 @@ pub async fn create(args: Args) -> Result<()> {
             .try_build()?
     } else {
         Tun::builder()
-            .name(&args.tap_name.as_ref().unwrap_or(&"".to_string()))
+            .name(args.tap_name.as_ref().unwrap_or(&String::default()))
             .tap(true)
             .packet_info(false)
             .up()

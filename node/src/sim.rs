@@ -41,24 +41,17 @@ impl Channel {
         });
         let thisc = this.clone();
         tokio::spawn(async move {
-            let bcast = vec![255; 6];
-            let unicast = thisc.mac.bytes();
             loop {
-                let buf: Arc<Vec<u8>> = rx.recv().await.unwrap();
-                if buf[0..6] != bcast && buf[0..6] != unicast {
-                    continue;
+                let buf: Arc<Vec<u8>> = match rx.recv().await {
+                    Some(buf) => buf,
+                    None => continue,
+                };
+
+                if thisc.should_send(&buf) {
+                    tokio::time::sleep(thisc.latency).await;
+
+                    let _ = thisc.tun.send_all(&buf).await;
                 }
-
-                {
-                    let mut rng = rand::thread_rng();
-                    if rand::Rng::gen::<f64>(&mut rng) < thisc.loss {
-                        continue;
-                    }
-                }
-
-                tokio::time::sleep(thisc.latency).await;
-
-                let _ = thisc.tun.send_all(&buf).await;
             }
         });
         this
@@ -67,22 +60,26 @@ impl Channel {
     pub async fn send(&self, buf: Arc<Vec<u8>>) {
         if !self.latency.is_zero() {
             let _ = self.tx.send(buf).await;
-        } else {
-            let bcast = vec![255; 6];
-            let unicast = self.mac.bytes();
-            if buf[0..6] != bcast && buf[0..6] != unicast {
-                return;
-            }
-
-            {
-                let mut rng = rand::thread_rng();
-                if rand::Rng::gen::<f64>(&mut rng) < self.loss {
-                    return;
-                }
-            }
-
+        } else if self.should_send(&buf) {
             let _ = self.tun.send_all(&buf).await;
         }
+    }
+
+    fn should_send(&self, buf: &Arc<Vec<u8>>) -> bool {
+        let bcast = vec![255; 6];
+        let unicast = self.mac.bytes();
+        if buf[0..6] != bcast && buf[0..6] != unicast {
+            return false;
+        }
+
+        {
+            let mut rng = rand::thread_rng();
+            if rand::Rng::gen::<f64>(&mut rng) < self.loss {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -134,14 +131,14 @@ fn parse_topology(config_file: &str) -> Result<(Topology, Vec<NetNs>)> {
         })
         .collect();
 
-    let mut ctopology = HashMap::new();
+    let mut topology_channel = HashMap::new();
 
     nodes.iter().fold(1, |acc, node| {
-        let ns = match NetNs::new(format!("sim_ns_{node}")) {
-            Ok(ns) => ns,
-            _ => return acc,
+        let Ok(ns) = NetNs::new(format!("sim_ns_{node}")) else {
+            return acc;
         };
-        match ns.run(|_| {
+
+        let ns_result = ns.run(|_| {
             let tun = Arc::new(
                 Tun::builder()
                     .name("tapsim%d")
@@ -157,17 +154,18 @@ fn parse_topology(config_file: &str) -> Result<(Topology, Vec<NetNs>)> {
                     if onode != node {
                         continue;
                     }
-                    if !ctopology.contains_key(tnode) {
-                        ctopology.insert(tnode.clone(), HashMap::new());
+                    if !topology_channel.contains_key(tnode) {
+                        topology_channel.insert(tnode.clone(), HashMap::new());
                     }
 
-                    let connection = ctopology.get_mut(tnode).unwrap();
+                    // SAFETY: We just inserted it, it must have the key
+                    let connection = topology_channel.get_mut(tnode).unwrap();
                     connection.insert(
                         onode.clone(),
                         Channel::new(
                             Duration::from_millis(*latency),
                             *loss,
-                            mac_address.clone(),
+                            mac_address,
                             tun.clone(),
                         ),
                     );
@@ -184,13 +182,13 @@ fn parse_topology(config_file: &str) -> Result<(Topology, Vec<NetNs>)> {
                         continue;
                     }
 
-                    map.insert(uuid.clone(), (node.clone(), tun.clone()));
+                    map.insert(uuid, (node.clone(), tun.clone()));
                     break uuid;
                 }),
-                ip: Some(Ipv4Addr::from_str(&format!("10.0.0.{}", acc)).expect("Valid IP")),
+                ip: Some(Ipv4Addr::from_str(&format!("10.0.0.{acc}")).expect("Valid IP")),
             };
 
-            let vtun = Arc::new(
+            let virtual_tun = Arc::new(
                 Tun::builder()
                     .tap(true)
                     .packet_info(false)
@@ -201,10 +199,12 @@ fn parse_topology(config_file: &str) -> Result<(Topology, Vec<NetNs>)> {
             );
 
             let tuple = Device::new(&args.bind)?;
-            tokio::spawn(node::create_with_vdev(args, vtun, tuple));
+            tokio::spawn(node::create_with_vdev(args, virtual_tun, tuple));
             Ok::<(), Error>(())
-        }) {
-            Ok(_) => (),
+        });
+
+        match ns_result {
+            Ok(Ok(())) => (),
             _ => return acc,
         };
 
@@ -215,7 +215,7 @@ fn parse_topology(config_file: &str) -> Result<(Topology, Vec<NetNs>)> {
     Ok((
         Topology {
             map,
-            topology: ctopology,
+            topology: topology_channel,
         },
         namespaces,
     ))
@@ -234,7 +234,7 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         loop {
             let mut futureset = FuturesUnordered::new();
-            for (_, (node, tun)) in &topology.map {
+            for (node, tun) in topology.map.values() {
                 let tun = tun.clone();
                 futureset.push(async move {
                     let buf = uninit_array![u8; 1500];
@@ -251,7 +251,7 @@ async fn main() -> Result<()> {
 
             if let Some(Ok((buf, node))) = futureset.next().await {
                 let buf = Arc::new(buf);
-                for (_, (onode, _)) in &topology.map {
+                for (onode, _) in topology.map.values() {
                     if let Some(topology) = topology.topology.get(&node) {
                         if let Some(channel) = topology.get(onode) {
                             channel.send(buf.clone()).await;
