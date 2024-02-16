@@ -12,6 +12,8 @@ const ETH_P_ALL: u16 = 0x0003;
 
 pub struct Device {
     pub mac_address: MacAddress,
+    pub rx: Receiver<Arc<Vec<u8>>>,
+    pub tx: Sender<OutgoingMessage>,
 }
 
 pub enum OutgoingMessage {
@@ -20,7 +22,7 @@ pub enum OutgoingMessage {
 }
 
 impl Device {
-    pub fn new(interface: &str) -> Result<(Self, Receiver<Arc<Vec<u8>>>, Sender<OutgoingMessage>)> {
+    pub fn new(interface: &str) -> Result<Self> {
         let iface = Arc::new(Socket::new(
             Domain::PACKET,
             Type::RAW,
@@ -54,13 +56,8 @@ impl Device {
             let Ok((n, _)) = sockc.recv_from(&mut buf) else {
                 break;
             };
-            let received = buf
-                .iter()
-                .take(n)
-                .map(|mu| unsafe { mu.assume_init() })
-                .collect::<Vec<_>>();
-
-            let _ = inner_transmit.send(Arc::new(received));
+            let buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
+            let _ = inner_transmit.send(Arc::new(buf[..n].to_vec()));
         });
 
         tokio::spawn(async move {
@@ -73,11 +70,15 @@ impl Device {
                     }
                 } {
                     Ok(_) => (),
-                    Err(e) => tracing::error!(e = %e, "error sending"),
+                    Err(e) => tracing::error!(%e, "error sending"),
                 }
             }
         });
 
-        Ok((Self { mac_address }, rx, tx))
+        Ok(Self {
+            mac_address,
+            rx,
+            tx,
+        })
     }
 }
