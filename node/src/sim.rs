@@ -52,7 +52,7 @@ impl From<HashMap<String, Value>> for Parameters {
 }
 
 struct Channel {
-    tx: Sender<Arc<Vec<u8>>>,
+    tx: Sender<Arc<[u8]>>,
     parameters: Parameters,
     mac: MacAddress,
     tun: Arc<Tun>,
@@ -68,7 +68,7 @@ impl Channel {
         from: String,
         to: String,
     ) -> Arc<Self> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(100000);
         tracing::info!(from, to, ?parameters, "Created channel");
         let this = Arc::new(Self {
             tx,
@@ -81,7 +81,7 @@ impl Channel {
         let thisc = this.clone();
         tokio::spawn(async move {
             loop {
-                let buf: Arc<Vec<u8>> = match rx.recv().await {
+                let buf: Arc<[u8]> = match rx.recv().await {
                     Some(buf) => buf,
                     None => continue,
                 };
@@ -91,15 +91,15 @@ impl Channel {
         this
     }
 
-    pub async fn send(&self, buf: Arc<Vec<u8>>) {
+    pub async fn send(&self, buf: &Arc<[u8]>) {
+        if !self.parameters.latency.is_zero() {
+            let _ = self.tx.send(buf.clone()).await;
+            return;
+        }
+
         let span = tracing::trace_span!(target: "pkt", "send", ?buf);
         let span1 = tracing::trace_span!("targets", self.from, self.to);
         async move {
-            if !self.parameters.latency.is_zero() {
-                let _ = self.tx.send(buf).await;
-                return;
-            }
-
             match self.should_send(buf) {
                 Ok(buf) => {
                     let _ = self.tun.send_all(&buf).await;
@@ -115,19 +115,21 @@ impl Channel {
         .await;
     }
 
-    fn should_send(&self, buf: Arc<Vec<u8>>) -> Result<Arc<Vec<u8>>> {
+    fn should_send<'a>(&self, buf: &'a Arc<[u8]>) -> Result<&'a Arc<[u8]>> {
         let bcast = vec![255; 6];
         let unicast = self.mac.bytes();
         if buf[0..6] != bcast && buf[0..6] != unicast {
             bail!("not the right mac address")
         }
 
-        let mut rng = rand::thread_rng();
-        if rand::Rng::gen::<f64>(&mut rng) < self.parameters.loss {
-            bail!("packet lost")
+        if self.parameters.loss > 0.0 {
+            let mut rng = rand::thread_rng();
+            if rand::Rng::gen::<f64>(&mut rng) < self.parameters.loss {
+                bail!("packet lost")
+            }
         }
 
-        Ok(buf)
+        Ok(&buf)
     }
 
     pub async fn recv(&self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
@@ -140,12 +142,12 @@ impl Channel {
         Ok(n)
     }
 
-    async fn priv_send(&self, buf: Arc<Vec<u8>>) {
+    async fn priv_send(&self, buf: Arc<[u8]>) {
         let span = tracing::trace_span!(target: "pkt", "send", ?buf);
         let span1 = tracing::trace_span!("targets", self.from, self.to);
         let now = Instant::now();
         async move {
-            match self.should_send(buf) {
+            match self.should_send(&buf) {
                 Ok(buf) => {
                     tokio::time::sleep(self.parameters.latency).await;
                     let _ = self.tun.send_all(&buf).await;
@@ -274,11 +276,11 @@ fn parse_topology(
 async fn generate_channel_reads(
     node: String,
     channel: Arc<Channel>,
-) -> Result<(Vec<u8>, String, Arc<Channel>), Error> {
+) -> Result<(Arc<[u8]>, String, Arc<Channel>), Error> {
     let buf = uninit_array![u8; 1500];
     let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
     let n = channel.recv(&mut buf).await?;
-    Ok((buf[..n].to_vec(), node.to_string(), channel))
+    Ok((buf[..n].into(), node, channel))
 }
 
 #[tokio::main]
@@ -308,10 +310,9 @@ async fn main() -> Result<()> {
 
         loop {
             if let Some(Ok((buf, node, channel))) = future_set.next().await {
-                let buf = Arc::new(buf);
                 if let Some(connections) = topology.get(&node) {
                     for channel in connections.values() {
-                        channel.send(buf.clone()).await;
+                        channel.send(&buf).await;
                     }
                 }
 

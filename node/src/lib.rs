@@ -31,14 +31,12 @@ pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node: Arc<Device>) -> R
     tokio::task::spawn(
         async move {
             let node = nodec;
-            let mut rx = node.rx.clone();
-            rx.borrow_and_update();
+            let mut rx = node.get_channel();
             loop {
-                if rx.changed().await.is_err() {
+                let Some(pkt) = rx.recv().await else {
                     break Ok::<(), Error>(());
-                }
+                };
 
-                let pkt = rx.borrow_and_update().clone();
                 if pkt.len() < 14 {
                     continue;
                 }
@@ -49,14 +47,16 @@ pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node: Arc<Device>) -> R
                 }
 
                 let pkt_id = &pkt[14..14 + 16];
-                let source_uuid =
-                    Uuid::from_bytes_le(pkt_id.try_into().expect("slice with incorrect length"))
-                        .into();
-                if uuidc == source_uuid {
+                if uuidc.to_bytes_le() == pkt_id {
                     continue;
                 }
 
-                tracing::trace!(?source_uuid, "received traffic to decapsulate");
+                tracing::trace!(
+                    uuid = ?Uuid::from_bytes_le(
+                        pkt_id.try_into().expect("slice with incorrect length")
+                    ),
+                    "received traffic to decapsulate"
+                );
                 let _ = tunc.send_all(&pkt[14 + 16..]).await;
             }
         }
@@ -68,11 +68,11 @@ pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node: Arc<Device>) -> R
         let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
         let n = tun.recv(&mut buf).await?;
         let messages = vec![
-            vec![255; 6],
-            node.mac_address.bytes().to_vec(),
-            [0x30, 0x30].to_vec(),
-            uuid.to_bytes_le().to_vec(),
-            buf[..n].to_vec(),
+            vec![255; 6].into(),
+            node.mac_address.bytes().into(),
+            [0x30, 0x30].into(),
+            uuid.to_bytes_le().into(),
+            buf[..n].into(),
         ];
         let _ = node.tx.send(OutgoingMessage::Vectored(messages)).await;
     }
