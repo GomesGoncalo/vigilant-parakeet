@@ -1,4 +1,4 @@
-use anyhow::{Context, Error, Result};
+use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio_tun::Tun;
 use tracing::Instrument;
@@ -11,7 +11,10 @@ use dev::Device;
 pub mod args;
 use args::Args;
 
-use crate::dev::OutgoingMessage;
+mod message;
+use message::Message;
+
+use crate::{dev::OutgoingMessage, message::PacketType};
 
 pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node: Arc<Device>) -> Result<()> {
     tracing::info!(?args, "setting up node");
@@ -19,8 +22,7 @@ pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node: Arc<Device>) -> R
     let uuid = Arc::new(if let Some(uuid) = args.uuid {
         uuid
     } else {
-        let uuid = Uuid::new_v4();
-        uuid
+        Uuid::new_v4()
     });
 
     let span = tracing::error_span!("uuid", ?uuid);
@@ -34,30 +36,29 @@ pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node: Arc<Device>) -> R
             let mut rx = node.get_channel();
             loop {
                 let Some(pkt) = rx.recv().await else {
-                    break Ok::<(), Error>(());
+                    continue;
                 };
 
-                if pkt.len() < 14 {
+                let Ok(pkt) = Message::try_from(pkt) else {
+                    continue;
+                };
+
+                if pkt.uuid == *uuidc {
                     continue;
                 }
 
-                let ethertype = u16::from_be_bytes(pkt[12..14].try_into()?);
-                if ethertype != 0x3030 {
-                    continue;
+                let span = tracing::error_span!("remoteuuid", ?pkt.uuid);
+                let _guard = span.enter();
+                match pkt.next_layer() {
+                    Ok(PacketType::Control) => {
+                        tracing::error!(?pkt.uuid, "received control");
+                    }
+                    Ok(PacketType::Data(buf)) => {
+                        tracing::trace!(?pkt.uuid, "received traffic to decapsulate");
+                        let _ = tunc.send_all(buf).await;
+                    }
+                    Err(e) => tracing::error!(?e, "invalid"),
                 }
-
-                let pkt_id = &pkt[14..14 + 16];
-                if uuidc.to_bytes_le() == pkt_id {
-                    continue;
-                }
-
-                tracing::trace!(
-                    uuid = ?Uuid::from_bytes_le(
-                        pkt_id.try_into().expect("slice with incorrect length")
-                    ),
-                    "received traffic to decapsulate"
-                );
-                let _ = tunc.send_all(&pkt[14 + 16..]).await;
             }
         }
         .instrument(span),
@@ -67,14 +68,16 @@ pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node: Arc<Device>) -> R
         let buf = uninit_array![u8; 1500];
         let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
         let n = tun.recv(&mut buf).await?;
-        let messages = vec![
-            vec![255; 6].into(),
-            node.mac_address.bytes().into(),
-            [0x30, 0x30].into(),
-            uuid.to_bytes_le().into(),
-            buf[..n].into(),
-        ];
-        let _ = node.tx.send(OutgoingMessage::Vectored(messages)).await;
+        let messages = Message::new(
+            node.mac_address.bytes(),
+            [255; 6],
+            &uuid,
+            &PacketType::Data(&buf[..n]),
+        );
+        let _ = node
+            .tx
+            .send(OutgoingMessage::Vectored(messages.into()))
+            .await;
     }
 }
 

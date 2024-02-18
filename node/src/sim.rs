@@ -1,3 +1,15 @@
+use anyhow::{bail, Context, Error, Result};
+use clap::Parser;
+use clap::ValueEnum;
+use config::{Config, Value};
+use futures::{stream::FuturesUnordered, StreamExt};
+use mac_address::MacAddress;
+use netns_rs::NetNs;
+use node::args::NodeParameters;
+use node::{
+    args::{Args, NodeType},
+    dev::Device,
+};
 use std::{
     collections::{HashMap, HashSet},
     net::Ipv4Addr,
@@ -5,14 +17,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-
-use anyhow::{bail, Context, Error, Result};
-use clap::Parser;
-use config::{Config, Value};
-use futures::{stream::FuturesUnordered, StreamExt};
-use mac_address::MacAddress;
-use netns_rs::NetNs;
-use node::{args::Args, dev::Device};
 use tokio::{signal, sync::mpsc::Sender};
 use tokio_tun::Tun;
 use tracing::Instrument;
@@ -27,13 +31,33 @@ struct SimArgs {
     pub config_file: String,
 }
 
+#[derive(Debug, Clone)]
+struct SimNodeParameters(NodeParameters);
+impl TryFrom<HashMap<String, Value>> for SimNodeParameters {
+    type Error = anyhow::Error;
+    fn try_from(param: HashMap<String, Value>) -> Result<Self, Self::Error> {
+        let node_type = &param
+            .get("node_type")
+            .context("no node type")?
+            .clone()
+            .into_string()
+            .context("node_type is string")?;
+
+        let Ok(node_type) = NodeType::from_str(node_type, true) else {
+            bail!("invalid node type");
+        };
+
+        Ok(Self(NodeParameters { node_type }))
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
-struct Parameters {
+struct ChannelParameters {
     latency: Duration,
     loss: f64,
 }
 
-impl From<HashMap<String, Value>> for Parameters {
+impl From<HashMap<String, Value>> for ChannelParameters {
     fn from(param: HashMap<String, Value>) -> Self {
         let latency = match param.get("latency") {
             Some(val) => val.clone().into_uint().unwrap_or(0),
@@ -53,7 +77,7 @@ impl From<HashMap<String, Value>> for Parameters {
 
 struct Channel {
     tx: Sender<Arc<[u8]>>,
-    parameters: Parameters,
+    parameters: ChannelParameters,
     mac: MacAddress,
     tun: Arc<Tun>,
     from: String,
@@ -62,13 +86,13 @@ struct Channel {
 
 impl Channel {
     pub fn new(
-        parameters: Parameters,
+        parameters: ChannelParameters,
         mac: MacAddress,
         tun: Arc<Tun>,
         from: String,
         to: String,
     ) -> Arc<Self> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(100000);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         tracing::info!(from, to, ?parameters, "Created channel");
         let this = Arc::new(Self {
             tx,
@@ -81,9 +105,8 @@ impl Channel {
         let thisc = this.clone();
         tokio::spawn(async move {
             loop {
-                let buf: Arc<[u8]> = match rx.recv().await {
-                    Some(buf) => buf,
-                    None => continue,
+                let Some(buf) = rx.recv().await else {
+                    continue;
                 };
                 thisc.priv_send(buf).await;
             }
@@ -102,7 +125,7 @@ impl Channel {
         async move {
             match self.should_send(buf) {
                 Ok(buf) => {
-                    let _ = self.tun.send_all(&buf).await;
+                    let _ = self.tun.send_all(buf).await;
                     tracing::trace!(self.from, self.to, "sent a packet");
                 }
                 Err(e) => {
@@ -129,7 +152,7 @@ impl Channel {
             }
         }
 
-        Ok(&buf)
+        Ok(buf)
     }
 
     pub async fn recv(&self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
@@ -150,7 +173,7 @@ impl Channel {
             match self.should_send(&buf) {
                 Ok(buf) => {
                     tokio::time::sleep(self.parameters.latency).await;
-                    let _ = self.tun.send_all(&buf).await;
+                    let _ = self.tun.send_all(buf).await;
                     tracing::trace!(delay = ?now.elapsed(), "sent a packet");
                 }
                 Err(e) => {
@@ -164,7 +187,11 @@ impl Channel {
     }
 }
 
-fn create_namespaces(ns_list: &mut Vec<NetNs>, node: &str) -> Result<(Arc<Device>, Arc<Tun>)> {
+fn create_namespaces(
+    ns_list: &mut Vec<NetNs>,
+    node: &str,
+    node_type: &SimNodeParameters,
+) -> Result<(Arc<Device>, Arc<Tun>)> {
     let ns = NetNs::new(format!("sim_ns_{node}"))?;
     let ns_result = ns.run(|_| {
         let tun = Arc::new(
@@ -180,9 +207,11 @@ fn create_namespaces(ns_list: &mut Vec<NetNs>, node: &str) -> Result<(Arc<Device
             bind: tun.name().to_string(),
             tap_name: None,
             uuid: None,
-            ip: Some(
-                Ipv4Addr::from_str(&format!("10.0.0.{}", ns_list.len() + 1)).expect("Valid IP"),
-            ),
+            ip: Some(Ipv4Addr::from_str(&format!(
+                "10.0.0.{}",
+                ns_list.len() + 1
+            ))?),
+            node_params: node_type.0.clone(),
         };
 
         let virtual_tun = Arc::new(
@@ -216,14 +245,22 @@ fn parse_topology(
         .build()?;
 
     let nodes = settings
-        .get_array("nodes")
+        .get_table("nodes")
         .context("Nodes defined")?
         .iter()
-        .map(|val| val.clone().into_string().unwrap_or_default())
-        .collect::<Vec<_>>();
+        .filter_map(|(node, val)| {
+            let Ok(param) = val.clone().into_table() else {
+                return None;
+            };
+            let Ok(param) = SimNodeParameters::try_from(param) else {
+                return None;
+            };
+            Some((node.clone(), param))
+        })
+        .collect::<HashMap<_, _>>();
 
     let topology = settings.get_table("topology")?;
-    let topology: HashMap<String, HashMap<String, Parameters>> = topology
+    let topology: HashMap<String, HashMap<String, ChannelParameters>> = topology
         .iter()
         .map(|(key, val)| {
             let val = val.clone().into_table().unwrap_or_default();
@@ -232,7 +269,7 @@ fn parse_topology(
                 val.iter()
                     .map(|(onode, param)| {
                         let param = param.clone().into_table().unwrap_or_default();
-                        let param = Parameters::from(param);
+                        let param = ChannelParameters::from(param);
                         (onode.clone(), param)
                     })
                     .collect(),
@@ -242,8 +279,8 @@ fn parse_topology(
 
     Ok(nodes.iter().fold(
         (HashMap::default(), Vec::default()),
-        |(channels, mut namespaces), node| {
-            let Ok(device) = create_namespaces(&mut namespaces, node) else {
+        |(channels, mut namespaces), (node, node_params)| {
+            let Ok(device) = create_namespaces(&mut namespaces, node, node_params) else {
                 return (channels, namespaces);
             };
 
@@ -256,13 +293,13 @@ fn parse_topology(
                         };
 
                         channels.entry(tnode.to_string()).or_default().insert(
-                            node.clone(),
+                            node.to_string(),
                             Channel::new(
                                 *parameters,
                                 device.0.mac_address,
                                 device.1.clone(),
                                 tnode.clone(),
-                                node.clone(),
+                                node.to_string(),
                             ),
                         );
                         channels

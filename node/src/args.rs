@@ -1,9 +1,23 @@
 use std::net::Ipv4Addr;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use uuid::Uuid;
 
-#[derive(Parser, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+pub enum NodeType {
+    Rsu,
+    Obu,
+}
+
+#[derive(clap::Args, Clone, Debug)]
+#[group(required = true, multiple = false)]
+pub struct NodeParameters {
+    /// Node type
+    #[arg(short, long)]
+    pub node_type: NodeType,
+}
+
+#[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// Interface to bind to
@@ -21,4 +35,8 @@ pub struct Args {
     /// IP
     #[arg(short, long)]
     pub ip: Option<Ipv4Addr>,
+
+    /// Node Parameters
+    #[command(flatten)]
+    pub node_params: NodeParameters,
 }

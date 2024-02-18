@@ -1,4 +1,8 @@
-nodes: ["n1", "n2"]
+nodes: 
+  n1:
+    node_type: Rsu
+  n2:
+    node_type: Obu
 
 topology:
   n1:

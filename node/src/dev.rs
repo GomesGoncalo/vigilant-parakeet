@@ -72,6 +72,7 @@ impl Device {
         })
     }
 
+    #[must_use]
     pub fn get_channel(&self) -> Receiver<Arc<[u8]>> {
         let (inner_transmit, rx) = tokio::sync::mpsc::channel(1024);
 
