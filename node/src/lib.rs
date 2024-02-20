@@ -1,80 +1,70 @@
 use anyhow::{Context, Result};
-use std::sync::Arc;
+use std::{io::IoSlice, sync::Arc};
 use tokio_tun::Tun;
-use tracing::Instrument;
 use uninit::uninit_array;
-use uuid::Uuid;
 
 pub mod dev;
-use dev::Device;
+use dev::{Device, OutgoingMessage};
 
-pub mod args;
-use args::Args;
+pub mod control;
+use control::{args::Args, node::ReplyType, Node};
 
-mod message;
-use message::Message;
+mod messages;
+use messages::{Message, PacketType};
 
-use crate::{dev::OutgoingMessage, message::PacketType};
-
-pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node: Arc<Device>) -> Result<()> {
+pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node_device: Arc<Device>) -> Result<()> {
     tracing::info!(?args, "setting up node");
 
-    let uuid = Arc::new(if let Some(uuid) = args.uuid {
-        uuid
-    } else {
-        Uuid::new_v4()
+    let node = Arc::new(Node::new(args, &node_device.mac_address));
+    let node_devicec = node_device.clone();
+    let tunc = tun.clone();
+    let nodec = node.clone();
+    tokio::task::spawn(async move {
+        let tun = tunc;
+        let node = nodec;
+        let node_device = node_devicec;
+        let mut rx = node_device.get_channel();
+        loop {
+            let Some(pkt) = rx.recv().await else {
+                continue;
+            };
+
+            let Ok(pkt) = Message::try_from(pkt) else {
+                continue;
+            };
+
+            let Ok(reply) = node.handle_msg(&pkt) else {
+                continue;
+            };
+
+            match reply {
+                Some(ReplyType::Tap(buf)) => {
+                    let vec: Vec<IoSlice> = buf.iter().map(|x| IoSlice::new(x)).collect();
+                    let _ = tun.send_vectored(&vec).await;
+                }
+                Some(ReplyType::Wire(reply)) => {
+                    let _ = node_device
+                        .tx
+                        .send(OutgoingMessage::Vectored(reply.into()))
+                        .await;
+                }
+                None => (),
+            };
+        }
     });
 
-    let span = tracing::error_span!("uuid", ?uuid);
-
-    let tunc = tun.clone();
-    let uuidc = uuid.clone();
-    let nodec = node.clone();
-    tokio::task::spawn(
-        async move {
-            let node = nodec;
-            let mut rx = node.get_channel();
-            loop {
-                let Some(pkt) = rx.recv().await else {
-                    continue;
-                };
-
-                let Ok(pkt) = Message::try_from(pkt) else {
-                    continue;
-                };
-
-                if pkt.uuid == *uuidc {
-                    continue;
-                }
-
-                let span = tracing::error_span!("remoteuuid", ?pkt.uuid);
-                let _guard = span.enter();
-                match pkt.next_layer() {
-                    Ok(PacketType::Control) => {
-                        tracing::error!(?pkt.uuid, "received control");
-                    }
-                    Ok(PacketType::Data(buf)) => {
-                        tracing::trace!(?pkt.uuid, "received traffic to decapsulate");
-                        let _ = tunc.send_all(buf).await;
-                    }
-                    Err(e) => tracing::error!(?e, "invalid"),
-                }
-            }
-        }
-        .instrument(span),
-    );
+    node.generate(node_device.clone());
 
     loop {
         let buf = uninit_array![u8; 1500];
         let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
         let n = tun.recv(&mut buf).await?;
         let messages = Message::new(
-            node.mac_address.bytes(),
+            node_device.mac_address.bytes(),
             [255; 6],
-            &uuid,
             &PacketType::Data(&buf[..n]),
         );
-        let _ = node
+        let _ = node_device
             .tx
             .send(OutgoingMessage::Vectored(messages.into()))
             .await;

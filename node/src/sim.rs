@@ -5,9 +5,8 @@ use config::{Config, Value};
 use futures::{stream::FuturesUnordered, StreamExt};
 use mac_address::MacAddress;
 use netns_rs::NetNs;
-use node::args::NodeParameters;
 use node::{
-    args::{Args, NodeType},
+    control::args::{Args, NodeParameters, NodeType},
     dev::Device,
 };
 use std::{
@@ -206,7 +205,6 @@ fn create_namespaces(
         let args = Args {
             bind: tun.name().to_string(),
             tap_name: None,
-            uuid: None,
             ip: Some(Ipv4Addr::from_str(&format!(
                 "10.0.0.{}",
                 ns_list.len() + 1

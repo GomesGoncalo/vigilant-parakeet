@@ -1,7 +1,6 @@
 use std::net::Ipv4Addr;
 
 use clap::{Parser, ValueEnum};
-use uuid::Uuid;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 pub enum NodeType {
@@ -27,10 +26,6 @@ pub struct Args {
     /// Virtual device name
     #[arg(short, long)]
     pub tap_name: Option<String>,
-
-    /// Node identifier
-    #[arg(short, long)]
-    pub uuid: Option<Uuid>,
 
     /// IP
     #[arg(short, long)]
