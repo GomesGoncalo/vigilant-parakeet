@@ -51,8 +51,9 @@ impl Node for Rsu {
         let counter = self.hb_seq.clone();
         let hello_periodicity = self.args.node_params.hello_periodicity;
 
+        let span = tracing::error_span!(target: "hello", "hello task", rsu.macaddress=%mac_address);
+        let _g = span.enter();
         if let Some(hello_periodicity) = hello_periodicity {
-            let span = tracing::debug_span!(target: "hello", "hello task", %mac_address);
             tokio::spawn(
                 async move {
                     loop {
@@ -73,10 +74,10 @@ impl Node for Rsu {
                         tokio::time::sleep(Duration::from_millis(hello_periodicity.into())).await;
                     }
                 }
-                .instrument(span),
+                .in_current_span(),
             );
         } else {
-            tracing::error!(%mac_address, ?self.args, "Rsu configured without hello_periodicity parameter");
+            tracing::error!(?self.args, "Rsu configured without hello_periodicity parameter");
         }
     }
 

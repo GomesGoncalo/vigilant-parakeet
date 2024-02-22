@@ -40,6 +40,24 @@ impl TryFrom<&[u8]> for HeartBeat {
     }
 }
 
+impl TryFrom<&[Arc<[u8]>]> for HeartBeat {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &[Arc<[u8]>]) -> Result<Self, Self::Error> {
+        let now = u128::from_le_bytes(value[0][..].try_into()?);
+        let now = Duration::from_millis(u64::try_from(now)?);
+        let id = u32::from_le_bytes(value[1][..].try_into()?);
+        let hops = u32::from_le_bytes(value[2][..].try_into()?);
+        let source = MacAddress::new(value[3][..].try_into()?);
+        Ok(Self {
+            source,
+            now,
+            id,
+            hops,
+        })
+    }
+}
+
 impl From<&HeartBeat> for Vec<Arc<[u8]>> {
     fn from(value: &HeartBeat) -> Self {
         let now = value.now.as_millis();
@@ -89,6 +107,28 @@ impl TryFrom<&[u8]> for HeartBeatReply {
         let id = u32::from_le_bytes(value[16..20].try_into()?);
         let hops = u32::from_le_bytes(value[20..24].try_into()?);
         let source = MacAddress::new(value[24..30].try_into()?);
+        Ok(Self {
+            source,
+            now,
+            id,
+            hops,
+        })
+    }
+}
+
+impl TryFrom<&[Arc<[u8]>]> for HeartBeatReply {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &[Arc<[u8]>]) -> Result<Self, Self::Error> {
+        // TODO: from_milliseconds takes u64 but as_millis is u128.
+        // Take the safe approach. Here this method can fail & since
+        // we are never putting more than u64 in this it's still
+        // safe to get the u128 (the high bits will be 0s)
+        let now = u128::from_le_bytes(value[0][..].try_into()?);
+        let now = Duration::from_millis(now.try_into()?);
+        let id = u32::from_le_bytes(value[1][..].try_into()?);
+        let hops = u32::from_le_bytes(value[2][..].try_into()?);
+        let source = MacAddress::new(value[3][..].try_into()?);
         Ok(Self {
             source,
             now,

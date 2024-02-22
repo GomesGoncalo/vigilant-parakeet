@@ -35,6 +35,18 @@ impl TryFrom<Arc<[u8]>> for ControlType {
     }
 }
 
+impl TryFrom<&[Arc<[u8]>]> for ControlType {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &[Arc<[u8]>]) -> Result<Self, Self::Error> {
+        Ok(match value[0][0] {
+            0 => ControlType::HeartBeat(HeartBeat::try_from(&value[1..])?),
+            1 => ControlType::HeartBeatReply(HeartBeatReply::try_from(&value[1..])?),
+            _ => bail!("not supported"),
+        })
+    }
+}
+
 impl From<&ControlType> for Vec<Arc<[u8]>> {
     fn from(value: &ControlType) -> Self {
         match value {
@@ -85,11 +97,12 @@ impl<'a> TryFrom<&'a [Arc<[u8]>]> for PacketType<'a> {
     type Error = anyhow::Error;
 
     fn try_from(value: &'a [Arc<[u8]>]) -> Result<Self, Self::Error> {
+        eprintln!("{:?}", value);
         if value[0].len() != 1 {
             bail!("This is vectored the packet type should be a single value");
         }
         Ok(match value[0][0] {
-            0 => Self::Control(<Arc<[u8]> as Clone>::clone(&value[1]).try_into()?),
+            0 => Self::Control(value[1..].try_into()?),
             1 => Self::Data(&value[1]),
             _ => bail!("invalid packet type"),
         })
