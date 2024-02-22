@@ -7,15 +7,24 @@ pub mod dev;
 use dev::{Device, OutgoingMessage};
 
 pub mod control;
-use control::{args::Args, node::ReplyType, Node};
+use control::{
+    args::Args,
+    node::{Node, ReplyType},
+};
 
 mod messages;
 use messages::{Message, PacketType};
 
-pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node_device: Arc<Device>) -> Result<()> {
-    tracing::info!(?args, "setting up node");
+use crate::control::{args::NodeType, obu::Obu, rsu::Rsu};
 
-    let node = Arc::new(Node::new(args, &node_device.mac_address));
+async fn create_with_vdev_with_node<N>(
+    tun: Arc<Tun>,
+    node_device: Arc<Device>,
+    node: Arc<N>,
+) -> Result<()>
+where
+    N: Node + Sync + Send + 'static,
+{
     let node_devicec = node_device.clone();
     let tunc = tun.clone();
     let nodec = node.clone();
@@ -33,23 +42,32 @@ pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node_device: Arc<Device
                 continue;
             };
 
-            let Ok(reply) = node.handle_msg(&pkt) else {
+            let reply_vec = match node.handle_msg(&pkt) {
+                Ok(reply_vec) => reply_vec,
+                Err(e) => {
+                    tracing::error!(?e, "returned error when handling message");
+                    continue;
+                }
+            };
+
+            let Some(reply_vec) = reply_vec else {
                 continue;
             };
 
-            match reply {
-                Some(ReplyType::Tap(buf)) => {
-                    let vec: Vec<IoSlice> = buf.iter().map(|x| IoSlice::new(x)).collect();
-                    let _ = tun.send_vectored(&vec).await;
-                }
-                Some(ReplyType::Wire(reply)) => {
-                    let _ = node_device
-                        .tx
-                        .send(OutgoingMessage::Vectored(reply.into()))
-                        .await;
-                }
-                None => (),
-            };
+            for reply in reply_vec {
+                match reply {
+                    ReplyType::Tap(buf) => {
+                        let vec: Vec<IoSlice> = buf.iter().map(|x| IoSlice::new(x)).collect();
+                        let _ = tun.send_vectored(&vec).await;
+                    }
+                    ReplyType::Wire(reply) => {
+                        let _ = node_device
+                            .tx
+                            .send(OutgoingMessage::Vectored(reply.into()))
+                            .await;
+                    }
+                };
+            }
         }
     });
 
@@ -68,6 +86,18 @@ pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node_device: Arc<Device
             .tx
             .send(OutgoingMessage::Vectored(messages.into()))
             .await;
+    }
+}
+
+pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node_device: Arc<Device>) -> Result<()> {
+    let mac_address = node_device.mac_address.clone();
+    match args.node_params.node_type {
+        NodeType::Rsu => {
+            create_with_vdev_with_node(tun, node_device, Rsu::new(args, mac_address).into()).await
+        }
+        NodeType::Obu => {
+            create_with_vdev_with_node(tun, node_device, Obu::new(args, mac_address).into()).await
+        }
     }
 }
 
@@ -90,6 +120,5 @@ pub async fn create(args: Args) -> Result<()> {
     });
 
     let dev = Device::new(&args.bind).context("created the device")?;
-
     create_with_vdev(args, tun, dev.into()).await
 }

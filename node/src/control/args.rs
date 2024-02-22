@@ -14,6 +14,14 @@ pub struct NodeParameters {
     /// Node type
     #[arg(short, long)]
     pub node_type: NodeType,
+
+    /// Hello history
+    #[arg(short, long, default_value_t = 10)]
+    pub hello_history: u32,
+
+    /// Hello periodicity
+    #[arg(short, long)]
+    pub hello_periodicity: Option<u32>,
 }
 
 #[derive(Parser, Debug, Clone)]

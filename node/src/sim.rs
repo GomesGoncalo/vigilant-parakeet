@@ -46,7 +46,26 @@ impl TryFrom<HashMap<String, Value>> for SimNodeParameters {
             bail!("invalid node type");
         };
 
-        Ok(Self(NodeParameters { node_type }))
+        let hello_history = param
+            .get("hello_history")
+            .context("hello history")?
+            .clone()
+            .into_uint()
+            .context("hello history is u32")? as u32;
+
+        let hello_periodicity = match param.get("hello_periodicity") {
+            Some(v) => match v.clone().into_uint() {
+                Ok(v) => Some(v as u32),
+                Err(_) => None,
+            },
+            None => None,
+        };
+
+        Ok(Self(NodeParameters {
+            node_type,
+            hello_history,
+            hello_periodicity,
+        }))
     }
 }
 
