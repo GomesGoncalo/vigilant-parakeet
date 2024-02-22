@@ -34,7 +34,7 @@ impl Obu {
         let obu = Self {
             args: args.clone(),
             boot: Instant::now(),
-            mac_address: mac_address.clone(),
+            mac_address,
             upstream_state: Arc::new(RwLock::new((HashMap::new(), Vec::new()))),
             hello_seq: Arc::new(RwLock::new((HashMap::new(), Vec::new()))),
             routing: Routing::new(args, mac_address),
@@ -82,11 +82,7 @@ impl Node for Obu {
                             AddAfter(u32),
                         }
                         match match vec.get_mut(0) {
-                            Some(old_id) => {
-                                let repl = old_id.clone();
-                                *old_id = hb.id;
-                                Result::Replaced(repl)
-                            }
+                            Some(old_id) => Result::Replaced(std::mem::replace(old_id, hb.id)),
                             None => Result::AddAfter(hb.id),
                         } {
                             Result::AddAfter(id) => {
@@ -99,7 +95,7 @@ impl Node for Obu {
                     } else {
                         vec.push(hb.id);
                     }
-                    vec.sort();
+                    vec.sort_unstable();
                 }
 
                 Ok(vec![
@@ -127,8 +123,8 @@ impl Node for Obu {
                 let (ref mut map, _) = *hello_state_guard;
 
                 let (mac, dur, _) = map.get(&hbr.id).context("no upstream")?;
-                let mac = mac.clone();
-                let dur = dur.clone();
+                let mac = *mac;
+                let dur = *dur;
 
                 let mut hello_state_guard = self.hello_seq.write().unwrap();
                 let (ref mut map, ref mut vec) = *hello_state_guard;
@@ -148,9 +144,7 @@ impl Node for Obu {
                         }
                         match match vec.get_mut(0) {
                             Some(old_id) => {
-                                let repl = old_id.clone();
-                                *old_id = (hbr.source, hbr.id);
-                                Result::Replaced(repl)
+                                Result::Replaced(std::mem::replace(old_id, (hbr.source, hbr.id)))
                             }
                             None => Result::AddAfter((hbr.source, hbr.id)),
                         } {

@@ -12,10 +12,10 @@ pub struct HeartBeat {
 }
 
 impl HeartBeat {
-    pub fn new(source: &MacAddress, since_boot: Duration, id: u32) -> Self {
+    pub fn new(source: MacAddress, now: Duration, id: u32) -> Self {
         Self {
-            source: source.clone(),
-            now: since_boot,
+            source,
+            now,
             id,
             hops: 0,
         }
@@ -27,7 +27,7 @@ impl TryFrom<&[u8]> for HeartBeat {
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         let now = u128::from_le_bytes(value[..16].try_into()?);
-        let now = Duration::from_millis(now as u64);
+        let now = Duration::from_millis(u64::try_from(now)?);
         let id = u32::from_le_bytes(value[16..20].try_into()?);
         let hops = u32::from_le_bytes(value[20..24].try_into()?);
         let source = MacAddress::new(value[24..30].try_into()?);
@@ -62,10 +62,10 @@ pub struct HeartBeatReply {
 }
 
 impl HeartBeatReply {
-    pub fn new(source: &MacAddress, since_boot: Duration, id: u32, hops: u32) -> Self {
+    pub fn new(source: MacAddress, now: Duration, id: u32, hops: u32) -> Self {
         Self {
-            source: source.clone(),
-            now: since_boot,
+            source,
+            now,
             id,
             hops,
         }

@@ -33,7 +33,7 @@ impl Rsu {
         let rsu = Self {
             args: args.clone(),
             boot: Instant::now(),
-            mac_address: mac_address.clone(),
+            mac_address,
             hb_seq: AtomicU32::new(0).into(),
             hello_seq: Arc::new(RwLock::new((HashMap::new(), Vec::new()))),
             routing: Routing::new(args, mac_address),
@@ -57,7 +57,7 @@ impl Node for Rsu {
                 async move {
                     loop {
                         let message = HeartBeat::new(
-                            &mac_address,
+                            mac_address,
                             Instant::now().duration_since(boot),
                             counter.fetch_add(1, Ordering::AcqRel),
                         );
@@ -106,11 +106,7 @@ impl Node for Rsu {
                             AddAfter(u32),
                         }
                         match match vec.get_mut(0) {
-                            Some(old_id) => {
-                                let repl = old_id.clone();
-                                *old_id = hbr.id;
-                                Result::Replaced(repl)
-                            }
+                            Some(old_id) => Result::Replaced(std::mem::replace(old_id, hbr.id)),
                             None => Result::AddAfter(hbr.id),
                         } {
                             Result::AddAfter(id) => {
@@ -124,7 +120,7 @@ impl Node for Rsu {
                         vec.push(hbr.id);
                     }
 
-                    vec.sort();
+                    vec.sort_unstable();
                 }
                 Ok(None)
             }
