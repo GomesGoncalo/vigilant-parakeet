@@ -174,6 +174,28 @@ impl TryFrom<Arc<[u8]>> for Message {
     }
 }
 
+impl TryFrom<Vec<Arc<[u8]>>> for Message {
+    type Error = anyhow::Error;
+
+    fn try_from(buf: Vec<Arc<[u8]>>) -> Result<Self, Self::Error> {
+        let mut it = buf.iter().flat_map(|inner| inner.iter()).skip(12);
+        let Some(x1) = it.next() else {
+            bail!("not enough");
+        };
+        let Some(x2) = it.next() else {
+            bail!("not enough");
+        };
+
+        if (x1, x2) != (&0x30, &0x30) {
+            bail!("not protocol")
+        }
+
+        Ok(Self {
+            buf: BufType::Received(buf.iter().flat_map(|inner| inner.iter()).cloned().collect()),
+        })
+    }
+}
+
 impl From<Message> for Vec<Arc<[u8]>> {
     fn from(value: Message) -> Self {
         match value.buf {
