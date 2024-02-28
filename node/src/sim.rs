@@ -192,7 +192,7 @@ impl Channel {
         async move {
             match self.should_send(&buf) {
                 Ok(buf) => {
-                    tokio::time::sleep(self.parameters.latency).await;
+                    let _ = tokio_timerfd::sleep(self.parameters.latency).await;
                     let _ = self.tun.send_all(buf).await;
                     tracing::trace!(delay = ?now.elapsed(), "sent a packet");
                 }
@@ -348,7 +348,14 @@ async fn main() -> Result<()> {
 
     let args = SimArgs::parse();
 
-    let (topology, namespaces) = parse_topology(&args.config_file)?;
+    let (topology, namespaces) = match parse_topology(&args.config_file) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(?e, "Error parsing topology");
+            bail!(e)
+        }
+    };
+
     tokio::spawn(async move {
         let mut set = HashSet::new();
         let mut future_set = topology
@@ -377,9 +384,16 @@ async fn main() -> Result<()> {
         }
     });
 
-    signal::ctrl_c().await.expect("failed to listen for event");
+    match signal::ctrl_c().await {
+        Ok(()) => tracing::info!("terminating, ctrl-c pressed"),
+        Err(e) => tracing::error!(?e, "error terminating"),
+    }
+
     for ns in namespaces {
-        let _ = ns.remove();
+        match ns.remove() {
+            Ok(()) => {}
+            Err(e) => tracing::error!(?e, "error removing namespace"),
+        }
     }
     Ok(())
 }

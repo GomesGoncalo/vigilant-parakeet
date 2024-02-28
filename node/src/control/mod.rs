@@ -5,5 +5,3 @@ pub mod node;
 
 pub mod obu;
 pub mod rsu;
-
-mod routing;

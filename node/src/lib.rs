@@ -90,10 +90,10 @@ pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node_device: Arc<Device
     let mac_address = node_device.mac_address;
     match args.node_params.node_type {
         NodeType::Rsu => {
-            create_with_vdev_with_node(tun, node_device, Rsu::new(args, mac_address).into()).await
+            create_with_vdev_with_node(tun, node_device, Rsu::new(args, mac_address)?.into()).await
         }
         NodeType::Obu => {
-            create_with_vdev_with_node(tun, node_device, Obu::new(args, mac_address).into()).await
+            create_with_vdev_with_node(tun, node_device, Obu::new(args, mac_address)?.into()).await
         }
     }
 }

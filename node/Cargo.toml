@@ -20,6 +20,8 @@ netns-rs = "0.1.0"
 config = "0.14.0"
 rand = "0.8.5"
 mac_address = "1.1.5"
+indexmap = "2.2.3"
+tokio-timerfd = "0.2.0"
 
 [dependencies.uuid]
 version = "1.7.0"

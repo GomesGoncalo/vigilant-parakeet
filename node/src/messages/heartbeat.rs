@@ -74,18 +74,30 @@ impl From<&HeartBeat> for Vec<Arc<[u8]>> {
 #[derive(Debug)]
 pub struct HeartBeatReply {
     pub source: MacAddress,
+    pub sender: MacAddress,
     pub now: Duration,
     pub id: u32,
     pub hops: u32,
 }
 
 impl HeartBeatReply {
-    pub fn new(source: MacAddress, now: Duration, id: u32, hops: u32) -> Self {
+    pub fn new(source: MacAddress, sender: MacAddress, now: Duration, id: u32, hops: u32) -> Self {
         Self {
             source,
+            sender,
             now,
             id,
             hops,
+        }
+    }
+
+    pub fn from_sender(value: HeartBeat, sender: MacAddress) -> Self {
+        Self {
+            now: value.now,
+            id: value.id,
+            hops: value.hops,
+            source: value.source,
+            sender,
         }
     }
 
@@ -98,17 +110,15 @@ impl TryFrom<&[u8]> for HeartBeatReply {
     type Error = anyhow::Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        // TODO: from_milliseconds takes u64 but as_millis is u128.
-        // Take the safe approach. Here this method can fail & since
-        // we are never putting more than u64 in this it's still
-        // safe to get the u128 (the high bits will be 0s)
         let now = u128::from_le_bytes(value[..16].try_into()?);
         let now = Duration::from_millis(now.try_into()?);
         let id = u32::from_le_bytes(value[16..20].try_into()?);
         let hops = u32::from_le_bytes(value[20..24].try_into()?);
         let source = MacAddress::new(value[24..30].try_into()?);
+        let sender = MacAddress::new(value[30..36].try_into()?);
         Ok(Self {
             source,
+            sender,
             now,
             id,
             hops,
@@ -120,17 +130,15 @@ impl TryFrom<&[Arc<[u8]>]> for HeartBeatReply {
     type Error = anyhow::Error;
 
     fn try_from(value: &[Arc<[u8]>]) -> Result<Self, Self::Error> {
-        // TODO: from_milliseconds takes u64 but as_millis is u128.
-        // Take the safe approach. Here this method can fail & since
-        // we are never putting more than u64 in this it's still
-        // safe to get the u128 (the high bits will be 0s)
         let now = u128::from_le_bytes(value[0][..].try_into()?);
         let now = Duration::from_millis(now.try_into()?);
         let id = u32::from_le_bytes(value[1][..].try_into()?);
         let hops = u32::from_le_bytes(value[2][..].try_into()?);
         let source = MacAddress::new(value[3][..].try_into()?);
+        let sender = MacAddress::new(value[4][..].try_into()?);
         Ok(Self {
             source,
+            sender,
             now,
             id,
             hops,
@@ -146,17 +154,7 @@ impl From<&HeartBeatReply> for Vec<Arc<[u8]>> {
             value.id.to_le_bytes().into(),
             value.hops.to_le_bytes().into(),
             value.source.bytes().into(),
+            value.sender.bytes().into(),
         ]
-    }
-}
-
-impl From<HeartBeat> for HeartBeatReply {
-    fn from(value: HeartBeat) -> Self {
-        Self {
-            now: value.now,
-            id: value.id,
-            hops: value.hops,
-            source: value.source,
-        }
     }
 }

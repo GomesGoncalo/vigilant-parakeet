@@ -1,13 +1,13 @@
 use super::{
     node::{Node, ReplyType},
-    routing::Routing,
     Args,
 };
 use crate::{
     dev::Device,
-    messages::{ControlType, Message, PacketType},
+    messages::{ControlType, HeartBeatReply, Message, PacketType},
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
+use indexmap::IndexMap;
 use mac_address::MacAddress;
 use std::{
     collections::HashMap,
@@ -15,167 +15,173 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub struct Obu {
+#[derive(Debug)]
+struct RoutingTarget {
+    hops: u32,
+    mac: MacAddress,
+    latency: Duration,
+}
+
+#[derive(Debug)]
+struct Routing {
     args: Args,
     boot: Instant,
-    mac_address: MacAddress,
-    upstream_state: Arc<RwLock<(HashMap<u32, (MacAddress, Duration, u32)>, Vec<u32>)>>,
-    hello_seq: Arc<
-        RwLock<(
-            HashMap<(MacAddress, u32), HashMap<MacAddress, (Duration, u32)>>,
-            Vec<(MacAddress, u32)>,
-        )>,
-    >,
-    routing: Routing,
+    upstream: HashMap<MacAddress, IndexMap<u32, (Duration, MacAddress, u32)>>,
+    downstream:
+        HashMap<MacAddress, IndexMap<u32, (Duration, HashMap<MacAddress, Vec<RoutingTarget>>)>>,
+}
+
+impl Routing {
+    fn new(args: &Args, boot: &Instant) -> Result<Self> {
+        if args.node_params.hello_history == 0 {
+            bail!("we need to be able to store at least 1 hello");
+        }
+        Ok(Self {
+            args: args.clone(),
+            boot: boot.clone(),
+            upstream: HashMap::default(),
+            downstream: HashMap::default(),
+        })
+    }
+
+    fn handle_heartbeat(
+        &mut self,
+        pkt: &Message,
+        mac: &MacAddress,
+    ) -> Result<Option<Vec<ReplyType>>> {
+        let Ok(PacketType::Control(ControlType::HeartBeat(message))) = pkt.next_layer() else {
+            bail!("this is supposed to be a HeartBeat");
+        };
+
+        let entry = self
+            .upstream
+            .entry(message.source)
+            .or_insert(IndexMap::with_capacity(usize::try_from(
+                self.args.node_params.hello_history,
+            )?));
+
+        if entry.first().is_some_and(|(x, _)| x > &message.id) {
+            entry.clear();
+        }
+
+        if entry.len() == entry.capacity() && entry.capacity() > 0 {
+            entry.swap_remove_index(0);
+        }
+
+        if let Some((_, _, hops)) = entry.get(&message.id) {
+            if hops <= &message.hops {
+                return Ok(None);
+            }
+        }
+
+        let from: [u8; 6] = pkt.from().try_into()?;
+        entry.insert(
+            message.id,
+            (
+                Instant::now().duration_since(self.boot),
+                from.into(),
+                message.hops,
+            ),
+        );
+
+        Ok(Some(vec![
+            ReplyType::Wire(
+                Message::new(
+                    mac.bytes(),
+                    [255; 6],
+                    &PacketType::Control(ControlType::HeartBeat(message.clone())),
+                )
+                .into(),
+            ),
+            ReplyType::Wire(
+                Message::new(
+                    mac.bytes(),
+                    from,
+                    &PacketType::Control(ControlType::HeartBeatReply(HeartBeatReply::from_sender(
+                        message, *mac,
+                    ))),
+                )
+                .into(),
+            ),
+        ]))
+    }
+
+    fn handle_heartbeat_reply(
+        &mut self,
+        pkt: &Message,
+        mac: &MacAddress,
+    ) -> Result<Option<Vec<ReplyType>>> {
+        let Ok(PacketType::Control(ControlType::HeartBeatReply(message))) = pkt.next_layer() else {
+            bail!("this is supposed to be a HeartBeat Reply");
+        };
+
+        let Some(source_entries) = self.upstream.get(&message.source) else {
+            bail!("we don't know how to reach that source");
+        };
+
+        let Some(source) = source_entries.get(&message.id) else {
+            bail!("no recollection of the next hop for this route");
+        };
+
+        Ok(Some(vec![ReplyType::Wire(
+            Message::new(
+                mac.bytes(),
+                source.1.bytes(),
+                &PacketType::Control(ControlType::HeartBeatReply(message)),
+            )
+            .into(),
+        )]))
+    }
+
+    fn get_route_to(&self, mac: &MacAddress) -> Option<MacAddress> {
+        todo!()
+    }
+}
+
+pub struct Obu {
+    args: Args,
+    routing: Arc<RwLock<Routing>>,
+    mac: MacAddress,
 }
 
 impl Obu {
-    pub fn new(args: Args, mac_address: MacAddress) -> Self {
+    pub fn new(args: Args, mac: MacAddress) -> Result<Self> {
+        let boot = Instant::now();
         let obu = Self {
-            args: args.clone(),
-            boot: Instant::now(),
-            mac_address,
-            upstream_state: Arc::new(RwLock::new((HashMap::new(), Vec::new()))),
-            hello_seq: Arc::new(RwLock::new((HashMap::new(), Vec::new()))),
-            routing: Routing::new(args, mac_address),
+            routing: Arc::new(RwLock::new(Routing::new(&args, &boot)?)),
+            args,
+            mac,
         };
 
-        tracing::info!(?obu.args, %obu.mac_address, "Setup Obu");
-        obu
+        tracing::info!(?obu.args, %obu.mac, "Setup Obu");
+        Ok(obu)
     }
 }
 
 impl Node for Obu {
-    fn generate(&self, _dev: Arc<Device>) {}
-
     fn handle_msg(&self, msg: &Message) -> Result<Option<Vec<ReplyType>>> {
-        let span = tracing::info_span!("self mac", ?self.mac_address);
-        let _guard = span.enter();
         match msg.next_layer() {
-            Ok(PacketType::Data(_)) => self.routing.handle_msg(msg),
-            Ok(PacketType::Control(ControlType::HeartBeat(hb))) => {
-                let mut hello_state_guard = self.upstream_state.write().unwrap();
-                let (ref mut map, ref mut vec) = *hello_state_guard;
-
-                if !vec.is_empty()
-                    && hb.hops
-                        > map
-                            .get(vec.last().context("no last")?)
-                            .context("no upstream")?
-                            .2
-                {
-                    return Ok(None);
-                }
-
-                let contained = map.contains_key(&hb.id);
-
-                map.entry(hb.id).or_insert((
-                    MacAddress::new(msg.from().try_into()?),
-                    Instant::now().duration_since(self.boot),
-                    hb.hops,
-                ));
-
-                if !contained {
-                    if vec.len() >= self.args.node_params.hello_history.try_into()? {
-                        enum Result {
-                            Replaced(u32),
-                            AddAfter(u32),
-                        }
-                        match match vec.get_mut(0) {
-                            Some(old_id) => Result::Replaced(std::mem::replace(old_id, hb.id)),
-                            None => Result::AddAfter(hb.id),
-                        } {
-                            Result::AddAfter(id) => {
-                                vec.push(id);
-                            }
-                            Result::Replaced(id) => {
-                                map.remove(&id);
-                            }
-                        };
-                    } else {
-                        vec.push(hb.id);
-                    }
-                    vec.sort_unstable();
-                }
-
-                Ok(vec![
-                    ReplyType::Wire(
-                        Message::new(
-                            self.mac_address.bytes(),
-                            [255; 6],
-                            &PacketType::Control(ControlType::HeartBeat(hb.clone())),
-                        )
-                        .into(),
-                    ),
-                    ReplyType::Wire(
-                        Message::new(
-                            self.mac_address.bytes(),
-                            msg.from().try_into()?,
-                            &PacketType::Control(ControlType::HeartBeatReply(hb.into())),
-                        )
-                        .into(),
-                    ),
-                ]
-                .into())
-            }
-            Ok(PacketType::Control(ControlType::HeartBeatReply(hbr))) => {
-                let mut hello_state_guard = self.upstream_state.write().unwrap();
-                let (ref mut map, _) = *hello_state_guard;
-
-                let (mac, dur, _) = map.get(&hbr.id).context("no upstream")?;
-                let mac = *mac;
-                let dur = *dur;
-
-                let mut hello_state_guard = self.hello_seq.write().unwrap();
-                let (ref mut map, ref mut vec) = *hello_state_guard;
-
-                let contained = map.contains_key(&(hbr.source, hbr.id));
-
-                map.entry((hbr.source, hbr.id))
-                    .or_insert_with(|| HashMap::with_capacity(1))
-                    .entry(MacAddress::new(msg.from().try_into()?))
-                    .or_insert_with(|| (Instant::now().duration_since(self.boot) - dur, hbr.hops));
-
-                if !contained {
-                    if vec.len() >= self.args.node_params.hello_history.try_into()? {
-                        enum Result {
-                            Replaced((MacAddress, u32)),
-                            AddAfter((MacAddress, u32)),
-                        }
-                        match match vec.get_mut(0) {
-                            Some(old_id) => {
-                                Result::Replaced(std::mem::replace(old_id, (hbr.source, hbr.id)))
-                            }
-                            None => Result::AddAfter((hbr.source, hbr.id)),
-                        } {
-                            Result::AddAfter(id) => {
-                                vec.push(id);
-                            }
-                            Result::Replaced(id) => {
-                                map.remove(&id);
-                            }
-                        };
-                    } else {
-                        vec.push((hbr.source, hbr.id));
-                    }
-
-                    vec.sort();
-                }
-
-                Ok(vec![ReplyType::Wire(
-                    Message::new(
-                        msg.from().try_into()?,
-                        mac.bytes(),
-                        &PacketType::Control(ControlType::HeartBeatReply(hbr)),
-                    )
-                    .into(),
-                )]
-                .into())
-            }
+            Ok(PacketType::Data(buf)) => Ok(Some(vec![ReplyType::Tap(vec![buf.into()])])),
+            Ok(PacketType::Control(ControlType::HeartBeat(_))) => self
+                .routing
+                .write()
+                .unwrap()
+                .handle_heartbeat(msg, &self.mac),
+            Ok(PacketType::Control(ControlType::HeartBeatReply(_))) => self
+                .routing
+                .write()
+                .unwrap()
+                .handle_heartbeat_reply(msg, &self.mac),
             Err(e) => {
                 tracing::error!(?e, "error getting message layer");
                 bail!(e)
             }
         }
+    }
+
+    fn generate(&self, _dev: Arc<Device>) {}
+
+    fn get_route_to(&self, mac: &MacAddress) -> Option<MacAddress> {
+        self.routing.read().unwrap().get_route_to(mac)
     }
 }

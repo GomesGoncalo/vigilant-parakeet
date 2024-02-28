@@ -1,9 +1,8 @@
 pub mod heartbeat;
 pub use heartbeat::{HeartBeat, HeartBeatReply};
 
-use std::sync::Arc;
-
 use anyhow::{bail, Result};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum ControlType {
