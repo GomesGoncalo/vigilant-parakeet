@@ -96,7 +96,6 @@ impl<'a> TryFrom<&'a [Arc<[u8]>]> for PacketType<'a> {
     type Error = anyhow::Error;
 
     fn try_from(value: &'a [Arc<[u8]>]) -> Result<Self, Self::Error> {
-        eprintln!("{:?}", value);
         if value[0].len() != 1 {
             bail!("This is vectored the packet type should be a single value");
         }
@@ -190,7 +189,7 @@ impl TryFrom<Vec<Arc<[u8]>>> for Message {
         }
 
         Ok(Self {
-            buf: BufType::Received(buf.iter().flat_map(|inner| inner.iter()).cloned().collect()),
+            buf: BufType::Received(buf.iter().flat_map(|inner| inner.iter()).copied().collect()),
         })
     }
 }

@@ -91,11 +91,11 @@ impl HeartBeatReply {
         }
     }
 
-    pub fn from_sender(value: HeartBeat, sender: MacAddress) -> Self {
+    pub fn from_sender(value: &HeartBeat, sender: MacAddress) -> Self {
         Self {
             now: value.now,
             id: value.id,
-            hops: value.hops,
+            hops: 0,
             source: value.source,
             sender,
         }
@@ -152,7 +152,7 @@ impl From<&HeartBeatReply> for Vec<Arc<[u8]>> {
         vec![
             now.to_le_bytes().into(),
             value.id.to_le_bytes().into(),
-            value.hops.to_le_bytes().into(),
+            (value.hops + 1).to_le_bytes().into(),
             value.source.bytes().into(),
             value.sender.bytes().into(),
         ]
