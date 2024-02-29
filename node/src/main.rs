@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
 use node::control::args::Args;
-
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]

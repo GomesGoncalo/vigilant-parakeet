@@ -1,11 +1,11 @@
-use std::{io::IoSlice, os::fd::AsRawFd, sync::Arc};
-
 use anyhow::{Context, Error, Result};
 use libc::{sockaddr, sockaddr_ll, AF_PACKET};
 use mac_address::MacAddress;
 use nix::sys::socket::{self, LinkAddr, SockaddrLike};
 use socket2::{Domain, Protocol, Socket, Type};
+use std::{io::IoSlice, os::fd::AsRawFd, sync::Arc};
 use tokio::sync::{mpsc::Receiver, mpsc::Sender};
+use tracing::Instrument;
 use uninit::uninit_array;
 
 const ETH_P_ALL: u16 = 0x0003;
@@ -50,20 +50,24 @@ impl Device {
             tokio::sync::mpsc::channel(1024);
 
         let socket = iface.clone();
-        tokio::spawn(async move {
-            while let Some(i) = inner_receiver.recv().await {
-                match match i {
-                    OutgoingMessage::Simple(msg) => socket.send(&msg),
-                    OutgoingMessage::Vectored(vec_msg) => {
-                        let vec: Vec<IoSlice> = vec_msg.iter().map(|x| IoSlice::new(x)).collect();
-                        socket.send_vectored(&vec)
+        tokio::spawn(
+            async move {
+                while let Some(i) = inner_receiver.recv().await {
+                    match match i {
+                        OutgoingMessage::Simple(msg) => socket.send(&msg),
+                        OutgoingMessage::Vectored(vec_msg) => {
+                            let vec: Vec<IoSlice> =
+                                vec_msg.iter().map(|x| IoSlice::new(x)).collect();
+                            socket.send_vectored(&vec)
+                        }
+                    } {
+                        Ok(_) => (),
+                        Err(e) => tracing::error!(%e, "error sending"),
                     }
-                } {
-                    Ok(_) => (),
-                    Err(e) => tracing::error!(%e, "error sending"),
                 }
             }
-        });
+            .in_current_span(),
+        );
 
         Ok(Self {
             mac_address,
@@ -77,23 +81,26 @@ impl Device {
         let (inner_transmit, rx) = tokio::sync::mpsc::channel(1024);
 
         let sockc = self.socket.clone();
-        tokio::spawn(async move {
-            loop {
-                let sockc = sockc.clone();
-                let Ok(Ok(buf)) = tokio::task::spawn_blocking(move || {
-                    let mut buf = uninit_array![u8; 1500];
-                    let (n, _) = sockc.recv_from(&mut buf)?;
-                    let buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
-                    let buf = buf[..n].into();
-                    Ok::<Arc<[u8]>, Error>(buf)
-                })
-                .await
-                else {
-                    break;
-                };
-                let _ = inner_transmit.send(buf).await;
+        tokio::spawn(
+            async move {
+                loop {
+                    let sockc = sockc.clone();
+                    let Ok(Ok(buf)) = tokio::task::spawn_blocking(move || {
+                        let mut buf = uninit_array![u8; 1500];
+                        let (n, _) = sockc.recv_from(&mut buf)?;
+                        let buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
+                        let buf = buf[..n].into();
+                        Ok::<Arc<[u8]>, Error>(buf)
+                    })
+                    .await
+                    else {
+                        break;
+                    };
+                    let _ = inner_transmit.send(buf).await;
+                }
             }
-        });
+            .in_current_span(),
+        );
         rx
     }
 }

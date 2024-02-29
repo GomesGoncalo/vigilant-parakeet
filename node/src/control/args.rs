@@ -1,6 +1,5 @@
-use std::net::Ipv4Addr;
-
 use clap::{Parser, ValueEnum};
+use std::net::Ipv4Addr;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 pub enum NodeType {
@@ -38,6 +37,10 @@ pub struct Args {
     /// IP
     #[arg(short, long)]
     pub ip: Option<Ipv4Addr>,
+
+    /// MTU
+    #[arg(short, long, default_value_t = 1465)]
+    pub mtu: i32,
 
     /// Node Parameters
     #[command(flatten)]

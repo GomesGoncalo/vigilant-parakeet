@@ -39,8 +39,7 @@ impl TryFrom<HashMap<String, Value>> for SimNodeParameters {
             .get("node_type")
             .context("no node type")?
             .clone()
-            .into_string()
-            .context("node_type is string")?;
+            .into_string()?;
 
         let Ok(node_type) = NodeType::from_str(node_type, true) else {
             bail!("invalid node type");
@@ -51,8 +50,7 @@ impl TryFrom<HashMap<String, Value>> for SimNodeParameters {
                 .get("hello_history")
                 .context("hello history")?
                 .clone()
-                .into_uint()
-                .context("hello history is u32")?,
+                .into_uint()?,
         )?;
 
         let hello_periodicity = match param.get("hello_periodicity") {
@@ -123,14 +121,17 @@ impl Channel {
             to,
         });
         let thisc = this.clone();
-        tokio::spawn(async move {
-            loop {
-                let Some(buf) = rx.recv().await else {
-                    continue;
-                };
-                thisc.priv_send(buf).await;
+        tokio::spawn(
+            async move {
+                loop {
+                    let Some(buf) = rx.recv().await else {
+                        continue;
+                    };
+                    thisc.priv_send(buf).await;
+                }
             }
-        });
+            .in_current_span(),
+        );
         this
     }
 
@@ -212,11 +213,13 @@ fn create_namespaces(
     node: &str,
     node_type: &SimNodeParameters,
 ) -> Result<(Arc<Device>, Arc<Tun>)> {
-    let ns = NetNs::new(format!("sim_ns_{node}"))?;
+    let node_name = format!("sim_ns_{node}");
+    let span = tracing::debug_span!("sim node", name = node_name);
+    let ns = NetNs::new(node_name.clone())?;
     let ns_result = ns.run(|_| {
         let tun = Arc::new(
             Tun::builder()
-                .name("tapsim%d")
+                .name("real")
                 .tap(true)
                 .packet_info(false)
                 .up()
@@ -225,26 +228,40 @@ fn create_namespaces(
 
         let args = Args {
             bind: tun.name().to_string(),
-            tap_name: None,
+            tap_name: Some("virtual".to_string()),
             ip: Some(Ipv4Addr::from_str(&format!(
                 "10.0.0.{}",
                 ns_list.len() + 1
             ))?),
+            mtu: 1465,
             node_params: node_type.0.clone(),
         };
 
-        let virtual_tun = Arc::new(
-            Tun::builder()
-                .tap(true)
-                .packet_info(false)
-                .address(args.ip.context("")?)
-                .mtu(1440)
-                .up()
-                .try_build()?,
-        );
+        let virtual_tun = if let Some(ref name) = args.tap_name {
+            Arc::new(
+                Tun::builder()
+                    .tap(true)
+                    .name(name)
+                    .packet_info(false)
+                    .address(args.ip.context("")?)
+                    .mtu(args.mtu)
+                    .up()
+                    .try_build()?,
+            )
+        } else {
+            Arc::new(
+                Tun::builder()
+                    .tap(true)
+                    .packet_info(false)
+                    .address(args.ip.context("")?)
+                    .mtu(args.mtu)
+                    .up()
+                    .try_build()?,
+            )
+        };
 
         let dev = Arc::new(Device::new(&args.bind)?);
-        tokio::spawn(node::create_with_vdev(args, virtual_tun, dev.clone()));
+        tokio::spawn(node::create_with_vdev(args, virtual_tun, dev.clone()).instrument(span));
         Ok::<_, Error>((dev, tun))
     });
 
@@ -264,8 +281,7 @@ fn parse_topology(
         .build()?;
 
     let nodes = settings
-        .get_table("nodes")
-        .context("Nodes defined")?
+        .get_table("nodes")?
         .iter()
         .filter_map(|(node, val)| {
             let Ok(param) = val.clone().into_table() else {
@@ -390,9 +406,8 @@ async fn main() -> Result<()> {
     }
 
     for ns in namespaces {
-        match ns.remove() {
-            Ok(()) => {}
-            Err(e) => tracing::error!(?e, "error removing namespace"),
+        if let Err(e) = ns.remove() {
+            tracing::error!(?e, "error removing namespace");
         }
     }
     Ok(())

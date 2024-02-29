@@ -1,49 +1,39 @@
-use super::{
-    node::{Node, ReplyType, Route},
-    Args,
-};
 use crate::{
-    dev::Device,
-    messages::{ControlType, HeartBeatReply, Message, PacketType},
+    control::route::Route,
+    messages::{ControlType, HeartBeatReply, PacketType},
+    Args, Message, ReplyType,
 };
 use anyhow::{bail, Result};
 use indexmap::IndexMap;
+use itertools::Itertools;
 use mac_address::MacAddress;
 use std::{
     collections::{hash_map::Entry, HashMap},
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tracing::Level;
 
 #[derive(Debug)]
-struct RoutingTarget {
+struct Target {
     hops: u32,
     mac: MacAddress,
     latency: Option<Duration>,
 }
 
 #[derive(Debug)]
-struct Routing {
+pub struct Routing {
     args: Args,
     boot: Instant,
     routes: HashMap<
         MacAddress,
-        IndexMap<
-            u32,
-            (
-                Duration,
-                MacAddress,
-                u32,
-                HashMap<MacAddress, Vec<RoutingTarget>>,
-            ),
-        >,
+        IndexMap<u32, (Duration, MacAddress, u32, HashMap<MacAddress, Vec<Target>>)>,
     >,
     cached_upstream: Arc<Mutex<Option<MacAddress>>>,
 }
 
 impl Routing {
-    fn new(args: &Args, boot: &Instant) -> Result<Self> {
+    pub fn new(args: &Args, boot: &Instant) -> Result<Self> {
         if args.node_params.hello_history == 0 {
             bail!("we need to be able to store at least 1 hello");
         }
@@ -55,7 +45,7 @@ impl Routing {
         })
     }
 
-    fn handle_heartbeat(
+    pub fn handle_heartbeat(
         &mut self,
         pkt: &Message,
         mac: MacAddress,
@@ -64,14 +54,8 @@ impl Routing {
             bail!("this is supposed to be a HeartBeat");
         };
 
-        let old_route = self.get_route_to(message.source);
-        let from: [u8; 6] = pkt.from().try_into()?;
-        let from_mac: MacAddress = from.into();
-        let old_route_from = self.get_route_to(from_mac);
-        if self.routes.get(&message.source).is_some() {
-            return Ok(None);
-        }
-
+        let old_route = self.get_route_to(Some(message.source));
+        let old_route_from = self.get_route_to(Some(pkt.from()));
         let entry = self
             .routes
             .entry(message.source)
@@ -88,7 +72,7 @@ impl Routing {
         }
 
         if let Some((_, _, hops, _)) = entry.get(&message.id) {
-            if hops <= &message.hops {
+            if hops < &message.hops {
                 return Ok(None);
             }
         }
@@ -97,7 +81,7 @@ impl Routing {
             message.id,
             (
                 Instant::now().duration_since(self.boot),
-                from.into(),
+                pkt.from(),
                 message.hops,
                 HashMap::default(),
             ),
@@ -105,7 +89,7 @@ impl Routing {
 
         let entry_from = self
             .routes
-            .entry(from_mac)
+            .entry(pkt.from())
             .or_insert(IndexMap::with_capacity(usize::try_from(
                 self.args.node_params.hello_history,
             )?));
@@ -122,13 +106,13 @@ impl Routing {
             message.id,
             (
                 Instant::now().duration_since(self.boot),
-                from.into(),
+                pkt.from(),
                 1,
                 HashMap::default(),
             ),
         );
 
-        match (old_route, self.get_route_to(message.source)) {
+        match (old_route, self.get_route_to(Some(message.source))) {
             (None, Some(new_route)) => {
                 tracing::event!(
                     Level::DEBUG,
@@ -153,13 +137,13 @@ impl Routing {
             }
         }
 
-        if message.source != from_mac {
-            match (old_route_from, self.get_route_to(from_mac)) {
+        if message.source != pkt.from() {
+            match (old_route_from, self.get_route_to(Some(pkt.from()))) {
                 (None, Some(new_route)) => {
                     tracing::event!(
                         Level::DEBUG,
                         from = %mac,
-                        to = %from_mac,
+                        to = %pkt.from(),
                         through = %new_route,
                         "route created on heartbeat",
                     );
@@ -170,7 +154,7 @@ impl Routing {
                         tracing::event!(
                             Level::DEBUG,
                             from = %mac,
-                            to = %from_mac,
+                            to = %pkt.from(),
                             through = %new_route,
                             was_through = %old_route_from,
                             "route changed on heartbeat",
@@ -192,7 +176,7 @@ impl Routing {
             ReplyType::Wire(
                 Message::new(
                     mac.bytes(),
-                    from,
+                    pkt.from().bytes(),
                     &PacketType::Control(ControlType::HeartBeatReply(HeartBeatReply::from_sender(
                         &message, mac,
                     ))),
@@ -202,7 +186,7 @@ impl Routing {
         ]))
     }
 
-    fn handle_heartbeat_reply(
+    pub fn handle_heartbeat_reply(
         &mut self,
         pkt: &Message,
         mac: MacAddress,
@@ -211,10 +195,8 @@ impl Routing {
             bail!("this is supposed to be a HeartBeat Reply");
         };
 
-        let old_route = self.get_route_to(message.sender);
-        let from: [u8; 6] = pkt.from().try_into()?;
-        let from_mac: MacAddress = from.into();
-        let old_route_from = self.get_route_to(from_mac);
+        let old_route = self.get_route_to(Some(message.sender));
+        let old_route_from = self.get_route_to(Some(pkt.from()));
         let Some(source_entries) = self.routes.get_mut(&message.source) else {
             bail!("we don't know how to reach that source");
         };
@@ -229,35 +211,35 @@ impl Routing {
             Entry::Occupied(mut entry) => {
                 let value = entry.get_mut();
 
-                value.push(RoutingTarget {
+                value.push(Target {
                     hops: message.hops,
-                    mac: from_mac,
+                    mac: pkt.from(),
                     latency: Some(latency),
                 });
             }
             Entry::Vacant(entry) => {
-                entry.insert(vec![RoutingTarget {
+                entry.insert(vec![Target {
                     hops: message.hops,
-                    mac: from_mac,
+                    mac: pkt.from(),
                     latency: Some(latency),
                 }]);
             }
         };
 
-        match downstream.entry(from_mac) {
+        match downstream.entry(pkt.from()) {
             Entry::Occupied(mut entry) => {
                 let value = entry.get_mut();
 
-                value.push(RoutingTarget {
+                value.push(Target {
                     hops: 1,
-                    mac: from_mac,
+                    mac: pkt.from(),
                     latency: None,
                 });
             }
             Entry::Vacant(entry) => {
-                entry.insert(vec![RoutingTarget {
+                entry.insert(vec![Target {
                     hops: 1,
-                    mac: from_mac,
+                    mac: pkt.from(),
                     latency: None,
                 }]);
             }
@@ -273,7 +255,7 @@ impl Routing {
             .into(),
         )]));
 
-        match (old_route, self.get_route_to(sender)) {
+        match (old_route, self.get_route_to(Some(sender))) {
             (None, Some(new_route)) => {
                 tracing::event!(
                     Level::DEBUG,
@@ -298,13 +280,13 @@ impl Routing {
             }
         }
 
-        if sender != from_mac {
-            match (old_route_from, self.get_route_to(from_mac)) {
+        if sender != pkt.from() {
+            match (old_route_from, self.get_route_to(Some(pkt.from()))) {
                 (None, Some(new_route)) => {
                     tracing::event!(
                         Level::DEBUG,
                         from = %mac,
-                        to = %from_mac,
+                        to = %pkt.from(),
                         through = %new_route,
                         "route created on heartbeat reply",
                     );
@@ -315,7 +297,7 @@ impl Routing {
                         tracing::event!(
                             Level::DEBUG,
                             from = %mac,
-                            to = %from_mac,
+                            to = %pkt.from(),
                             through = %new_route,
                             was_through = %old_route_from,
                             "route changed on heartbeat reply",
@@ -328,7 +310,14 @@ impl Routing {
         reply
     }
 
-    fn get_route_to(&self, mac: MacAddress) -> Option<Route> {
+    pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
+        let Some(mac) = mac else {
+            return self.cached_upstream.lock().unwrap().map(|mac| Route {
+                hops: 1,
+                mac,
+                latency: None,
+            });
+        };
         let mut upstream_routes: Vec<_> = self
             .routes
             .iter()
@@ -352,7 +341,9 @@ impl Routing {
                     latency: None,
                 });
             }
-        } else if let Some((_, _, upstream_route, hops)) = upstream_routes.first() {
+        }
+
+        if let Some((_, _, upstream_route, hops)) = upstream_routes.first() {
             *cached = Some(**upstream_route);
             return Some(Route {
                 hops: **hops,
@@ -442,56 +433,19 @@ impl Routing {
                 latency: Some(Duration::from_micros(*latency as u64)),
             })
     }
-}
 
-pub struct Obu {
-    args: Args,
-    routing: Arc<RwLock<Routing>>,
-    mac: MacAddress,
-}
-
-impl Obu {
-    pub fn new(args: Args, mac: MacAddress) -> Result<Self> {
-        let boot = Instant::now();
-        let obu = Self {
-            routing: Arc::new(RwLock::new(Routing::new(&args, &boot)?)),
-            args,
-            mac,
-        };
-
-        tracing::info!(?obu.args, %obu.mac, "Setup Obu");
-        Ok(obu)
-    }
-}
-
-impl Node for Obu {
-    fn handle_msg(&self, msg: &Message) -> Result<Option<Vec<ReplyType>>> {
-        match msg.next_layer() {
-            Ok(PacketType::Data(buf)) => Ok(Some(vec![ReplyType::Tap(vec![buf.into()])])),
-            Ok(PacketType::Control(ControlType::HeartBeat(_))) => self
-                .routing
-                .write()
-                .unwrap()
-                .handle_heartbeat(msg, self.mac),
-            Ok(PacketType::Control(ControlType::HeartBeatReply(_))) => self
-                .routing
-                .write()
-                .unwrap()
-                .handle_heartbeat_reply(msg, self.mac),
-            Err(e) => {
-                tracing::error!(?e, "error getting message layer");
-                bail!(e)
-            }
-        }
+    pub fn iter_next_hops(&self) -> impl Iterator<Item = &MacAddress> {
+        self.routes
+            .iter()
+            .flat_map(|(_, im)| im.iter())
+            .flat_map(|(_, (_, _, _, m))| m.keys())
+            .unique()
     }
 
-    fn generate(&self, _dev: Arc<Device>) {}
-
-    fn get_route_to(&self, mac: MacAddress) -> Option<MacAddress> {
-        self.routing
-            .read()
-            .unwrap()
-            .get_route_to(mac)
-            .map(|x| x.mac)
+    pub fn iter_upstream(&self) -> impl Iterator<Item = &MacAddress> {
+        self.routes
+            .iter()
+            .flat_map(|(_, i)| i.iter())
+            .map(|(_, (_, up, _, _))| up)
     }
 }

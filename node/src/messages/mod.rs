@@ -2,6 +2,7 @@ pub mod heartbeat;
 pub use heartbeat::{HeartBeat, HeartBeatReply};
 
 use anyhow::{bail, Result};
+use mac_address::MacAddress;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -64,6 +65,60 @@ impl From<&ControlType> for Vec<Arc<[u8]>> {
 }
 
 #[derive(Debug)]
+pub struct Data<'a> {
+    pub source: MacAddress,
+    pub data: &'a [u8],
+}
+
+impl<'a> Data<'a> {
+    pub fn new(source: MacAddress, data: &'a [u8]) -> Self {
+        Self { source, data }
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for Data<'a> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
+        let from: [u8; 6] = value[0..6].try_into()?;
+        Ok(Self {
+            source: from.into(),
+            data: &value[6..],
+        })
+    }
+}
+
+impl<'a> TryFrom<&'a Arc<[u8]>> for Data<'a> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &'a Arc<[u8]>) -> Result<Self, Self::Error> {
+        let from: [u8; 6] = value[0..6].try_into()?;
+        Ok(Self {
+            source: from.into(),
+            data: &value[6..],
+        })
+    }
+}
+
+impl<'a> TryFrom<&'a [Arc<[u8]>]> for Data<'a> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &'a [Arc<[u8]>]) -> Result<Self, Self::Error> {
+        let from: &[u8; 6] = value[0][0..6].try_into()?;
+        Ok(Self {
+            source: (*from).into(),
+            data: &value[1],
+        })
+    }
+}
+
+impl<'a> From<&Data<'a>> for Vec<Arc<[u8]>> {
+    fn from(value: &Data) -> Self {
+        vec![value.source.bytes().into(), value.data.into()]
+    }
+}
+
+#[derive(Debug)]
 enum BufType {
     Received(Arc<[u8]>),
     Send(Vec<Arc<[u8]>>),
@@ -77,7 +132,7 @@ pub struct Message {
 #[derive(Debug)]
 pub enum PacketType<'a> {
     Control(ControlType),
-    Data(&'a [u8]),
+    Data(Arc<Data<'a>>),
 }
 
 impl<'a> TryFrom<&'a [u8]> for PacketType<'a> {
@@ -86,7 +141,7 @@ impl<'a> TryFrom<&'a [u8]> for PacketType<'a> {
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
         Ok(match value[0] {
             0 => Self::Control(value[1..].try_into()?),
-            1 => Self::Data(&value[1..]),
+            1 => Self::Data(Arc::new(value[1..].try_into()?)),
             _ => bail!("invalid packet type"),
         })
     }
@@ -101,24 +156,30 @@ impl<'a> TryFrom<&'a [Arc<[u8]>]> for PacketType<'a> {
         }
         Ok(match value[0][0] {
             0 => Self::Control(value[1..].try_into()?),
-            1 => Self::Data(&value[1]),
+            1 => Self::Data(Arc::new(value[1..].try_into()?)),
             _ => bail!("invalid packet type"),
         })
     }
 }
 
 impl Message {
-    pub fn from(&self) -> &[u8] {
-        match &self.buf {
+    pub fn from(&self) -> MacAddress {
+        let buf: [u8; 6] = match &self.buf {
             BufType::Received(buf) => &buf[6..12],
             BufType::Send(buf) => &buf[1],
         }
+        .try_into()
+        .unwrap();
+        buf.into()
     }
-    pub fn to(&self) -> &[u8] {
-        match &self.buf {
+    pub fn to(&self) -> MacAddress {
+        let buf: [u8; 6] = match &self.buf {
             BufType::Received(buf) => &buf[0..6],
             BufType::Send(buf) => &buf[0],
         }
+        .try_into()
+        .unwrap();
+        buf.into()
     }
     pub fn next_layer(&self) -> Result<PacketType> {
         match &self.buf {
@@ -142,7 +203,10 @@ impl Message {
         ];
 
         let more: Vec<Arc<[u8]>> = match ptype {
-            PacketType::Data(buf) => vec![(*buf).into()],
+            PacketType::Data(buf) => {
+                let buf: &Data = buf;
+                buf.into()
+            }
             PacketType::Control(buf) => buf.into(),
         };
 

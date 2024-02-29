@@ -7,11 +7,10 @@ edition = "2021"
 tokio-tun = "0.11.2"
 tokio = {version = "1.35.1", features = ["full"]}
 anyhow = "1.0.79"
-etherparse = "0.14.2"
 socket2 = {version = "0.5.5", features = ["all"]}
 uninit = "0.6.2"
 libc = "0.2.153"
-nix = {version = "0.27.1", features = ["socket", "net", "ioctl"]}
+nix = {version = "0.28.0", features = ["socket", "net", "ioctl"]}
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "std"] }
 clap = { version = "4.4.18", features = ["derive"] }
@@ -22,14 +21,7 @@ rand = "0.8.5"
 mac_address = "1.1.5"
 indexmap = "2.2.3"
 tokio-timerfd = "0.2.0"
-
-[dependencies.uuid]
-version = "1.7.0"
-features = [
-    "v4",
-    "fast-rng",
-    "macro-diagnostics",
-]
+itertools = "0.12.1"
 
 [[bin]]
 name="node"

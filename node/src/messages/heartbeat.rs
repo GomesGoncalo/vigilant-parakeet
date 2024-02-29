@@ -1,7 +1,5 @@
-use std::sync::Arc;
-use std::time::Duration;
-
 use mac_address::MacAddress;
+use std::{sync::Arc, time::Duration};
 
 #[derive(Debug, Clone)]
 pub struct HeartBeat {

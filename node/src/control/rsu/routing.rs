@@ -1,38 +1,35 @@
-use super::{
-    node::{Node, ReplyType, Route},
-    Args,
-};
 use crate::{
-    dev::{Device, OutgoingMessage},
+    control::route::Route,
     messages::{ControlType, HeartBeat, Message, PacketType},
+    Args,
 };
 use anyhow::{bail, Result};
 use indexmap::IndexMap;
+use itertools::Itertools;
 use mac_address::MacAddress;
 use std::{
     collections::{hash_map::Entry, HashMap},
     fmt::Debug,
-    sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
-use tracing::{Instrument, Level};
+use tracing::Level;
 
 #[derive(Debug)]
-struct RoutingTarget {
+struct Target {
     hops: u32,
     mac: MacAddress,
     latency: Duration,
 }
 
 #[derive(Debug)]
-struct Routing {
+pub struct Routing {
     hb_seq: u32,
     boot: Instant,
-    sent: IndexMap<u32, (Duration, HashMap<MacAddress, Vec<RoutingTarget>>)>,
+    sent: IndexMap<u32, (Duration, HashMap<MacAddress, Vec<Target>>)>,
 }
 
 impl Routing {
-    fn new(args: &Args) -> Result<Self> {
+    pub fn new(args: &Args) -> Result<Self> {
         if args.node_params.hello_history == 0 {
             bail!("we need to be able to store at least 1 hello");
         }
@@ -43,7 +40,7 @@ impl Routing {
         })
     }
 
-    fn send_heartbeat(&mut self, address: MacAddress) -> Message {
+    pub fn send_heartbeat(&mut self, address: MacAddress) -> Message {
         let message = HeartBeat::new(
             address,
             Instant::now().duration_since(self.boot),
@@ -71,46 +68,45 @@ impl Routing {
         )
     }
 
-    fn handle_heartbeat_reply(&mut self, msg: &Message, address: MacAddress) -> Result<()> {
+    pub fn handle_heartbeat_reply(&mut self, msg: &Message, address: MacAddress) -> Result<()> {
         let Ok(PacketType::Control(ControlType::HeartBeatReply(hbr))) = msg.next_layer() else {
             bail!("only heartbeat reply messages accepted");
         };
 
-        let old_route = self.get_route_to(hbr.sender);
+        let old_route = self.get_route_to(Some(hbr.sender));
         let Some((_, map)) = self.sent.get_mut(&hbr.id) else {
             tracing::warn!("outdated heartbeat");
             return Ok(());
         };
 
-        let from: [u8; 6] = msg.from().try_into()?;
         let latency = Instant::now().duration_since(self.boot) - hbr.now;
         match map.entry(hbr.sender) {
             Entry::Occupied(mut entry) => {
                 let value = entry.get_mut();
 
-                value.push(RoutingTarget {
+                value.push(Target {
                     hops: hbr.hops,
-                    mac: from.into(),
+                    mac: msg.from(),
                     latency,
                 });
             }
             Entry::Vacant(entry) => {
-                entry.insert(vec![RoutingTarget {
+                entry.insert(vec![Target {
                     hops: hbr.hops,
-                    mac: from.into(),
+                    mac: msg.from(),
                     latency,
                 }]);
             }
         };
 
-        match (old_route, self.get_route_to(hbr.sender)) {
+        match (old_route, self.get_route_to(Some(hbr.sender))) {
             (None, Some(new_route)) => {
                 tracing::event!(
                     Level::DEBUG,
                     from = %address,
                     to = %hbr.sender,
                     through = %new_route,
-                    "route created",
+                    "route created from heartbeat reply",
                 );
             }
             (_, None) => (),
@@ -122,7 +118,7 @@ impl Routing {
                         to = %hbr.sender,
                         through = %new_route,
                         was_through = %old_route,
-                        "route changed",
+                        "route changed from heartbeat reply",
                     );
                 }
             }
@@ -130,7 +126,8 @@ impl Routing {
         Ok(())
     }
 
-    fn get_route_to(&self, mac: MacAddress) -> Option<Route> {
+    pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
+        let mac = mac?;
         let route_options = self
             .sent
             .iter()
@@ -196,6 +193,14 @@ impl Routing {
                 latency: Some(Duration::from_micros(*latency as u64)),
             })
     }
+
+    pub fn iter_next_hops(&self) -> impl Iterator<Item = &MacAddress> {
+        self.sent
+            .iter()
+            .rev()
+            .flat_map(|(_, (_, m))| m.keys())
+            .unique()
+    }
 }
 
 #[cfg(test)]
@@ -204,9 +209,9 @@ mod tests {
         control::{
             args::{NodeParameters, NodeType},
             rsu::Routing,
-            Args,
         },
         messages::{ControlType, PacketType},
+        Args,
     };
 
     #[test]
@@ -215,6 +220,7 @@ mod tests {
             bind: String::default(),
             tap_name: None,
             ip: None,
+            mtu: 1500,
             node_params: NodeParameters {
                 node_type: NodeType::Rsu,
                 hello_history: 1,
@@ -227,8 +233,8 @@ mod tests {
         };
         let message = routing.send_heartbeat([1; 6].into());
 
-        assert_eq!(message.from(), &[1; 6]);
-        assert_eq!(message.to(), &[255; 6]);
+        assert_eq!(message.from(), [1; 6].into());
+        assert_eq!(message.to(), [255; 6].into());
 
         let PacketType::Control(ControlType::HeartBeat(message)) =
             message.next_layer().expect("contains a next layer")
@@ -247,6 +253,7 @@ mod tests {
             bind: String::default(),
             tap_name: None,
             ip: None,
+            mtu: 1500,
             node_params: NodeParameters {
                 node_type: NodeType::Rsu,
                 hello_history: 0,
@@ -261,6 +268,7 @@ mod tests {
                 bind: String::default(),
                 tap_name: None,
                 ip: None,
+                mtu: 1500,
                 node_params: NodeParameters {
                     node_type: NodeType::Rsu,
                     hello_history: i,
@@ -297,84 +305,5 @@ mod tests {
                 assert_eq!(h.0, &hb.id);
             });
         }
-    }
-}
-
-pub struct Rsu {
-    args: Args,
-    mac: MacAddress,
-    routing: Arc<RwLock<Routing>>,
-}
-
-impl Rsu {
-    pub fn new(args: Args, mac: MacAddress) -> Result<Self> {
-        let rsu = Self {
-            routing: Arc::new(RwLock::new(Routing::new(&args)?)),
-            args,
-            mac,
-        };
-
-        tracing::info!(?rsu.args, %rsu.mac, "Setup Rsu");
-        Ok(rsu)
-    }
-}
-
-impl Node for Rsu {
-    fn handle_msg(&self, msg: &Message) -> Result<Option<Vec<ReplyType>>> {
-        match msg.next_layer() {
-            Ok(PacketType::Data(buf)) => Ok(Some(vec![ReplyType::Tap(vec![buf.into()])])),
-            Ok(PacketType::Control(ControlType::HeartBeat(_))) => Ok(None),
-            Ok(PacketType::Control(ControlType::HeartBeatReply(hbr))) => {
-                if hbr.source == self.mac {
-                    let span =
-                        tracing::debug_span!(target: "hello", "hello task", rsu.mac=%self.mac);
-                    let _g = span.enter();
-                    self.routing
-                        .write()
-                        .unwrap()
-                        .handle_heartbeat_reply(msg, self.mac)?;
-                }
-
-                Ok(None)
-            }
-            Err(e) => {
-                tracing::error!(?e, "error getting message layer");
-                bail!(e)
-            }
-        }
-    }
-
-    fn generate(&self, dev: Arc<Device>) {
-        let mac = self.mac;
-        let routing = self.routing.clone();
-        let hello_periodicity = self.args.node_params.hello_periodicity;
-        let span = tracing::error_span!(target: "hello", "hello task", rsu.mac=%mac);
-        let _g = span.enter();
-        if let Some(hello_periodicity) = hello_periodicity {
-            tokio::spawn(
-                async move {
-                    loop {
-                        tokio::time::sleep(Duration::from_millis(hello_periodicity.into())).await;
-                        let message = routing.write().unwrap().send_heartbeat(mac);
-                        tracing::trace!(target: "pkt", ?message, "pkt");
-                        match dev.tx.send(OutgoingMessage::Vectored(message.into())).await {
-                            Ok(()) => tracing::trace!("sent hello"),
-                            Err(e) => tracing::error!(?e, "error sending hello"),
-                        };
-                    }
-                }
-                .in_current_span(),
-            );
-        } else {
-            tracing::error!(?self.args, "Rsu configured without hello_periodicity parameter");
-        }
-    }
-
-    fn get_route_to(&self, mac: MacAddress) -> Option<MacAddress> {
-        self.routing
-            .read()
-            .unwrap()
-            .get_route_to(mac)
-            .map(|x| x.mac)
     }
 }
