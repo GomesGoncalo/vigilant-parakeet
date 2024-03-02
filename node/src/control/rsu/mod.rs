@@ -3,7 +3,7 @@ mod routing;
 use super::node::{Node, ReplyType};
 use crate::{
     dev::{Device, OutgoingMessage},
-    messages::{ControlType, Data, Message, PacketType},
+    messages::{ControlType, Data, DownstreamData, Message, PacketType, UpstreamData},
     Args,
 };
 use anyhow::{bail, Result};
@@ -38,7 +38,7 @@ impl Rsu {
 impl Node for Rsu {
     fn handle_msg(&self, msg: Message) -> Result<Option<Vec<ReplyType>>> {
         match msg.next_layer() {
-            Ok(PacketType::Data(buf)) => {
+            Ok(PacketType::Data(Data::Downstream(buf))) => {
                 let mut messages = vec![ReplyType::Tap(vec![buf.data.into()])];
                 if let Ok(Some(more)) = self.tap_traffic(buf) {
                     messages.extend(more);
@@ -46,6 +46,7 @@ impl Node for Rsu {
 
                 Ok(Some(messages))
             }
+            Ok(PacketType::Data(Data::Upstream(_))) => Ok(None),
             Ok(PacketType::Control(ControlType::HeartBeat(_))) => Ok(None),
             Ok(PacketType::Control(ControlType::HeartBeatReply(hbr))) => {
                 if hbr.source == self.mac {
@@ -101,7 +102,8 @@ impl Node for Rsu {
             .map(|x| x.mac)
     }
 
-    fn tap_traffic(&self, msg: Arc<Data>) -> Result<Option<Vec<ReplyType>>> {
+    fn tap_traffic(&self, msg: Arc<DownstreamData>) -> Result<Option<Vec<ReplyType>>> {
+        let msg = Arc::new(UpstreamData::new(msg.source, [255; 6].into(), msg.data));
         let routing = self.routing.read().unwrap();
         Ok(Some(
             routing
@@ -115,7 +117,7 @@ impl Node for Rsu {
                         Message::new(
                             self.mac.bytes(),
                             next_hop.bytes(),
-                            &PacketType::Data(msg.clone()),
+                            &PacketType::Data(Data::Upstream(msg.clone())),
                         )
                         .into(),
                     )

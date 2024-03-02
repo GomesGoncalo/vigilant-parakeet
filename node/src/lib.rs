@@ -10,7 +10,7 @@ use control::{
 };
 use dev::{Device, OutgoingMessage};
 use futures::{stream::FuturesUnordered, StreamExt};
-use messages::{Data, Message};
+use messages::{DownstreamData, Message};
 use std::{io::IoSlice, sync::Arc};
 use tokio_tun::Tun;
 use tracing::Instrument;
@@ -82,7 +82,8 @@ where
         let buf = uninit_array![u8; 1500];
         let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
         let n = tun.recv(&mut buf).await?;
-        let Ok(Some(messages)) = node.tap_traffic(Data::new(node.get_mac(), &buf[..n]).into())
+        let Ok(Some(messages)) =
+            node.tap_traffic(DownstreamData::new(node.get_mac(), &buf[..n]).into())
         else {
             continue;
         };

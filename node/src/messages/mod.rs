@@ -65,18 +65,18 @@ impl From<&ControlType> for Vec<Arc<[u8]>> {
 }
 
 #[derive(Debug)]
-pub struct Data<'a> {
+pub struct DownstreamData<'a> {
     pub source: MacAddress,
     pub data: &'a [u8],
 }
 
-impl<'a> Data<'a> {
+impl<'a> DownstreamData<'a> {
     pub fn new(source: MacAddress, data: &'a [u8]) -> Self {
         Self { source, data }
     }
 }
 
-impl<'a> TryFrom<&'a [u8]> for Data<'a> {
+impl<'a> TryFrom<&'a [u8]> for DownstreamData<'a> {
     type Error = anyhow::Error;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
@@ -88,7 +88,7 @@ impl<'a> TryFrom<&'a [u8]> for Data<'a> {
     }
 }
 
-impl<'a> TryFrom<&'a Arc<[u8]>> for Data<'a> {
+impl<'a> TryFrom<&'a Arc<[u8]>> for DownstreamData<'a> {
     type Error = anyhow::Error;
 
     fn try_from(value: &'a Arc<[u8]>) -> Result<Self, Self::Error> {
@@ -100,7 +100,7 @@ impl<'a> TryFrom<&'a Arc<[u8]>> for Data<'a> {
     }
 }
 
-impl<'a> TryFrom<&'a [Arc<[u8]>]> for Data<'a> {
+impl<'a> TryFrom<&'a [Arc<[u8]>]> for DownstreamData<'a> {
     type Error = anyhow::Error;
 
     fn try_from(value: &'a [Arc<[u8]>]) -> Result<Self, Self::Error> {
@@ -112,10 +112,85 @@ impl<'a> TryFrom<&'a [Arc<[u8]>]> for Data<'a> {
     }
 }
 
-impl<'a> From<&Data<'a>> for Vec<Arc<[u8]>> {
-    fn from(value: &Data) -> Self {
+impl<'a> From<&DownstreamData<'a>> for Vec<Arc<[u8]>> {
+    fn from(value: &DownstreamData) -> Self {
         vec![value.source.bytes().into(), value.data.into()]
     }
+}
+
+#[derive(Debug)]
+pub struct UpstreamData<'a> {
+    pub source: MacAddress,
+    pub destination: MacAddress,
+    pub data: &'a [u8],
+}
+
+impl<'a> UpstreamData<'a> {
+    pub fn new(source: MacAddress, destination: MacAddress, data: &'a [u8]) -> Self {
+        Self {
+            source,
+            destination,
+            data,
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for UpstreamData<'a> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
+        let from: [u8; 6] = value[0..6].try_into()?;
+        let to: [u8; 6] = value[6..12].try_into()?;
+        Ok(Self {
+            source: from.into(),
+            destination: to.into(),
+            data: &value[12..],
+        })
+    }
+}
+
+impl<'a> TryFrom<&'a Arc<[u8]>> for UpstreamData<'a> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &'a Arc<[u8]>) -> Result<Self, Self::Error> {
+        let from: [u8; 6] = value[0..6].try_into()?;
+        let to: [u8; 6] = value[6..12].try_into()?;
+        Ok(Self {
+            source: from.into(),
+            destination: to.into(),
+            data: &value[12..],
+        })
+    }
+}
+
+impl<'a> TryFrom<&'a [Arc<[u8]>]> for UpstreamData<'a> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &'a [Arc<[u8]>]) -> Result<Self, Self::Error> {
+        let from: &[u8; 6] = value[0][0..6].try_into()?;
+        let to: &[u8; 6] = value[1][0..6].try_into()?;
+        Ok(Self {
+            source: (*from).into(),
+            destination: (*to).into(),
+            data: &value[2],
+        })
+    }
+}
+
+impl<'a> From<&UpstreamData<'a>> for Vec<Arc<[u8]>> {
+    fn from(value: &UpstreamData) -> Self {
+        vec![
+            value.source.bytes().into(),
+            value.destination.bytes().into(),
+            value.data.into(),
+        ]
+    }
+}
+
+#[derive(Debug)]
+pub enum Data<'a> {
+    Downstream(Arc<DownstreamData<'a>>),
+    Upstream(Arc<UpstreamData<'a>>),
 }
 
 #[derive(Debug)]
@@ -132,7 +207,7 @@ pub struct Message {
 #[derive(Debug)]
 pub enum PacketType<'a> {
     Control(ControlType),
-    Data(Arc<Data<'a>>),
+    Data(Data<'a>),
 }
 
 impl<'a> TryFrom<&'a [u8]> for PacketType<'a> {
@@ -141,7 +216,8 @@ impl<'a> TryFrom<&'a [u8]> for PacketType<'a> {
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
         Ok(match value[0] {
             0 => Self::Control(value[1..].try_into()?),
-            1 => Self::Data(Arc::new(value[1..].try_into()?)),
+            1 => Self::Data(Data::Downstream(Arc::new(value[1..].try_into()?))),
+            2 => Self::Data(Data::Upstream(Arc::new(value[1..].try_into()?))),
             _ => bail!("invalid packet type"),
         })
     }
@@ -156,7 +232,8 @@ impl<'a> TryFrom<&'a [Arc<[u8]>]> for PacketType<'a> {
         }
         Ok(match value[0][0] {
             0 => Self::Control(value[1..].try_into()?),
-            1 => Self::Data(Arc::new(value[1..].try_into()?)),
+            1 => Self::Data(Data::Downstream(Arc::new(value[1..].try_into()?))),
+            2 => Self::Data(Data::Upstream(Arc::new(value[1..].try_into()?))),
             _ => bail!("invalid packet type"),
         })
     }
@@ -196,15 +273,20 @@ impl Message {
             {
                 match *ptype {
                     PacketType::Control(..) => [0],
-                    PacketType::Data(..) => [1],
+                    PacketType::Data(Data::Downstream(..)) => [1],
+                    PacketType::Data(Data::Upstream(..)) => [2],
                 }
             }
             .into(),
         ];
 
         let more: Vec<Arc<[u8]>> = match ptype {
-            PacketType::Data(buf) => {
-                let buf: &Data = buf;
+            PacketType::Data(Data::Downstream(buf)) => {
+                let buf: &DownstreamData = buf;
+                buf.into()
+            }
+            PacketType::Data(Data::Upstream(buf)) => {
+                let buf: &UpstreamData = buf;
                 buf.into()
             }
             PacketType::Control(buf) => buf.into(),

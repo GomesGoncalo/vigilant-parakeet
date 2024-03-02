@@ -3,7 +3,7 @@ mod routing;
 use super::node::{Node, ReplyType};
 use crate::{
     dev::Device,
-    messages::{ControlType, Data, Message, PacketType},
+    messages::{ControlType, Data, DownstreamData, Message, PacketType},
     Args,
 };
 use anyhow::{bail, Result};
@@ -38,46 +38,51 @@ impl Obu {
 impl Node for Obu {
     fn handle_msg(&self, msg: Message) -> Result<Option<Vec<ReplyType>>> {
         match msg.next_layer() {
-            Ok(PacketType::Data(buf)) => {
+            Ok(PacketType::Data(Data::Downstream(buf))) => {
                 let routing = self.routing.read().unwrap();
-                if routing
-                    .iter_upstream()
-                    .any(|upstream| upstream == &msg.from())
-                {
-                    let mut reply = routing
+                let Some(upstream) = routing.get_route_to(None) else {
+                    return Ok(None);
+                };
+
+                Ok(Some(vec![ReplyType::Wire(
+                    Message::new(
+                        self.mac.bytes(),
+                        upstream.mac.bytes(),
+                        &PacketType::Data(Data::Downstream(buf)),
+                    )
+                    .into(),
+                )]))
+            }
+            Ok(PacketType::Data(Data::Upstream(buf))) => {
+                let mut reply = vec![];
+                let bcast = buf.destination == [255; 6].into();
+                if buf.destination == self.get_mac() || bcast {
+                    reply.push(ReplyType::Tap(vec![buf.data.into()]));
+                    if !bcast {
+                        return Ok(Some(reply));
+                    }
+                }
+                let routing = self.routing.read().unwrap();
+                reply.extend(
+                    routing
                         .iter_next_hops()
                         .filter_map(|x| routing.get_route_to(Some(*x)))
                         .map(|x| x.mac)
                         .unique()
                         .map(|next_hop| {
+                            tracing::info!(to=%next_hop, "forwarding from obu");
                             ReplyType::Wire(
                                 Message::new(
                                     self.mac.bytes(),
                                     next_hop.bytes(),
-                                    &PacketType::Data(buf.clone()),
+                                    &PacketType::Data(Data::Upstream(buf.clone())),
                                 )
                                 .into(),
                             )
                         })
-                        .collect_vec();
-                    if buf.source != self.mac {
-                        reply.push(ReplyType::Tap(vec![buf.data.into()]));
-                    }
-                    Ok(Some(reply))
-                } else {
-                    let Some(upstream) = routing.get_route_to(None) else {
-                        return Ok(None);
-                    };
-
-                    Ok(Some(vec![ReplyType::Wire(
-                        Message::new(
-                            self.mac.bytes(),
-                            upstream.mac.bytes(),
-                            &PacketType::Data(buf),
-                        )
-                        .into(),
-                    )]))
-                }
+                        .collect_vec(),
+                );
+                Ok(Some(reply))
             }
             Ok(PacketType::Control(ControlType::HeartBeat(_))) => self
                 .routing
@@ -106,7 +111,7 @@ impl Node for Obu {
             .map(|x| x.mac)
     }
 
-    fn tap_traffic(&self, msg: Arc<Data>) -> Result<Option<Vec<ReplyType>>> {
+    fn tap_traffic(&self, msg: Arc<DownstreamData>) -> Result<Option<Vec<ReplyType>>> {
         let Some(upstream) = self.routing.read().unwrap().get_route_to(None) else {
             return Ok(None);
         };
@@ -115,7 +120,7 @@ impl Node for Obu {
             Message::new(
                 self.mac.bytes(),
                 upstream.mac.bytes(),
-                &PacketType::Data(msg),
+                &PacketType::Data(Data::Downstream(msg)),
             )
             .into(),
         )]))

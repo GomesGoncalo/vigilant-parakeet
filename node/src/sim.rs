@@ -233,7 +233,7 @@ fn create_namespaces(
                 "10.0.0.{}",
                 ns_list.len() + 1
             ))?),
-            mtu: 1465,
+            mtu: 1459,
             node_params: node_type.0.clone(),
         };
 
