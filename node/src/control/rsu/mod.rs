@@ -1,6 +1,9 @@
 mod routing;
 
-use super::node::{Node, ReplyType};
+use super::{
+    client_cache::ClientCache,
+    node::{Node, ReplyType},
+};
 use crate::{
     dev::{Device, OutgoingMessage},
     messages::{ControlType, Data, DownstreamData, Message, PacketType, UpstreamData},
@@ -20,6 +23,7 @@ pub struct Rsu {
     args: Args,
     mac: MacAddress,
     routing: Arc<RwLock<Routing>>,
+    cache: ClientCache,
 }
 
 impl Rsu {
@@ -28,6 +32,7 @@ impl Rsu {
             routing: Arc::new(RwLock::new(Routing::new(&args)?)),
             args,
             mac,
+            cache: ClientCache::default(),
         };
 
         tracing::info!(?rsu.args, %rsu.mac, "Setup Rsu");
@@ -39,15 +44,62 @@ impl Node for Rsu {
     fn handle_msg(&self, msg: Message) -> Result<Option<Vec<ReplyType>>> {
         match msg.next_layer() {
             Ok(PacketType::Data(Data::Downstream(buf))) => {
-                let mut messages = vec![ReplyType::Tap(vec![buf.data.into()])];
-                if let Ok(Some(more)) = self.tap_traffic(buf) {
-                    messages.extend(more);
-                };
+                let to: [u8; 6] = buf.data[0..6].try_into()?;
+                let to: MacAddress = to.into();
+                let from: [u8; 6] = buf.data[6..12].try_into()?;
+                let from: MacAddress = from.into();
+                self.cache.store_mac(from, buf.source);
+                let bcast_or_mcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
+                let mut target = self.cache.get(to);
+                let mut messages = Vec::with_capacity(1);
+                if bcast_or_mcast || target.is_some_and(|x| x == self.mac) {
+                    messages.push(ReplyType::Tap(vec![buf.data.into()]));
+                    target = None;
+                }
+
+                let routing = self.routing.read().unwrap();
+                messages.extend(if bcast_or_mcast {
+                    routing
+                        .iter_next_hops()
+                        .filter(|x| x != &&buf.source)
+                        .filter_map(|x| {
+                            let route = routing.get_route_to(Some(*x))?;
+                            Some((*x, route.mac))
+                        })
+                        .map(|(target, next_hop)| {
+                            ReplyType::Wire(
+                                Message::new(
+                                    self.mac.bytes(),
+                                    next_hop.bytes(),
+                                    &PacketType::Data(Data::Upstream(Arc::new(UpstreamData::new(
+                                        buf.source, target, buf.data,
+                                    )))),
+                                )
+                                .into(),
+                            )
+                        })
+                        .collect_vec()
+                } else if let Some(target) = target {
+                    let Some(next_hop) = routing.get_route_to(Some(target)) else {
+                        return Ok(None);
+                    };
+
+                    vec![ReplyType::Wire(
+                        Message::new(
+                            self.mac.bytes(),
+                            next_hop.mac.bytes(),
+                            &PacketType::Data(Data::Upstream(Arc::new(UpstreamData::new(
+                                buf.source, target, buf.data,
+                            )))),
+                        )
+                        .into(),
+                    )]
+                } else {
+                    vec![]
+                });
 
                 Ok(Some(messages))
             }
-            Ok(PacketType::Data(Data::Upstream(_))) => Ok(None),
-            Ok(PacketType::Control(ControlType::HeartBeat(_))) => Ok(None),
             Ok(PacketType::Control(ControlType::HeartBeatReply(hbr))) => {
                 if hbr.source == self.mac {
                     let span =
@@ -61,6 +113,10 @@ impl Node for Rsu {
 
                 Ok(None)
             }
+            Ok(
+                PacketType::Data(Data::Upstream(_))
+                | PacketType::Control(ControlType::HeartBeat(_)),
+            ) => Ok(None),
             Err(e) => {
                 tracing::error!(?e, "error getting message layer");
                 bail!(e)
@@ -103,7 +159,17 @@ impl Node for Rsu {
     }
 
     fn tap_traffic(&self, msg: Arc<DownstreamData>) -> Result<Option<Vec<ReplyType>>> {
-        let msg = Arc::new(UpstreamData::new(msg.source, [255; 6].into(), msg.data));
+        let to: [u8; 6] = msg.data[0..6].try_into()?;
+        let to: MacAddress = to.into();
+        let target = self.cache.get(to);
+        let from: [u8; 6] = msg.data[6..12].try_into()?;
+        let from: MacAddress = from.into();
+        self.cache.store_mac(from, self.mac);
+        let msg = Arc::new(UpstreamData::new(
+            msg.source,
+            target.unwrap_or([255; 6].into()),
+            msg.data,
+        ));
         let routing = self.routing.read().unwrap();
         Ok(Some(
             routing

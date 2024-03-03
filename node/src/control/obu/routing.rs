@@ -441,11 +441,4 @@ impl Routing {
             .flat_map(|(_, (_, _, _, m))| m.keys())
             .unique()
     }
-
-    pub fn iter_upstream(&self) -> impl Iterator<Item = &MacAddress> {
-        self.routes
-            .iter()
-            .flat_map(|(_, i)| i.iter())
-            .map(|(_, (_, up, _, _))| up)
-    }
 }

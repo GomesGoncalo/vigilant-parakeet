@@ -195,11 +195,7 @@ impl Routing {
     }
 
     pub fn iter_next_hops(&self) -> impl Iterator<Item = &MacAddress> {
-        self.sent
-            .iter()
-            .rev()
-            .flat_map(|(_, (_, m))| m.keys())
-            .unique()
+        self.sent.iter().flat_map(|(_, (_, m))| m.keys()).unique()
     }
 }
 

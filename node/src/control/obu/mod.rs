@@ -55,10 +55,11 @@ impl Node for Obu {
             }
             Ok(PacketType::Data(Data::Upstream(buf))) => {
                 let mut reply = vec![];
-                let bcast = buf.destination == [255; 6].into();
-                if buf.destination == self.get_mac() || bcast {
+                let bcast_or_mcast =
+                    buf.destination == [255; 6].into() || buf.destination.bytes()[0] & 0x1 != 0;
+                if buf.destination == self.get_mac() || bcast_or_mcast {
                     reply.push(ReplyType::Tap(vec![buf.data.into()]));
-                    if !bcast {
+                    if !bcast_or_mcast {
                         return Ok(Some(reply));
                     }
                 }
@@ -70,7 +71,6 @@ impl Node for Obu {
                         .map(|x| x.mac)
                         .unique()
                         .map(|next_hop| {
-                            tracing::info!(to=%next_hop, "forwarding from obu");
                             ReplyType::Wire(
                                 Message::new(
                                     self.mac.bytes(),
