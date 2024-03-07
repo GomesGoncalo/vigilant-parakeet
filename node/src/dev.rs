@@ -1,18 +1,141 @@
-use anyhow::{Context, Result};
-use libc::{sockaddr, sockaddr_ll, AF_PACKET};
+use anyhow::{bail, Context, Result};
+use libc::{c_void, sockaddr, sockaddr_ll, AF_PACKET, MAP_SHARED};
 use mac_address::MacAddress;
+use nix::errno::Errno;
 use nix::sys::socket::{self, LinkAddr, SockaddrLike};
 use socket2::{Domain, Protocol, Socket, Type};
+use std::ffi::{c_int, c_uint};
 use std::io::{self, ErrorKind, IoSlice, Read, Write};
 use std::os::fd::IntoRawFd;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use tokio::io::unix::AsyncFd;
 
 const ETH_P_ALL: u16 = 0x0003;
+const PACKET_RX_RING: c_int = 5;
+const PACKET_TX_RING: c_int = 13;
+const PROT_READ: c_int = 0x1;
+const PROT_WRITE: c_int = 0x2;
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+struct TPacketReq {
+    tp_block_size: c_uint,
+    tp_block_nr: c_uint,
+    tp_frame_size: c_uint,
+    tp_frame_nr: c_uint,
+}
+
+#[derive(Debug)]
+struct PacketRing {
+    info: TPacketReq,
+    start: *mut c_void,
+    size: c_uint,
+}
+
+struct MappedMemory {
+    pointer: *mut c_void,
+    size: c_uint,
+    tx_ring: PacketRing,
+    rx_ring: PacketRing,
+}
+
+impl MappedMemory {
+    pub fn new(fd: &impl AsRawFd) -> Result<Self> {
+        let blocksiz: c_uint = 1 << 22;
+        let framesiz: c_uint = 1 << 11;
+        let blocknum: c_uint = 64;
+
+        let mut req = TPacketReq {
+            tp_block_size: blocksiz,
+            tp_frame_size: framesiz,
+            tp_block_nr: blocknum,
+            tp_frame_nr: (blocksiz * blocknum) / framesiz,
+        };
+
+        tracing::info!(?req, "setting up rx ring");
+        let p_req: *mut c_void = &mut req as *mut _ as *mut c_void;
+        let res = unsafe {
+            libc::setsockopt(
+                fd.as_raw_fd(),
+                libc::SOL_PACKET,
+                PACKET_RX_RING,
+                p_req,
+                std::mem::size_of::<TPacketReq>().try_into().unwrap(),
+            )
+        };
+        Errno::result(res)?;
+        tracing::info!("done with {res}");
+        tracing::info!(?req, "setting up tx ring");
+        let res = unsafe {
+            libc::setsockopt(
+                fd.as_raw_fd(),
+                libc::SOL_PACKET,
+                PACKET_TX_RING,
+                p_req,
+                std::mem::size_of::<TPacketReq>().try_into().unwrap(),
+            )
+        };
+        Errno::result(res)?;
+        tracing::info!("done with {res}");
+
+        let size: c_uint = req.tp_block_size * req.tp_block_nr;
+        let size_d: c_uint = size * 2;
+        tracing::info!("mapping {size_d}");
+        let pointer = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                size_d.try_into().unwrap(),
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED,
+                fd.as_raw_fd(),
+                0,
+            )
+        };
+
+        if pointer as isize == -1 {
+            bail!("could not create mapped memory");
+        }
+
+        tracing::info!("mapped @ {:p}", pointer);
+
+        let tx_ring = PacketRing {
+            info: req,
+            start: pointer,
+            size,
+        };
+        let rx_ring = PacketRing {
+            info: req,
+            start: unsafe { pointer.offset(size.try_into().unwrap()) },
+            size,
+        };
+
+        Ok(Self {
+            pointer,
+            size: size_d,
+            tx_ring,
+            rx_ring,
+        })
+    }
+}
+
+impl Drop for MappedMemory {
+    fn drop(&mut self) {
+        let ret = unsafe { libc::munmap(self.pointer, self.size.try_into().unwrap()) };
+        if ret == 0 {
+            tracing::info!("unmapped {:p} size {}", self.pointer, self.size);
+        } else {
+            tracing::info!("failed to unmap {:p} size {}", self.pointer, self.size);
+        }
+    }
+}
+
+unsafe impl Send for MappedMemory {}
+unsafe impl Sync for MappedMemory {}
 
 pub struct Device {
     pub mac_address: MacAddress,
     fd: AsyncFd<DeviceIo>,
+    memory: Option<MappedMemory>,
 }
 
 pub struct DeviceIo(RawFd);
@@ -99,7 +222,7 @@ impl Drop for DeviceIo {
 }
 
 impl Device {
-    pub fn new(interface: &str) -> Result<Self> {
+    pub fn new(interface: &str, memory_mapped: bool) -> Result<Self> {
         let fd = Socket::new(
             Domain::PACKET,
             Type::RAW,
@@ -107,6 +230,12 @@ impl Device {
         )?;
 
         let _ = fd.set_nonblocking(true);
+
+        let memory = if memory_mapped {
+            Some(MappedMemory::new(&fd)?)
+        } else {
+            None
+        };
 
         let mac_address =
             mac_address::mac_address_by_name(interface)?.context("needs mac address")?;
@@ -129,6 +258,7 @@ impl Device {
         Ok(Self {
             mac_address,
             fd: AsyncFd::new(unsafe { DeviceIo::from_raw_fd(raw_fd) })?,
+            memory,
         })
     }
 
