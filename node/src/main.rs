@@ -11,6 +11,5 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-
     node::create(args).await
 }

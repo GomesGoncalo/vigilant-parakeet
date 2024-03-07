@@ -1,9 +1,10 @@
 mod routing;
+mod session;
 
 use super::node::{Node, ReplyType};
 use crate::{
     dev::Device,
-    messages::{ControlType, Data, DownstreamData, Message, PacketType},
+    messages::{ControlType, Data, DownstreamData, Message, PacketType, SessionRequest},
     Args,
 };
 use anyhow::{bail, Result};
@@ -11,9 +12,11 @@ use itertools::Itertools;
 use mac_address::MacAddress;
 use routing::Routing;
 use std::{
+    io::IoSlice,
     sync::{Arc, RwLock},
-    time::Instant,
+    time::{Duration, Instant},
 };
+use tracing::Instrument;
 
 pub struct Obu {
     args: Args,
@@ -55,16 +58,14 @@ impl Node for Obu {
             }
             Ok(PacketType::Data(Data::Upstream(buf))) => {
                 let mut reply = vec![];
-                let bcast_or_mcast =
-                    buf.destination == [255; 6].into() || buf.destination.bytes()[0] & 0x1 != 0;
-                if buf.destination == self.get_mac() || bcast_or_mcast {
+                if buf.destination == self.get_mac() || buf.destination == [255; 6].into() {
                     reply.push(ReplyType::Tap(vec![buf.data.into()]));
-                    if !bcast_or_mcast {
-                        return Ok(Some(reply));
-                    }
+                    return Ok(Some(reply));
                 }
+
+                let target = buf.destination;
                 let routing = self.routing.read().unwrap();
-                reply.extend(
+                reply.extend(if target == [255; 6].into() {
                     routing
                         .iter_next_hops()
                         .filter_map(|x| routing.get_route_to(Some(*x)))
@@ -80,8 +81,21 @@ impl Node for Obu {
                                 .into(),
                             )
                         })
-                        .collect_vec(),
-                );
+                        .collect_vec()
+                } else {
+                    let Some(next_hop) = routing.get_route_to(Some(target)) else {
+                        return Ok(None);
+                    };
+
+                    vec![ReplyType::Wire(
+                        Message::new(
+                            self.mac.bytes(),
+                            next_hop.mac.bytes(),
+                            &PacketType::Data(Data::Upstream(buf)),
+                        )
+                        .into(),
+                    )]
+                });
                 Ok(Some(reply))
             }
             Ok(PacketType::Control(ControlType::HeartBeat(_))) => self
@@ -94,6 +108,41 @@ impl Node for Obu {
                 .write()
                 .unwrap()
                 .handle_heartbeat_reply(&msg, self.mac),
+            Ok(PacketType::Control(ControlType::SessionRequest(session_req))) => {
+                let routing = self.routing.read().unwrap();
+                let Some(upstream) = routing.get_route_to(None) else {
+                    return Ok(None);
+                };
+
+                Ok(Some(vec![ReplyType::Wire(
+                    Message::new(
+                        self.mac.bytes(),
+                        upstream.mac.bytes(),
+                        &PacketType::Control(ControlType::SessionRequest(session_req)),
+                    )
+                    .into(),
+                )]))
+            }
+            Ok(PacketType::Control(ControlType::SessionResponse(session_res))) => {
+                if session_res.source == self.get_mac() {
+                    tracing::info!(?session_res, "Got the response");
+                    return Ok(None);
+                }
+
+                let routing = self.routing.read().unwrap();
+                let Some(next_hop) = routing.get_route_to(Some(session_res.source)) else {
+                    return Ok(None);
+                };
+
+                Ok(Some(vec![ReplyType::Wire(
+                    Message::new(
+                        self.mac.bytes(),
+                        next_hop.mac.bytes(),
+                        &PacketType::Control(ControlType::SessionResponse(session_res)),
+                    )
+                    .into(),
+                )]))
+            }
             Err(e) => {
                 tracing::error!(?e, "error getting message layer");
                 bail!(e)
@@ -101,7 +150,40 @@ impl Node for Obu {
         }
     }
 
-    fn generate(&self, _dev: Arc<Device>) {}
+    fn generate(&self, dev: Arc<Device>) {
+        let mac = self.mac;
+        let routing = self.routing.clone();
+        tokio::spawn(
+            async move {
+                loop {
+                    let msg = if let Some(upstream) = routing.read().unwrap().get_route_to(None) {
+                        Some(Message::new(
+                            mac.bytes(),
+                            upstream.mac.bytes(),
+                            &PacketType::Control(ControlType::SessionRequest(SessionRequest::new(
+                                mac,
+                                Duration::from_secs(1800),
+                            ))),
+                        ))
+                    } else {
+                        None
+                    };
+
+                    if let Some(msg) = msg {
+                        tracing::info!(%mac, "renewing session");
+                        let msg: Vec<Arc<[u8]>> = msg.into();
+                        let vec: Vec<IoSlice> = msg.iter().map(|x| IoSlice::new(x)).collect();
+                        match dev.send_vectored(&vec).await {
+                            Ok(_) => tracing::trace!("sent hello"),
+                            Err(e) => tracing::error!(?e, "error sending hello"),
+                        };
+                    }
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                }
+            }
+            .in_current_span(),
+        );
+    }
 
     fn get_route_to(&self, mac: Option<MacAddress>) -> Option<MacAddress> {
         self.routing

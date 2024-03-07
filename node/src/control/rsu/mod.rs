@@ -1,12 +1,17 @@
 mod routing;
+mod session;
+
+use self::session::Session;
 
 use super::{
     client_cache::ClientCache,
     node::{Node, ReplyType},
 };
 use crate::{
-    dev::{Device, OutgoingMessage},
-    messages::{ControlType, Data, DownstreamData, Message, PacketType, UpstreamData},
+    dev::Device,
+    messages::{
+        ControlType, Data, DownstreamData, Message, PacketType, SessionResponse, UpstreamData,
+    },
     Args,
 };
 use anyhow::{bail, Result};
@@ -14,6 +19,8 @@ use itertools::Itertools;
 use mac_address::MacAddress;
 use routing::Routing;
 use std::{
+    collections::HashMap,
+    io::IoSlice,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -24,6 +31,7 @@ pub struct Rsu {
     mac: MacAddress,
     routing: Arc<RwLock<Routing>>,
     cache: ClientCache,
+    sessions: HashMap<MacAddress, Session>,
 }
 
 impl Rsu {
@@ -33,6 +41,7 @@ impl Rsu {
             args,
             mac,
             cache: ClientCache::default(),
+            sessions: HashMap::default(),
         };
 
         tracing::info!(?rsu.args, %rsu.mac, "Setup Rsu");
@@ -113,8 +122,27 @@ impl Node for Rsu {
 
                 Ok(None)
             }
+            Ok(PacketType::Control(ControlType::SessionRequest(session_req))) => {
+                let routing = self.routing.read().unwrap();
+                let Some(next_hop) = routing.get_route_to(Some(session_req.source)) else {
+                    return Ok(None);
+                };
+
+                Ok(Some(vec![ReplyType::Wire(
+                    Message::new(
+                        self.mac.bytes(),
+                        next_hop.mac.bytes(),
+                        &PacketType::Control(ControlType::SessionResponse(SessionResponse::new(
+                            session_req.source,
+                            session_req.duration,
+                        ))),
+                    )
+                    .into(),
+                )]))
+            }
             Ok(
-                PacketType::Data(Data::Upstream(_))
+                PacketType::Control(ControlType::SessionResponse(_))
+                | PacketType::Data(Data::Upstream(_))
                 | PacketType::Control(ControlType::HeartBeat(_)),
             ) => Ok(None),
             Err(e) => {
@@ -135,10 +163,12 @@ impl Node for Rsu {
                 async move {
                     loop {
                         tokio::time::sleep(Duration::from_millis(hello_periodicity.into())).await;
-                        let message = routing.write().unwrap().send_heartbeat(mac);
-                        tracing::trace!(target: "pkt", ?message, "pkt");
-                        match dev.tx.send(OutgoingMessage::Vectored(message.into())).await {
-                            Ok(()) => tracing::trace!("sent hello"),
+                        let msg = routing.write().unwrap().send_heartbeat(mac);
+                        tracing::trace!(target: "pkt", ?msg, "pkt");
+                        let msg: Vec<Arc<[u8]>> = msg.into();
+                        let vec: Vec<IoSlice> = msg.iter().map(|x| IoSlice::new(x)).collect();
+                        match dev.send_vectored(&vec).await {
+                            Ok(_) => tracing::trace!("sent hello"),
                             Err(e) => tracing::error!(?e, "error sending hello"),
                         };
                     }

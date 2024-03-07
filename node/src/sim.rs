@@ -22,6 +22,23 @@ use tracing::Instrument;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use uninit::uninit_array;
 
+struct NamespaceWrapper(Option<NetNs>);
+
+impl NamespaceWrapper {
+    fn new(ns: NetNs) -> Self {
+        Self(Some(ns))
+    }
+}
+
+impl Drop for NamespaceWrapper {
+    fn drop(&mut self) {
+        let Some(ns) = self.0.take() else {
+            panic!("No value inside?");
+        };
+        let _ = ns.remove();
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct SimArgs {
@@ -209,7 +226,7 @@ impl Channel {
 }
 
 fn create_namespaces(
-    ns_list: &mut Vec<NetNs>,
+    ns_list: &mut Vec<NamespaceWrapper>,
     node: &str,
     node_type: &SimNodeParameters,
 ) -> Result<(Arc<Device>, Arc<Tun>)> {
@@ -269,13 +286,16 @@ fn create_namespaces(
         bail!("error creating namespace");
     };
 
-    ns_list.push(ns);
+    ns_list.push(NamespaceWrapper::new(ns));
     Ok(device)
 }
 
 fn parse_topology(
     config_file: &str,
-) -> Result<(HashMap<String, HashMap<String, Arc<Channel>>>, Vec<NetNs>)> {
+) -> Result<(
+    HashMap<String, HashMap<String, Arc<Channel>>>,
+    Vec<NamespaceWrapper>,
+)> {
     let settings = Config::builder()
         .add_source(config::File::with_name(config_file))
         .build()?;
@@ -355,6 +375,34 @@ async fn generate_channel_reads(
     Ok((buf[..n].into(), node, channel))
 }
 
+async fn run(topology: HashMap<String, HashMap<String, Arc<Channel>>>) -> Result<()> {
+    let mut set = HashSet::new();
+    let mut future_set = topology
+        .values()
+        .flat_map(|x| x.iter())
+        .filter_map(|(node, channel)| {
+            if !set.insert(node) {
+                return None;
+            }
+
+            Some(generate_channel_reads(node.to_string(), channel.clone()))
+        })
+        .collect::<FuturesUnordered<_>>();
+    std::mem::drop(set);
+
+    loop {
+        if let Some(Ok((buf, node, channel))) = future_set.next().await {
+            if let Some(connections) = topology.get(&node) {
+                for channel in connections.values() {
+                    channel.send(&buf).await;
+                }
+            }
+
+            future_set.push(generate_channel_reads(node, channel));
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
@@ -364,7 +412,9 @@ async fn main() -> Result<()> {
 
     let args = SimArgs::parse();
 
-    let (topology, namespaces) = match parse_topology(&args.config_file) {
+    // Namespaces must be kept alive till the end, we do not want to run destructor
+    // Same logic as the span guards
+    let (topology, _namespaces) = match parse_topology(&args.config_file) {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(?e, "Error parsing topology");
@@ -372,43 +422,9 @@ async fn main() -> Result<()> {
         }
     };
 
-    tokio::spawn(async move {
-        let mut set = HashSet::new();
-        let mut future_set = topology
-            .values()
-            .flat_map(|x| x.iter())
-            .filter_map(|(node, channel)| {
-                if !set.insert(node) {
-                    return None;
-                }
-
-                Some(generate_channel_reads(node.to_string(), channel.clone()))
-            })
-            .collect::<FuturesUnordered<_>>();
-        std::mem::drop(set);
-
-        loop {
-            if let Some(Ok((buf, node, channel))) = future_set.next().await {
-                if let Some(connections) = topology.get(&node) {
-                    for channel in connections.values() {
-                        channel.send(&buf).await;
-                    }
-                }
-
-                future_set.push(generate_channel_reads(node, channel));
-            }
-        }
-    });
-
-    match signal::ctrl_c().await {
-        Ok(()) => tracing::info!("terminating, ctrl-c pressed"),
-        Err(e) => tracing::error!(?e, "error terminating"),
-    }
-
-    for ns in namespaces {
-        if let Err(e) = ns.remove() {
-            tracing::error!(?e, "error removing namespace");
-        }
+    tokio::select! {
+        _ = run(topology) => {}
+        _ = signal::ctrl_c() => {}
     }
     Ok(())
 }

@@ -8,7 +8,7 @@ use control::{
     args::Args,
     node::{Node, ReplyType},
 };
-use dev::{Device, OutgoingMessage};
+use dev::Device;
 use futures::{stream::FuturesUnordered, StreamExt};
 use messages::{DownstreamData, Message};
 use std::{io::IoSlice, sync::Arc};
@@ -32,12 +32,14 @@ where
             let tun = tunc;
             let node = nodec;
             let node_device = node_devicec;
-            let mut rx = node_device.get_channel();
             loop {
-                let Some(pkt) = rx.recv().await else {
+                let pkt = uninit_array![u8; 1500];
+                let mut pkt = unsafe { std::mem::transmute::<_, [u8; 1500]>(pkt) };
+                let Ok(size) = node_device.recv(&mut pkt).await else {
                     continue;
                 };
 
+                let pkt: Arc<[u8]> = pkt[..size].into();
                 let Ok(pkt) = Message::try_from(pkt) else {
                     continue;
                 };
@@ -45,7 +47,7 @@ where
                 let reply_vec = match node.handle_msg(pkt) {
                     Ok(reply_vec) => reply_vec,
                     Err(e) => {
-                        tracing::error!(?e, "returned error when handling message");
+                        tracing::error!(?e, "error");
                         continue;
                     }
                 };
@@ -64,7 +66,9 @@ where
                                 let _ = tun.send_vectored(&vec).await;
                             }
                             ReplyType::Wire(reply) => {
-                                let _ = node_device.tx.send(OutgoingMessage::Vectored(reply)).await;
+                                let vec: Vec<IoSlice> =
+                                    reply.iter().map(|x| IoSlice::new(x)).collect();
+                                let _ = node_device.send_vectored(&vec).await;
                             }
                         };
                     });
@@ -97,10 +101,8 @@ where
                         let _ = tun.send_vectored(&vec).await;
                     }
                     ReplyType::Wire(message) => {
-                        let _ = node_device
-                            .tx
-                            .send(OutgoingMessage::Vectored(message))
-                            .await;
+                        let vec: Vec<IoSlice> = message.iter().map(|x| IoSlice::new(x)).collect();
+                        let _ = node_device.send_vectored(&vec).await;
                     }
                 };
             });

@@ -1,5 +1,7 @@
 pub mod heartbeat;
+pub mod session;
 pub use heartbeat::{HeartBeat, HeartBeatReply};
+pub use session::{SessionRequest, SessionResponse};
 
 use anyhow::{bail, Result};
 use mac_address::MacAddress;
@@ -9,6 +11,8 @@ use std::sync::Arc;
 pub enum ControlType {
     HeartBeat(HeartBeat),
     HeartBeatReply(HeartBeatReply),
+    SessionRequest(SessionRequest),
+    SessionResponse(SessionResponse),
 }
 
 impl TryFrom<&[u8]> for ControlType {
@@ -18,6 +22,8 @@ impl TryFrom<&[u8]> for ControlType {
         Ok(match value[0] {
             0 => ControlType::HeartBeat(HeartBeat::try_from(&value[1..])?),
             1 => ControlType::HeartBeatReply(HeartBeatReply::try_from(&value[1..])?),
+            2 => ControlType::SessionRequest(SessionRequest::try_from(&value[1..])?),
+            3 => ControlType::SessionResponse(SessionResponse::try_from(&value[1..])?),
             _ => bail!("not supported"),
         })
     }
@@ -30,6 +36,8 @@ impl TryFrom<Arc<[u8]>> for ControlType {
         Ok(match value[0] {
             0 => ControlType::HeartBeat(HeartBeat::try_from(&value[1..])?),
             1 => ControlType::HeartBeatReply(HeartBeatReply::try_from(&value[1..])?),
+            2 => ControlType::SessionRequest(SessionRequest::try_from(&value[1..])?),
+            3 => ControlType::SessionResponse(SessionResponse::try_from(&value[1..])?),
             _ => bail!("not supported"),
         })
     }
@@ -42,6 +50,8 @@ impl TryFrom<&[Arc<[u8]>]> for ControlType {
         Ok(match value[0][0] {
             0 => ControlType::HeartBeat(HeartBeat::try_from(&value[1..])?),
             1 => ControlType::HeartBeatReply(HeartBeatReply::try_from(&value[1..])?),
+            2 => ControlType::SessionRequest(SessionRequest::try_from(&value[1..])?),
+            3 => ControlType::SessionResponse(SessionResponse::try_from(&value[1..])?),
             _ => bail!("not supported"),
         })
     }
@@ -57,6 +67,16 @@ impl From<&ControlType> for Vec<Arc<[u8]>> {
             }
             ControlType::HeartBeatReply(hb) => {
                 let mut v = vec![vec![1u8].into()];
+                v.extend(Into::<Vec<Arc<[u8]>>>::into(hb));
+                v
+            }
+            ControlType::SessionRequest(hb) => {
+                let mut v = vec![vec![2u8].into()];
+                v.extend(Into::<Vec<Arc<[u8]>>>::into(hb));
+                v
+            }
+            ControlType::SessionResponse(hb) => {
+                let mut v = vec![vec![3u8].into()];
                 v.extend(Into::<Vec<Arc<[u8]>>>::into(hb));
                 v
             }

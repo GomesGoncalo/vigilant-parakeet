@@ -22,6 +22,7 @@ mac_address = "1.1.5"
 indexmap = "2.2.3"
 tokio-timerfd = "0.2.0"
 itertools = "0.12.1"
+async-trait = "0.1.77"
 
 [[bin]]
 name="node"
