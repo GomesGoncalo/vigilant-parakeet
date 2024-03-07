@@ -143,6 +143,6 @@ pub async fn create(args: Args) -> Result<()> {
             .try_build()?
     });
 
-    let dev = Device::new(&args.bind)?;
+    let dev = Device::new(&args.bind, false)?;
     create_with_vdev(args, tun, dev.into()).await
 }

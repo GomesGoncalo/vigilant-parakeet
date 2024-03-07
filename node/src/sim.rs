@@ -277,7 +277,7 @@ fn create_namespaces(
             )
         };
 
-        let dev = Arc::new(Device::new(&args.bind)?);
+        let dev = Arc::new(Device::new(&args.bind, false)?);
         tokio::spawn(node::create_with_vdev(args, virtual_tun, dev.clone()).instrument(span));
         Ok::<_, Error>((dev, tun))
     });
