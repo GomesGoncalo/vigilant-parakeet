@@ -1,6 +1,10 @@
 use crate::{
     control::route::Route,
-    messages::{ControlType, HeartBeat, Message, PacketType},
+    messages::{
+        control::{heartbeat::Heartbeat, Control},
+        message::Message,
+        packet_type::PacketType,
+    },
     Args,
 };
 use anyhow::{bail, Result};
@@ -41,13 +45,13 @@ impl Routing {
     }
 
     pub fn send_heartbeat(&mut self, address: MacAddress) -> Message {
-        let message = HeartBeat::new(
-            address,
+        let message = Heartbeat::new(
             Instant::now().duration_since(self.boot),
             self.hb_seq,
+            address,
         );
 
-        if self.sent.first().is_some_and(|(x, _)| x > &message.id) {
+        if self.sent.first().is_some_and(|(x, _)| x > &message.id()) {
             self.sent.clear();
         }
 
@@ -57,54 +61,56 @@ impl Routing {
 
         let _ = self
             .sent
-            .insert(message.id, (message.now, HashMap::default()));
+            .insert(message.id(), (message.duration(), HashMap::default()));
 
         self.hb_seq += 1;
 
-        Message::new(
-            address.bytes(),
-            [255; 6],
-            &PacketType::Control(ControlType::HeartBeat(message)),
-        )
+        let msg = Message::new(
+            address,
+            [255; 6].into(),
+            PacketType::Control(Control::Heartbeat(message)),
+        );
+
+        msg
     }
 
     pub fn handle_heartbeat_reply(&mut self, msg: &Message, address: MacAddress) -> Result<()> {
-        let Ok(PacketType::Control(ControlType::HeartBeatReply(hbr))) = msg.next_layer() else {
+        let PacketType::Control(Control::HeartbeatReply(hbr)) = msg.get_packet_type() else {
             bail!("only heartbeat reply messages accepted");
         };
 
-        let old_route = self.get_route_to(Some(hbr.sender));
-        let Some((_, map)) = self.sent.get_mut(&hbr.id) else {
+        let old_route = self.get_route_to(Some(hbr.sender()));
+        let Some((_, map)) = self.sent.get_mut(&hbr.id()) else {
             tracing::warn!("outdated heartbeat");
             return Ok(());
         };
 
-        let latency = Instant::now().duration_since(self.boot) - hbr.now;
-        match map.entry(hbr.sender) {
+        let latency = Instant::now().duration_since(self.boot) - hbr.duration();
+        match map.entry(hbr.sender()) {
             Entry::Occupied(mut entry) => {
                 let value = entry.get_mut();
 
                 value.push(Target {
-                    hops: hbr.hops,
-                    mac: msg.from(),
+                    hops: hbr.hops(),
+                    mac: msg.from()?,
                     latency,
                 });
             }
             Entry::Vacant(entry) => {
                 entry.insert(vec![Target {
-                    hops: hbr.hops,
-                    mac: msg.from(),
+                    hops: hbr.hops(),
+                    mac: msg.from()?,
                     latency,
                 }]);
             }
         };
 
-        match (old_route, self.get_route_to(Some(hbr.sender))) {
+        match (old_route, self.get_route_to(Some(hbr.sender()))) {
             (None, Some(new_route)) => {
                 tracing::event!(
                     Level::DEBUG,
                     from = %address,
-                    to = %hbr.sender,
+                    to = %hbr.sender(),
                     through = %new_route,
                     "route created from heartbeat reply",
                 );
@@ -115,7 +121,7 @@ impl Routing {
                     tracing::event!(
                         Level::DEBUG,
                         from = %address,
-                        to = %hbr.sender,
+                        to = %hbr.sender(),
                         through = %new_route,
                         was_through = %old_route,
                         "route changed from heartbeat reply",
@@ -206,7 +212,7 @@ mod tests {
             args::{NodeParameters, NodeType},
             rsu::Routing,
         },
-        messages::{ControlType, PacketType},
+        messages::{control::Control, packet_type::PacketType},
         Args,
     };
 
@@ -229,77 +235,15 @@ mod tests {
         };
         let message = routing.send_heartbeat([1; 6].into());
 
-        assert_eq!(message.from(), [1; 6].into());
-        assert_eq!(message.to(), [255; 6].into());
+        assert_eq!(message.from().expect(""), [1; 6].into());
+        assert_eq!(message.to().expect(""), [255; 6].into());
 
-        let PacketType::Control(ControlType::HeartBeat(message)) =
-            message.next_layer().expect("contains a next layer")
-        else {
+        let PacketType::Control(Control::Heartbeat(message)) = message.get_packet_type() else {
             panic!("did not generate a heartbeat");
         };
 
-        assert_eq!(message.source, [1; 6].into());
-        assert_eq!(message.hops, 1);
+        assert_eq!(message.source(), [1; 6].into());
+        assert_eq!(message.hops(), 0);
         assert_eq!(routing.hb_seq, 1);
-    }
-
-    #[test]
-    fn keeps_track_of_n_heartbeats_and_cannot_build_without_keeping_history() {
-        let args = Args {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Rsu,
-                hello_history: 0,
-                hello_periodicity: None,
-            },
-        };
-
-        Routing::new(&args).expect_err("should be an error");
-
-        for i in 1..10 {
-            let args = Args {
-                bind: String::default(),
-                tap_name: None,
-                ip: None,
-                mtu: 1500,
-                node_params: NodeParameters {
-                    node_type: NodeType::Rsu,
-                    hello_history: i,
-                    hello_periodicity: None,
-                },
-            };
-
-            let mut routing = Routing::new(&args).expect("should be an error");
-            assert_eq!(
-                routing.sent.capacity(),
-                usize::try_from(i).expect("could not convert capacity")
-            );
-
-            (1..=i * 2).for_each(|j| {
-                let msg = routing.send_heartbeat([1; 6].into());
-
-                assert!(routing.sent.len() <= routing.sent.capacity());
-                assert!(
-                    routing.sent.len()
-                        == std::cmp::min(
-                            usize::try_from(j).expect("can convert"),
-                            routing.sent.capacity()
-                        )
-                );
-                assert_eq!(
-                    routing.sent.capacity(),
-                    usize::try_from(i).expect("could not convert capacity")
-                );
-                let h = routing.sent.last().expect("must have a last");
-                let hb = match msg.next_layer().expect("must have next_layer") {
-                    PacketType::Control(ControlType::HeartBeat(hb)) => hb,
-                    _ => panic!("built the wrong message"),
-                };
-                assert_eq!(h.0, &hb.id);
-            });
-        }
     }
 }

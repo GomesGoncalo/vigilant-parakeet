@@ -10,7 +10,7 @@ use control::{
 };
 use dev::Device;
 use futures::{stream::FuturesUnordered, StreamExt};
-use messages::{DownstreamData, Message};
+use messages::{data::ToUpstream, message::Message};
 use std::{io::IoSlice, sync::Arc};
 use tokio_tun::Tun;
 use tracing::Instrument;
@@ -39,8 +39,7 @@ where
                     continue;
                 };
 
-                let pkt: Arc<[u8]> = pkt[..size].into();
-                let Ok(pkt) = Message::try_from(pkt) else {
+                let Ok(pkt) = Message::try_from(&pkt[..size]) else {
                     continue;
                 };
 
@@ -86,8 +85,7 @@ where
         let buf = uninit_array![u8; 1500];
         let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
         let n = tun.recv(&mut buf).await?;
-        let Ok(Some(messages)) =
-            node.tap_traffic(DownstreamData::new(node.get_mac(), &buf[..n]).into())
+        let Ok(Some(messages)) = node.tap_traffic(ToUpstream::new(node.get_mac(), &buf[..n]))
         else {
             continue;
         };
