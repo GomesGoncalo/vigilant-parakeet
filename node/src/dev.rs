@@ -61,7 +61,7 @@ impl Write for DeviceIo {
 
 impl DeviceIo {
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = unsafe { libc::read(self.0, buf.as_ptr() as *mut _, buf.len() as _) };
+        let n = unsafe { libc::read(self.0, buf.as_mut_ptr().cast(), buf.len()) };
         if n < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -69,7 +69,7 @@ impl DeviceIo {
     }
 
     pub fn send(&self, buf: &[u8]) -> io::Result<usize> {
-        let n = unsafe { libc::write(self.0, buf.as_ptr() as *const _, buf.len() as _) };
+        let n = unsafe { libc::write(self.0, buf.as_ptr().cast(), buf.len()) };
         if n < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -81,10 +81,10 @@ impl DeviceIo {
             .iter()
             .map(|buf| libc::iovec {
                 iov_base: buf.as_ptr() as *mut _,
-                iov_len: buf.len() as _,
+                iov_len: buf.len(),
             })
             .collect::<Vec<_>>();
-        let n = unsafe { libc::writev(self.0, iov.as_ptr() as *const _, iov.len() as _) };
+        let n = unsafe { libc::writev(self.0, iov.as_ptr().cast(), iov.len().try_into().unwrap()) };
         if n < 0 {
             return Err(io::Error::last_os_error());
         }
