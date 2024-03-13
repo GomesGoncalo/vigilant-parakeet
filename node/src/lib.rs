@@ -4,119 +4,25 @@ mod messages;
 
 use crate::control::{args::NodeType, obu::Obu, rsu::Rsu};
 use anyhow::{Context, Result};
-use control::{
-    args::Args,
-    node::{Node, ReplyType},
-};
+use control::{args::Args, node::ReplyType};
 use dev::Device;
-use futures::{stream::FuturesUnordered, StreamExt};
-use messages::{data::ToUpstream, message::Message};
-use std::{io::IoSlice, sync::Arc};
+use std::sync::Arc;
 use tokio_tun::Tun;
-use tracing::Instrument;
-use uninit::uninit_array;
-
-async fn create_with_vdev_with_node<N>(
-    tun: Arc<Tun>,
-    node_device: Arc<Device>,
-    node: Arc<N>,
-) -> Result<()>
-where
-    N: Node + Sync + Send + 'static,
-{
-    let node_devicec = node_device.clone();
-    let tunc = tun.clone();
-    let nodec = node.clone();
-    tokio::task::spawn(
-        async move {
-            let tun = tunc;
-            let node = nodec;
-            let node_device = node_devicec;
-            loop {
-                let pkt = uninit_array![u8; 1500];
-                let mut pkt = unsafe { std::mem::transmute::<_, [u8; 1500]>(pkt) };
-                let Ok(size) = node_device.recv(&mut pkt).await else {
-                    continue;
-                };
-
-                let Ok(pkt) = Message::try_from(&pkt[..size]) else {
-                    continue;
-                };
-
-                let reply_vec = match node.handle_msg(pkt) {
-                    Ok(reply_vec) => reply_vec,
-                    Err(e) => {
-                        tracing::error!(?e, "error");
-                        continue;
-                    }
-                };
-
-                let Some(reply_vec) = reply_vec else {
-                    continue;
-                };
-
-                let mut list = FuturesUnordered::new();
-                for reply in reply_vec {
-                    list.push(async {
-                        match reply {
-                            ReplyType::Tap(buf) => {
-                                let vec: Vec<IoSlice> =
-                                    buf.iter().map(|x| IoSlice::new(x)).collect();
-                                let _ = tun.send_vectored(&vec).await;
-                            }
-                            ReplyType::Wire(reply) => {
-                                let vec: Vec<IoSlice> =
-                                    reply.iter().map(|x| IoSlice::new(x)).collect();
-                                let _ = node_device.send_vectored(&vec).await;
-                            }
-                        };
-                    });
-                }
-
-                while let Some(()) = list.next().await {}
-            }
-        }
-        .in_current_span(),
-    );
-
-    node.generate(node_device.clone());
-
-    loop {
-        let buf = uninit_array![u8; 1500];
-        let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
-        let n = tun.recv(&mut buf).await?;
-        let Ok(Some(messages)) = node.tap_traffic(ToUpstream::new(node.get_mac(), &buf[..n]))
-        else {
-            continue;
-        };
-
-        let mut list = FuturesUnordered::new();
-        for message in messages {
-            list.push(async {
-                match message {
-                    ReplyType::Tap(buf) => {
-                        let vec: Vec<IoSlice> = buf.iter().map(|x| IoSlice::new(x)).collect();
-                        let _ = tun.send_vectored(&vec).await;
-                    }
-                    ReplyType::Wire(message) => {
-                        let vec: Vec<IoSlice> = message.iter().map(|x| IoSlice::new(x)).collect();
-                        let _ = node_device.send_vectored(&vec).await;
-                    }
-                };
-            });
-        }
-        while let Some(()) = list.next().await {}
-    }
-}
 
 pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node_device: Arc<Device>) -> Result<()> {
     let mac_address = node_device.mac_address;
     match args.node_params.node_type {
         NodeType::Rsu => {
-            create_with_vdev_with_node(tun, node_device, Rsu::new(args, mac_address)?.into()).await
+            let rsu = Rsu::new(args, mac_address, tun, node_device)?;
+            loop {
+                rsu.process().await;
+            }
         }
         NodeType::Obu => {
-            create_with_vdev_with_node(tun, node_device, Obu::new(args, mac_address)?.into()).await
+            let obu = Obu::new(args, mac_address, tun, node_device)?;
+            loop {
+                obu.process().await;
+            }
         }
     }
 }

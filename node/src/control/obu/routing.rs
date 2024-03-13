@@ -9,7 +9,6 @@ use crate::{
 };
 use anyhow::{bail, Result};
 use indexmap::IndexMap;
-use itertools::Itertools;
 use mac_address::MacAddress;
 use std::{
     collections::{hash_map::Entry, HashMap},
@@ -436,13 +435,5 @@ impl Routing {
                 mac: *mac,
                 latency: Some(Duration::from_micros(*latency as u64)),
             })
-    }
-
-    pub fn iter_next_hops(&self) -> impl Iterator<Item = &MacAddress> {
-        self.routes
-            .iter()
-            .flat_map(|(_, im)| im.iter())
-            .flat_map(|(_, (_, _, _, m))| m.keys())
-            .unique()
     }
 }
