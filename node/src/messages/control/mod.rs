@@ -1,4 +1,5 @@
 pub mod heartbeat;
+
 use anyhow::bail;
 use heartbeat::{Heartbeat, HeartbeatReply};
 

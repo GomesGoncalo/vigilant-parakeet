@@ -14,7 +14,7 @@ use std::{
     net::Ipv4Addr,
     str::FromStr,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::{signal, sync::mpsc::Sender};
 use tokio_tun::Tun;
@@ -45,6 +45,9 @@ struct SimArgs {
     /// Topology configuration
     #[arg(short, long)]
     pub config_file: String,
+
+    #[arg(short, long, default_value_t = false)]
+    pub pretty: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -158,21 +161,16 @@ impl Channel {
             return;
         }
 
-        let span = tracing::trace_span!(target: "pkt", "send", ?buf);
-        let span1 = tracing::trace_span!("targets", self.from, self.to);
         async move {
             match self.should_send(buf) {
                 Ok(buf) => {
                     let _ = self.tun.send_all(buf).await;
-                    tracing::trace!(self.from, self.to, "sent a packet");
                 }
                 Err(e) => {
                     tracing::trace!(self.from, self.to, ?e, "not sent");
                 }
             }
         }
-        .instrument(span)
-        .instrument(span1)
         .await;
     }
 
@@ -195,32 +193,21 @@ impl Channel {
 
     pub async fn recv(&self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
         let n = self.tun.recv(buf).await?;
-        let span = tracing::trace_span!(target: "pkt", "recv", buf = ?buf[..n]);
-        let span1 = tracing::trace_span!("targets", from = self.to);
-        let _guard = span.enter();
-        let _guard1 = span1.enter();
-        tracing::trace!("recv a packet");
         Ok(n)
     }
 
     async fn priv_send(&self, buf: Arc<[u8]>) {
-        let span = tracing::trace_span!(target: "pkt", "send", ?buf);
-        let span1 = tracing::trace_span!("targets", self.from, self.to);
-        let now = Instant::now();
         async move {
             match self.should_send(&buf) {
                 Ok(buf) => {
                     let _ = tokio_timerfd::sleep(self.parameters.latency).await;
                     let _ = self.tun.send_all(buf).await;
-                    tracing::trace!(delay = ?now.elapsed(), "sent a packet");
                 }
                 Err(e) => {
                     tracing::trace!(?e, "not sent");
                 }
             }
         }
-        .instrument(span)
-        .instrument(span1)
         .await;
     }
 }
@@ -231,7 +218,8 @@ fn create_namespaces(
     node_type: &SimNodeParameters,
 ) -> Result<(Arc<Device>, Arc<Tun>)> {
     let node_name = format!("sim_ns_{node}");
-    let span = tracing::debug_span!("sim node", name = node_name);
+    let span = tracing::debug_span!("sim node", node = node_name);
+    let _guard = span.enter();
     let ns = NetNs::new(node_name.clone())?;
     let ns_result = ns.run(|_| {
         let tun = Arc::new(
@@ -278,7 +266,7 @@ fn create_namespaces(
         };
 
         let dev = Arc::new(Device::new(&args.bind)?);
-        tokio::spawn(node::create_with_vdev(args, virtual_tun, dev.clone()).instrument(span));
+        tokio::spawn(node::create_with_vdev(args, virtual_tun, dev.clone()).in_current_span());
         Ok::<_, Error>((dev, tun))
     });
 
@@ -405,12 +393,19 @@ async fn run(topology: HashMap<String, HashMap<String, Arc<Channel>>>) -> Result
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(fmt::layer().with_thread_ids(true).compact())
-        .with(EnvFilter::from_default_env())
-        .init();
-
     let args = SimArgs::parse();
+
+    if args.pretty {
+        tracing_subscriber::registry()
+            .with(fmt::layer().with_thread_ids(true).pretty())
+            .with(EnvFilter::from_default_env())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(fmt::layer().with_thread_ids(true))
+            .with(EnvFilter::from_default_env())
+            .init();
+    }
 
     // Namespaces must be kept alive till the end, we do not want to run destructor
     // Same logic as the span guards

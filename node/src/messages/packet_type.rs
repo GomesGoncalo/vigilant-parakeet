@@ -1,6 +1,5 @@
-use anyhow::bail;
-
 use super::{control::Control, data::Data};
+use anyhow::bail;
 
 #[derive(Debug)]
 pub enum PacketType<'a> {

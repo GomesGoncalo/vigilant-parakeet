@@ -2,7 +2,7 @@ mod routing;
 
 use super::{client_cache::ClientCache, node::ReplyType};
 use crate::{
-    control::node::{tap_traffic, wire_traffic},
+    control::node,
     dev::Device,
     messages::{
         control::Control,
@@ -12,17 +12,16 @@ use crate::{
     },
     Args,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use itertools::Itertools;
 use mac_address::MacAddress;
 use routing::Routing;
 use std::{
     io::IoSlice,
     sync::{Arc, RwLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio_tun::Tun;
-use tracing::Instrument;
 
 pub struct Rsu {
     args: Args,
@@ -31,6 +30,7 @@ pub struct Rsu {
     tun: Arc<Tun>,
     device: Arc<Device>,
     cache: ClientCache,
+    next_hello: RwLock<Option<Instant>>,
 }
 
 impl Rsu {
@@ -42,58 +42,107 @@ impl Rsu {
             tun,
             device,
             cache: ClientCache::default(),
+            next_hello: None.into(),
         };
 
-        rsu.generate();
-        tracing::info!(?rsu.args, %rsu.mac, "Setup Rsu");
+        tracing::info!(?rsu.args, "Setup Rsu");
         Ok(rsu)
     }
 
-    pub async fn process(&self) {
-        tokio::select! {
-            _ = wire_traffic(&self.tun, &self.device, |pkt, size| {
-                async move {
-                    let Ok(msg) = Message::try_from(&pkt[..size]) else {
-                        return Ok(None);
-                    };
-
-                    self.handle_msg(&msg).await
-                }
-            }) => {},
-            _ = tap_traffic(&self.tun, &self.device, |x, size| {
-                async move {
-                    let data: &[u8] = &x[..size];
-                    let to: [u8; 6] = data[0..6].try_into()?;
-                    let to: MacAddress = to.into();
-                    let target = self.cache.get(to);
-                    let from: [u8; 6] = data[6..12].try_into()?;
-                    let from: MacAddress = from.into();
-                    let source_mac = self.mac.bytes();
-                    let msg = ToDownstream::new(&source_mac, target.unwrap_or([255; 6].into()), data);
-                    let source_mac: [u8; 6] = msg.source().get(0..6).unwrap().try_into()?;
-                    let source_mac: MacAddress = source_mac.into();
-                    self.cache.store_mac(from, self.mac);
-                    let routing = self.routing.read().unwrap();
-                    Ok(Some(
-                        routing
-                            .iter_next_hops()
-                            .filter(|x| x != &&source_mac)
-                            .filter_map(|x| routing.get_route_to(Some(*x)))
-                            .map(|x| x.mac)
-                            .unique()
-                            .map(|next_hop| {
+    pub async fn process(&self) -> Result<()> {
+        if let Some(p) = self.args.node_params.hello_periodicity {
+            tokio::select! {
+                _ = self.generate_hello() => {
+                    let mut next_hello = self.next_hello.write().unwrap();
+                    *next_hello = Some(Instant::now() + Duration::from_millis(p.into()));
+                },
+                m = node::tap_traffic(&self.tun, |pkt, size| {
+                    async move {
+                        let data: &[u8] = &pkt[..size];
+                        let to: [u8; 6] = data[0..6].try_into()?;
+                        let to: MacAddress = to.into();
+                        let target = self.cache.get(to);
+                        let from: [u8; 6] = data[6..12].try_into()?;
+                        let from: MacAddress = from.into();
+                        let source_mac = self.mac.bytes();
+                        self.cache.store_mac(from, self.mac);
+                        match target {
+                            Some(target) => {
+                                let routing = self.routing.read().unwrap();
+                                let Some(hop) = routing.get_route_to(Some(target)) else {
+                                    bail!("no route");
+                                };
                                 let msg = Message::new(
                                     self.mac,
-                                    next_hop,
-                                    PacketType::Data(Data::Downstream(msg.clone())),
+                                    hop.mac,
+                                    PacketType::Data(Data::Downstream(ToDownstream::new(
+                                        &source_mac,
+                                        target,
+                                        data,
+                                    ))),
                                 );
-                                ReplyType::Wire((&msg).into())
-                            })
-                            .collect_vec(),
-                    ))
+
+                                let outgoing = vec![ReplyType::Wire((&msg).into())];
+                                tracing::trace!(?outgoing, "outgoing from tap");
+                                Ok(Some(outgoing))
+                            }
+                            None => {
+                                let routing = self.routing.read().unwrap();
+                                let outgoing = routing
+                                    .iter_next_hops()
+                                    .filter(|x| x != &&self.mac)
+                                    .filter_map(|x| {
+                                        let Some(dest) = routing.get_route_to(Some(*x)) else {
+                                            return None;
+                                        };
+                                        Some((x, dest))
+                                    })
+                                    .map(|(x, y)| (x, y.mac))
+                                    .unique_by(|(x, _)| *x)
+                                    .map(|(x, next_hop)| {
+                                        let msg = Message::new(
+                                            self.mac,
+                                            next_hop,
+                                            PacketType::Data(Data::Downstream(ToDownstream::new(
+                                                &source_mac,
+                                                *x,
+                                                data,
+                                            ))),
+                                        );
+                                        ReplyType::Wire((&msg).into())
+                                    })
+                                    .collect_vec();
+
+                                tracing::trace!(?outgoing, "outgoing from tap");
+                                Ok(Some(outgoing))
+                            }
+                        }
+                    }
+                }) => {
+                    if let Ok(Some(messages)) = m {
+                        let _ = node::handle_messages(messages, &self.tun, &self.device).await;
+                    }
+                },
+                m = node::wire_traffic(&self.device, |pkt, size| {
+                    async move {
+                        let Ok(msg) = Message::try_from(&pkt[..size]) else {
+                            return Ok(None);
+                        };
+
+                        let response = self.handle_msg(&msg).await;
+                        tracing::trace!(incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
+                        response
+                    }
+                }) => {
+                    if let Ok(Some(messages)) = m {
+                        let _ = node::handle_messages(messages, &self.tun, &self.device).await;
+                    }
                 }
-            }) => {}
-        };
+            };
+            Ok(())
+        } else {
+            bail!("we cannot process anything without heartbeats")
+        }
     }
 
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
@@ -175,13 +224,10 @@ impl Rsu {
             }
             PacketType::Control(Control::HeartbeatReply(hbr)) => {
                 if hbr.source() == self.mac {
-                    let span =
-                        tracing::debug_span!(target: "hello", "hello task", rsu.mac=%self.mac);
-                    let _g = span.enter();
                     self.routing
                         .write()
                         .unwrap()
-                        .handle_heartbeat_reply(&msg, self.mac)?;
+                        .handle_heartbeat_reply(msg, self.mac)?;
                 }
 
                 Ok(None)
@@ -192,35 +238,35 @@ impl Rsu {
         }
     }
 
-    fn generate(&self) {
-        let device = self.device.clone();
-        let mac = self.mac;
-        let routing = self.routing.clone();
-        let hello_periodicity = self.args.node_params.hello_periodicity;
-        let span = tracing::error_span!(target: "hello", "hello task", rsu.mac=%mac);
-        let _g = span.enter();
-        if let Some(hello_periodicity) = hello_periodicity {
-            tokio::spawn(
-                async move {
-                    loop {
-                        tokio::time::sleep(Duration::from_millis(hello_periodicity.into())).await;
-                        let msg: Vec<Vec<u8>> = {
-                            let mut routing = routing.write().unwrap();
-                            let msg = routing.send_heartbeat(mac);
-                            tracing::trace!(target: "pkt", ?msg, "pkt");
-                            (&msg).into()
-                        };
-                        let vec: Vec<IoSlice> = msg.iter().map(|x| IoSlice::new(x)).collect();
-                        match device.send_vectored(&vec).await {
-                            Ok(_) => tracing::trace!("sent hello"),
-                            Err(e) => tracing::error!(?e, "error sending hello"),
-                        };
-                    }
+    async fn generate_hello(&self) {
+        let duration = match *self.next_hello.read().unwrap() {
+            None => None,
+            Some(instant) => {
+                let sleeping = instant.duration_since(Instant::now());
+                if sleeping.is_zero() {
+                    None
+                } else {
+                    Some(sleeping)
                 }
-                .in_current_span(),
-            );
-        } else {
-            tracing::error!(?self.args, "Rsu configured without hello_periodicity parameter");
+            }
+        };
+
+        if let Some(duration) = duration {
+            tracing::trace!(?duration, "sleeping for");
+            let _ = tokio_timerfd::sleep(duration).await;
         }
+
+        let msg: Vec<Vec<u8>> = {
+            let mut routing = self.routing.write().unwrap();
+            let msg = routing.send_heartbeat(self.mac);
+            tracing::trace!(?msg, "generated hello");
+            (&msg).into()
+        };
+        let vec: Vec<IoSlice> = msg.iter().map(|x| IoSlice::new(x)).collect();
+        let _ = self
+            .device
+            .send_vectored(&vec)
+            .await
+            .inspect_err(|e| tracing::error!(?e, "error sending hello"));
     }
 }

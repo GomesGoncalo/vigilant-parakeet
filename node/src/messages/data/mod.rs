@@ -1,7 +1,6 @@
-use std::borrow::Cow;
-
 use anyhow::bail;
 use mac_address::MacAddress;
+use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
 pub struct ToUpstream<'a> {

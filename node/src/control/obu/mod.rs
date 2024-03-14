@@ -1,8 +1,9 @@
 mod routing;
+mod session;
 
 use super::node::ReplyType;
 use crate::{
-    control::node::{tap_traffic, wire_traffic},
+    control::{node, obu::session::Session},
     dev::Device,
     messages::{
         control::Control,
@@ -27,6 +28,7 @@ pub struct Obu {
     mac: MacAddress,
     tun: Arc<Tun>,
     device: Arc<Device>,
+    session: Session,
 }
 
 impl Obu {
@@ -36,46 +38,59 @@ impl Obu {
             routing: Arc::new(RwLock::new(Routing::new(&args, &boot)?)),
             args,
             mac,
-            tun,
+            tun: tun.clone(),
             device,
+            session: Session::new(tun),
         };
 
-        tracing::info!(?obu.args, %obu.mac, "Setup Obu");
+        tracing::info!(?obu.args, "Setup Obu");
         Ok(obu)
     }
 
     pub async fn process(&self) {
         tokio::select! {
-            _ = wire_traffic(&self.tun, &self.device, |pkt, size| {
+            m = node::wire_traffic(&self.device, |pkt, size| {
                 async move {
                     let Ok(msg) = Message::try_from(&pkt[..size]) else {
                         return Ok(None);
                     };
 
-                    self.handle_msg(msg).await
+                    let response = self.handle_msg(&msg).await;
+                    tracing::trace!(incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
+                    response
                 }
-            }) => {},
-            _ = tap_traffic(&self.tun, &self.device, |x, size| {
+            }) => {
+                if let Ok(Some(messages)) = m {
+                    let _ = node::handle_messages(messages, &self.tun, &self.device).await;
+                }
+            },
+            m = self.session.process(|x, size| {
                 async move {
                     let y: &[u8] = &x[..size];
                     let Some(upstream) = self.routing.read().unwrap().get_route_to(None) else {
                         return Ok(None);
                     };
 
-                    Ok(Some(vec![ReplyType::Wire(
+                    let outgoing = vec![ReplyType::Wire(
                         (&Message::new(
                             self.mac,
                             upstream.mac,
                             PacketType::Data(Data::Upstream(ToUpstream::new(self.mac, y))),
                         ))
                             .into(),
-                    )]))
+                    )];
+                    tracing::trace!(?outgoing, "outgoing from tap");
+                    Ok(Some(outgoing))
                 }
-            }) => {}
+            }) => {
+                if let Ok(Some(messages)) = m {
+                    let _ = node::handle_messages(messages, &self.tun, &self.device).await;
+                }
+            },
         };
     }
 
-    async fn handle_msg(&self, msg: Message<'_>) -> Result<Option<Vec<ReplyType>>> {
+    async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
         match msg.get_packet_type() {
             PacketType::Data(Data::Upstream(buf)) => {
                 let routing = self.routing.read().unwrap();

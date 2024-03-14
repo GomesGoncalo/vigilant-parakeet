@@ -1,11 +1,12 @@
 use std::{io::IoSlice, sync::Arc};
 
-use anyhow::Result;
-use futures::{stream::FuturesUnordered, Future, StreamExt};
+use anyhow::{bail, Result};
+use futures::{future::join_all, Future};
+use itertools::Itertools;
 use tokio_tun::Tun;
 use uninit::uninit_array;
 
-use crate::dev::Device;
+use crate::{dev::Device, messages::message::Message};
 
 #[derive(Debug)]
 pub enum ReplyType {
@@ -13,79 +14,90 @@ pub enum ReplyType {
     Tap(Vec<Vec<u8>>),
 }
 
-pub async fn wire_traffic<Fut>(
+// This code is only used to trace the messages and so it is mostly unused
+// We want to suppress the warnings
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum DebugReplyType {
+    Tap(Vec<Vec<u8>>),
+    Wire(String),
+}
+
+pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<DebugReplyType>>> {
+    match response {
+        Ok(Some(response)) => Ok(Some(
+            response
+                .iter()
+                .filter_map(|x| match x {
+                    ReplyType::Tap(x) => Some(DebugReplyType::Tap(x.to_vec())),
+                    ReplyType::Wire(x) => {
+                        let x = x.iter().flat_map(|x| x.iter()).cloned().collect_vec();
+                        let Ok(message) = Message::try_from(&x[..]) else {
+                            return None;
+                        };
+                        Some(DebugReplyType::Wire(format!("{:?}", message)))
+                    }
+                })
+                .collect_vec(),
+        )),
+        Ok(None) => Ok(None),
+        Err(e) => bail!("{:?}", e),
+    }
+}
+
+pub async fn handle_messages(
+    messages: Vec<ReplyType>,
     tun: &Arc<Tun>,
     dev: &Arc<Device>,
-    callable: impl FnOnce([u8; 1500], usize) -> Fut,
-) -> Result<()>
-where
-    Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,
-{
-    let pkt = uninit_array![u8; 1500];
-    let mut pkt = unsafe { std::mem::transmute::<_, [u8; 1500]>(pkt) };
-    let Ok(size) = dev.recv(&mut pkt).await else {
-        return Ok(());
-    };
-
-    let messages = match callable(pkt, size).await {
-        Ok(Some(messages)) => messages,
-        Ok(None) => return Ok(()),
-        Err(e) => {
-            tracing::error!(?e, "error");
-            return Ok(());
-        }
-    };
-
-    let mut list = FuturesUnordered::new();
-    for reply in messages {
-        list.push(async {
+) -> Result<()> {
+    let future_vec = messages
+        .iter()
+        .map(|reply| async move {
             match reply {
                 ReplyType::Tap(buf) => {
                     let vec: Vec<IoSlice> = buf.iter().map(|x| IoSlice::new(x)).collect();
-                    let _ = tun.send_vectored(&vec).await;
+                    let _ = tun
+                        .send_vectored(&vec)
+                        .await
+                        .inspect_err(|e| tracing::error!(?e, "error sending to tap"));
                 }
                 ReplyType::Wire(reply) => {
                     let vec: Vec<IoSlice> = reply.iter().map(|x| IoSlice::new(x)).collect();
-                    let _ = dev.send_vectored(&vec).await;
+                    let _ = dev
+                        .send_vectored(&vec)
+                        .await
+                        .inspect_err(|e| tracing::error!(?e, "error sending to dev"));
                 }
             };
-        });
-    }
+        })
+        .collect_vec();
 
-    while let Some(()) = list.next().await {}
+    join_all(future_vec).await;
     Ok(())
 }
 
-pub async fn tap_traffic<Fut>(
-    tun: &Arc<Tun>,
+pub async fn wire_traffic<Fut>(
     dev: &Arc<Device>,
     callable: impl FnOnce([u8; 1500], usize) -> Fut,
-) -> Result<()>
+) -> Result<Option<Vec<ReplyType>>>
 where
     Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,
 {
     let buf = uninit_array![u8; 1500];
     let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
-    let n = tun.recv(&mut buf).await?;
-    let Ok(Some(messages)) = callable(buf, n).await else {
-        return Ok(());
-    };
+    let n = dev.recv(&mut buf).await?;
+    callable(buf, n).await
+}
 
-    let mut list = FuturesUnordered::new();
-    for message in messages {
-        list.push(async {
-            match message {
-                ReplyType::Tap(buf) => {
-                    let vec: Vec<IoSlice> = buf.iter().map(|x| IoSlice::new(x)).collect();
-                    let _ = tun.send_vectored(&vec).await;
-                }
-                ReplyType::Wire(message) => {
-                    let vec: Vec<IoSlice> = message.iter().map(|x| IoSlice::new(x)).collect();
-                    let _ = dev.send_vectored(&vec).await;
-                }
-            };
-        });
-    }
-    while let Some(()) = list.next().await {}
-    Ok(())
+pub async fn tap_traffic<Fut>(
+    dev: &Arc<Tun>,
+    callable: impl FnOnce([u8; 1500], usize) -> Fut,
+) -> Result<Option<Vec<ReplyType>>>
+where
+    Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,
+{
+    let buf = uninit_array![u8; 1500];
+    let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
+    let n = dev.recv(&mut buf).await?;
+    callable(buf, n).await
 }

@@ -1,7 +1,6 @@
-use std::{borrow::Cow, time::Duration};
-
 use anyhow::bail;
 use mac_address::MacAddress;
+use std::{borrow::Cow, time::Duration};
 
 #[derive(Debug, Clone)]
 pub struct Heartbeat<'a> {

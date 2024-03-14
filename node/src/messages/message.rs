@@ -1,9 +1,7 @@
-use std::borrow::Cow;
-
+use super::packet_type::PacketType;
 use anyhow::{bail, Result};
 use mac_address::MacAddress;
-
-use super::packet_type::PacketType;
+use std::borrow::Cow;
 
 #[derive(Debug)]
 pub struct Message<'a> {

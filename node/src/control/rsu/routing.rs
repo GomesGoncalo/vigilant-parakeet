@@ -212,7 +212,7 @@ mod tests {
             args::{NodeParameters, NodeType},
             rsu::Routing,
         },
-        messages::{control::Control, packet_type::PacketType},
+        messages::{control::Control, message::Message, packet_type::PacketType},
         Args,
     };
 
@@ -238,12 +238,25 @@ mod tests {
         assert_eq!(message.from().expect(""), [1; 6].into());
         assert_eq!(message.to().expect(""), [255; 6].into());
 
-        let PacketType::Control(Control::Heartbeat(message)) = message.get_packet_type() else {
+        let PacketType::Control(Control::Heartbeat(hb)) = message.get_packet_type() else {
             panic!("did not generate a heartbeat");
         };
 
-        assert_eq!(message.source(), [1; 6].into());
-        assert_eq!(message.hops(), 0);
-        assert_eq!(routing.hb_seq, 1);
+        assert_eq!(hb.source(), [1; 6].into());
+        assert_eq!(hb.hops(), 0);
+        assert_eq!(hb.id(), 0);
+
+        let message: Vec<Vec<u8>> = (&message).into();
+        let message: Vec<u8> = message.iter().flat_map(|x| x.iter()).cloned().collect();
+        let message: Message = dbg!(&message[..]).try_into().expect("same message");
+        assert_eq!(message.from().expect(""), [1; 6].into());
+        assert_eq!(message.to().expect(""), [255; 6].into());
+        let PacketType::Control(Control::Heartbeat(hb)) = message.get_packet_type() else {
+            panic!("did not generate a heartbeat");
+        };
+
+        assert_eq!(hb.source(), [1; 6].into());
+        assert_eq!(hb.hops(), 1);
+        assert_eq!(hb.id(), 0);
     }
 }
