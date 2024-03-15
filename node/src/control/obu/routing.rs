@@ -83,10 +83,13 @@ impl Routing {
             entry.swap_remove_index(0);
         }
 
-        if let Some((_, _, hops, _, _)) = entry.get(&message.id()) {
-            if hops < &message.hops() {
-                return Ok(None);
-            }
+        if let Some((_, _, _hops, _, _)) = entry.get(&message.id()) {
+            return Ok(None);
+            // So this makes us prioritize hops instead of latency
+            // TODO: Is that preferable
+            // if _hops < &message.hops() {
+            //     return Ok(None);
+            // }
         }
 
         let duration = Instant::now().duration_since(self.boot);
@@ -193,7 +196,7 @@ impl Routing {
                     mac,
                     pkt.from()?,
                     PacketType::Control(Control::HeartbeatReply(HeartbeatReply::from_sender(
-                        message, mac, duration,
+                        message, mac,
                     ))),
                 ))
                     .into(),
@@ -323,41 +326,6 @@ impl Routing {
                 }
             }
         }
-
-        reply
-    }
-
-    pub fn handle_heartbeat_ack(
-        &mut self,
-        pkt: &Message,
-        mac: MacAddress,
-    ) -> Result<Option<Vec<ReplyType>>> {
-        let PacketType::Control(Control::HeartbeatAck(message)) = pkt.get_packet_type() else {
-            bail!("this is supposed to be a HeartbeatAck");
-        };
-
-        let Some(source_entries) = self.routes.get_mut(&message.source()) else {
-            bail!("we don't know how to reach that source");
-        };
-
-        let Some((seen_at, _, _, map, _)) = source_entries.get_mut(&message.id()) else {
-            bail!("no recollection of the next hop for this route");
-        };
-
-        let latency = Instant::now().duration_since(self.boot) - *seen_at;
-        map.insert(latency, pkt.from()?);
-
-        let Some(old_route) = self.get_route_to(Some(message.sender())) else {
-            bail!("don't know what to do with this")
-        };
-        let reply = Ok(Some(vec![ReplyType::Wire(
-            (&Message::new(
-                mac,
-                old_route.mac.clone(),
-                PacketType::Control(Control::HeartbeatAck(message.clone())),
-            ))
-                .into(),
-        )]));
 
         reply
     }

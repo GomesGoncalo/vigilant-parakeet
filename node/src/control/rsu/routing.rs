@@ -1,10 +1,7 @@
 use crate::{
     control::{node::ReplyType, route::Route},
     messages::{
-        control::{
-            heartbeat::{Heartbeat, HeartbeatAck},
-            Control,
-        },
+        control::{heartbeat::Heartbeat, Control},
         message::Message,
         packet_type::PacketType,
     },
@@ -143,14 +140,7 @@ impl Routing {
             }
         }
 
-        Ok(Some(vec![ReplyType::Wire(
-            (&Message::new(
-                self.mac,
-                new_route.mac,
-                PacketType::Control(Control::HeartbeatAck(HeartbeatAck::new(hbr))),
-            ))
-                .into(),
-        )]))
+        Ok(None)
     }
 
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {

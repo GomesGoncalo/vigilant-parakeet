@@ -232,9 +232,9 @@ impl Rsu {
                     Ok(None)
                 }
             }
-            PacketType::Data(Data::Downstream(_))
-            | PacketType::Control(Control::Heartbeat(_))
-            | PacketType::Control(Control::HeartbeatAck(_)) => Ok(None),
+            PacketType::Data(Data::Downstream(_)) | PacketType::Control(Control::Heartbeat(_)) => {
+                Ok(None)
+            }
         }
     }
 

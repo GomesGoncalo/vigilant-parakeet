@@ -145,11 +145,6 @@ impl Obu {
                 .write()
                 .unwrap()
                 .handle_heartbeat_reply(&msg, self.mac),
-            PacketType::Control(Control::HeartbeatAck(_)) => self
-                .routing
-                .write()
-                .unwrap()
-                .handle_heartbeat_ack(&msg, self.mac),
         }
     }
 }
