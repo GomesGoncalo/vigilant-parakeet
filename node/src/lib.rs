@@ -15,7 +15,10 @@ pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node_device: Arc<Device
         NodeType::Rsu => {
             let rsu = Rsu::new(args, mac_address, tun, node_device)?;
             loop {
-                rsu.process().await;
+                let _ = rsu
+                    .process()
+                    .await
+                    .inspect_err(|e| tracing::error!(?e, "error"));
             }
         }
         NodeType::Obu => {

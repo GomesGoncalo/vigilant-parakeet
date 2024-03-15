@@ -5,6 +5,7 @@ use std::{
 
 use mac_address::MacAddress;
 
+#[derive(Debug)]
 pub struct Route {
     pub hops: u32,
     pub mac: MacAddress,

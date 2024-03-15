@@ -30,7 +30,16 @@ pub struct Routing {
     boot: Instant,
     routes: HashMap<
         MacAddress,
-        IndexMap<u32, (Duration, MacAddress, u32, HashMap<MacAddress, Vec<Target>>)>,
+        IndexMap<
+            u32,
+            (
+                Duration,
+                MacAddress,
+                u32,
+                IndexMap<Duration, MacAddress>,
+                HashMap<MacAddress, Vec<Target>>,
+            ),
+        >,
     >,
     cached_upstream: Arc<Mutex<Option<MacAddress>>>,
 }
@@ -74,18 +83,20 @@ impl Routing {
             entry.swap_remove_index(0);
         }
 
-        if let Some((_, _, hops, _)) = entry.get(&message.id()) {
+        if let Some((_, _, hops, _, _)) = entry.get(&message.id()) {
             if hops < &message.hops() {
                 return Ok(None);
             }
         }
 
+        let duration = Instant::now().duration_since(self.boot);
         entry.insert(
             message.id(),
             (
-                Instant::now().duration_since(self.boot),
+                duration,
                 pkt.from()?,
                 message.hops(),
+                IndexMap::new(),
                 HashMap::default(),
             ),
         );
@@ -108,9 +119,10 @@ impl Routing {
         entry_from.insert(
             message.id(),
             (
-                Instant::now().duration_since(self.boot),
+                duration,
                 pkt.from()?,
                 1,
+                IndexMap::new(),
                 HashMap::default(),
             ),
         );
@@ -181,7 +193,7 @@ impl Routing {
                     mac,
                     pkt.from()?,
                     PacketType::Control(Control::HeartbeatReply(HeartbeatReply::from_sender(
-                        message, mac,
+                        message, mac, duration,
                     ))),
                 ))
                     .into(),
@@ -204,12 +216,14 @@ impl Routing {
             bail!("we don't know how to reach that source");
         };
 
-        let Some((duration, next_upstream, _, downstream)) = source_entries.get_mut(&message.id())
+        let Some((duration, next_upstream, _, _, downstream)) =
+            source_entries.get_mut(&message.id())
         else {
             bail!("no recollection of the next hop for this route");
         };
 
-        let latency = Instant::now().duration_since(self.boot) - *duration;
+        let seen_at = Instant::now().duration_since(self.boot);
+        let latency = seen_at - *duration;
         match downstream.entry(message.sender()) {
             Entry::Occupied(mut entry) => {
                 let value = entry.get_mut();
@@ -313,6 +327,41 @@ impl Routing {
         reply
     }
 
+    pub fn handle_heartbeat_ack(
+        &mut self,
+        pkt: &Message,
+        mac: MacAddress,
+    ) -> Result<Option<Vec<ReplyType>>> {
+        let PacketType::Control(Control::HeartbeatAck(message)) = pkt.get_packet_type() else {
+            bail!("this is supposed to be a HeartbeatAck");
+        };
+
+        let Some(source_entries) = self.routes.get_mut(&message.source()) else {
+            bail!("we don't know how to reach that source");
+        };
+
+        let Some((seen_at, _, _, map, _)) = source_entries.get_mut(&message.id()) else {
+            bail!("no recollection of the next hop for this route");
+        };
+
+        let latency = Instant::now().duration_since(self.boot) - *seen_at;
+        map.insert(latency, pkt.from()?);
+
+        let Some(old_route) = self.get_route_to(Some(message.sender())) else {
+            bail!("don't know what to do with this")
+        };
+        let reply = Ok(Some(vec![ReplyType::Wire(
+            (&Message::new(
+                mac,
+                old_route.mac.clone(),
+                PacketType::Control(Control::HeartbeatAck(message.clone())),
+            ))
+                .into(),
+        )]));
+
+        reply
+    }
+
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
         let Some(mac) = mac else {
             return self.cached_upstream.lock().unwrap().map(|mac| Route {
@@ -326,7 +375,7 @@ impl Routing {
             .iter()
             .flat_map(|(rsu_mac, seqs)| {
                 seqs.iter()
-                    .map(move |(seq, (_, mac, hops, _))| (seq, rsu_mac, mac, hops))
+                    .map(move |(seq, (_, mac, hops, _, _))| (seq, rsu_mac, mac, hops))
             })
             .filter(|(_, rsu_mac, _, _)| rsu_mac == &&mac)
             .collect();
@@ -360,8 +409,9 @@ impl Routing {
             .routes
             .iter()
             .flat_map(|(rsus, im)| {
-                im.iter()
-                    .map(move |(seq, (dur, mac, hops, rout))| (seq, (dur, mac, hops, rout, rsus)))
+                im.iter().map(move |(seq, (dur, mac, hops, _, rout))| {
+                    (seq, (dur, mac, hops, rout, rsus))
+                })
             })
             .collect();
 

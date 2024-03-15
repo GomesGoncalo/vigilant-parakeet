@@ -200,8 +200,13 @@ impl Channel {
         async move {
             match self.should_send(&buf) {
                 Ok(buf) => {
-                    let _ = tokio_timerfd::sleep(self.parameters.latency).await;
-                    let _ = self.tun.send_all(buf).await;
+                    let latency = self.parameters.latency;
+                    let tun = self.tun.clone();
+                    let buf = buf.clone();
+                    tokio::spawn(async move {
+                        let _ = tokio_timerfd::sleep(latency).await;
+                        let _ = tun.send_all(&buf).await;
+                    });
                 }
                 Err(e) => {
                     tracing::trace!(?e, "not sent");
@@ -218,8 +223,6 @@ fn create_namespaces(
     node_type: &SimNodeParameters,
 ) -> Result<(Arc<Device>, Arc<Tun>)> {
     let node_name = format!("sim_ns_{node}");
-    let span = tracing::debug_span!("sim node", node = node_name);
-    let _guard = span.enter();
     let ns = NetNs::new(node_name.clone())?;
     let ns_result = ns.run(|_| {
         let tun = Arc::new(
@@ -266,6 +269,8 @@ fn create_namespaces(
         };
 
         let dev = Arc::new(Device::new(&args.bind)?);
+        let span = tracing::debug_span!("sim node", node = node_name, mac = %dev.mac_address);
+        let _guard = span.enter();
         tokio::spawn(node::create_with_vdev(args, virtual_tun, dev.clone()).in_current_span());
         Ok::<_, Error>((dev, tun))
     });

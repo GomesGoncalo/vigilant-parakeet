@@ -1,7 +1,10 @@
 use crate::{
-    control::route::Route,
+    control::{node::ReplyType, route::Route},
     messages::{
-        control::{heartbeat::Heartbeat, Control},
+        control::{
+            heartbeat::{Heartbeat, HeartbeatAck},
+            Control,
+        },
         message::Message,
         packet_type::PacketType,
     },
@@ -29,16 +32,18 @@ struct Target {
 pub struct Routing {
     hb_seq: u32,
     boot: Instant,
+    mac: MacAddress,
     sent: IndexMap<u32, (Duration, HashMap<MacAddress, Vec<Target>>)>,
 }
 
 impl Routing {
-    pub fn new(args: &Args) -> Result<Self> {
+    pub fn new(args: &Args, mac: MacAddress) -> Result<Self> {
         if args.node_params.hello_history == 0 {
             bail!("we need to be able to store at least 1 hello");
         }
         Ok(Self {
             hb_seq: 0,
+            mac,
             boot: Instant::now(),
             sent: IndexMap::with_capacity(usize::try_from(args.node_params.hello_history)?),
         })
@@ -74,7 +79,11 @@ impl Routing {
         msg
     }
 
-    pub fn handle_heartbeat_reply(&mut self, msg: &Message, address: MacAddress) -> Result<()> {
+    pub fn handle_heartbeat_reply(
+        &mut self,
+        msg: &Message,
+        address: MacAddress,
+    ) -> Result<Option<Vec<ReplyType>>> {
         let PacketType::Control(Control::HeartbeatReply(hbr)) = msg.get_packet_type() else {
             bail!("only heartbeat reply messages accepted");
         };
@@ -82,7 +91,7 @@ impl Routing {
         let old_route = self.get_route_to(Some(hbr.sender()));
         let Some((_, map)) = self.sent.get_mut(&hbr.id()) else {
             tracing::warn!("outdated heartbeat");
-            return Ok(());
+            return Ok(None);
         };
 
         let latency = Instant::now().duration_since(self.boot) - hbr.duration();
@@ -105,8 +114,13 @@ impl Routing {
             }
         };
 
-        match (old_route, self.get_route_to(Some(hbr.sender()))) {
-            (None, Some(new_route)) => {
+        let new_route = self.get_route_to(Some(hbr.sender()));
+        let Some(ref new_route) = new_route else {
+            return Ok(None);
+        };
+
+        match (old_route, new_route) {
+            (None, new_route) => {
                 tracing::event!(
                     Level::DEBUG,
                     from = %address,
@@ -115,8 +129,7 @@ impl Routing {
                     "route created from heartbeat reply",
                 );
             }
-            (_, None) => (),
-            (Some(old_route), Some(new_route)) => {
+            (Some(old_route), new_route) => {
                 if old_route.mac != new_route.mac {
                     tracing::event!(
                         Level::DEBUG,
@@ -129,7 +142,15 @@ impl Routing {
                 }
             }
         }
-        Ok(())
+
+        Ok(Some(vec![ReplyType::Wire(
+            (&Message::new(
+                self.mac,
+                new_route.mac,
+                PacketType::Control(Control::HeartbeatAck(HeartbeatAck::new(hbr))),
+            ))
+                .into(),
+        )]))
     }
 
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
@@ -207,6 +228,8 @@ impl Routing {
 
 #[cfg(test)]
 mod tests {
+    use mac_address::MacAddress;
+
     use crate::{
         control::{
             args::{NodeParameters, NodeType},
@@ -230,7 +253,7 @@ mod tests {
             },
         };
 
-        let Ok(mut routing) = Routing::new(&args) else {
+        let Ok(mut routing) = Routing::new(&args, MacAddress::default()) else {
             panic!("did not build a routing object");
         };
         let message = routing.send_heartbeat([1; 6].into());
@@ -248,7 +271,7 @@ mod tests {
 
         let message: Vec<Vec<u8>> = (&message).into();
         let message: Vec<u8> = message.iter().flat_map(|x| x.iter()).cloned().collect();
-        let message: Message = dbg!(&message[..]).try_into().expect("same message");
+        let message: Message = (&message[..]).try_into().expect("same message");
         assert_eq!(message.from().expect(""), [1; 6].into());
         assert_eq!(message.to().expect(""), [255; 6].into());
         let PacketType::Control(Control::Heartbeat(hb)) = message.get_packet_type() else {

@@ -36,7 +36,7 @@ pub struct Rsu {
 impl Rsu {
     pub fn new(args: Args, mac: MacAddress, tun: Arc<Tun>, device: Arc<Device>) -> Result<Self> {
         let rsu = Self {
-            routing: Arc::new(RwLock::new(Routing::new(&args)?)),
+            routing: Arc::new(RwLock::new(Routing::new(&args, mac.clone())?)),
             args,
             mac,
             tun,
@@ -227,14 +227,14 @@ impl Rsu {
                     self.routing
                         .write()
                         .unwrap()
-                        .handle_heartbeat_reply(msg, self.mac)?;
+                        .handle_heartbeat_reply(msg, self.mac)
+                } else {
+                    Ok(None)
                 }
-
-                Ok(None)
             }
-            PacketType::Data(Data::Downstream(_)) | PacketType::Control(Control::Heartbeat(_)) => {
-                Ok(None)
-            }
+            PacketType::Data(Data::Downstream(_))
+            | PacketType::Control(Control::Heartbeat(_))
+            | PacketType::Control(Control::HeartbeatAck(_)) => Ok(None),
         }
     }
 
