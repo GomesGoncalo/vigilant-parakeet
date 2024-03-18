@@ -139,12 +139,12 @@ impl Obu {
                 .routing
                 .write()
                 .unwrap()
-                .handle_heartbeat(&msg, self.mac),
+                .handle_heartbeat(msg, self.mac),
             PacketType::Control(Control::HeartbeatReply(_)) => self
                 .routing
                 .write()
                 .unwrap()
-                .handle_heartbeat_reply(&msg, self.mac),
+                .handle_heartbeat_reply(msg, self.mac),
         }
     }
 }

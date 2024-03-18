@@ -36,7 +36,7 @@ pub struct Rsu {
 impl Rsu {
     pub fn new(args: Args, mac: MacAddress, tun: Arc<Tun>, device: Arc<Device>) -> Result<Self> {
         let rsu = Self {
-            routing: Arc::new(RwLock::new(Routing::new(&args, mac.clone())?)),
+            routing: Arc::new(RwLock::new(Routing::new(&args, mac)?)),
             args,
             mac,
             tun,
@@ -52,7 +52,7 @@ impl Rsu {
     pub async fn process(&self) -> Result<()> {
         if let Some(p) = self.args.node_params.hello_periodicity {
             tokio::select! {
-                _ = self.generate_hello() => {
+                () = self.generate_hello() => {
                     let mut next_hello = self.next_hello.write().unwrap();
                     *next_hello = Some(Instant::now() + Duration::from_millis(p.into()));
                 },
@@ -66,57 +66,47 @@ impl Rsu {
                         let from: MacAddress = from.into();
                         let source_mac = self.mac.bytes();
                         self.cache.store_mac(from, self.mac);
-                        match target {
-                            Some(target) => {
-                                let routing = self.routing.read().unwrap();
-                                let Some(hop) = routing.get_route_to(Some(target)) else {
-                                    bail!("no route");
-                                };
-                                let msg = Message::new(
-                                    self.mac,
-                                    hop.mac,
-                                    PacketType::Data(Data::Downstream(ToDownstream::new(
-                                        &source_mac,
-                                        target,
-                                        data,
-                                    ))),
-                                );
+                        let routing = self.routing.read().unwrap();
+                        let outgoing = if let Some(target) = target {
+                            let Some(hop) = routing.get_route_to(Some(target)) else {
+                                bail!("no route");
+                            };
 
-                                let outgoing = vec![ReplyType::Wire((&msg).into())];
-                                tracing::trace!(?outgoing, "outgoing from tap");
-                                Ok(Some(outgoing))
-                            }
-                            None => {
-                                let routing = self.routing.read().unwrap();
-                                let outgoing = routing
-                                    .iter_next_hops()
-                                    .filter(|x| x != &&self.mac)
-                                    .filter_map(|x| {
-                                        let Some(dest) = routing.get_route_to(Some(*x)) else {
-                                            return None;
-                                        };
-                                        Some((x, dest))
-                                    })
-                                    .map(|(x, y)| (x, y.mac))
-                                    .unique_by(|(x, _)| *x)
-                                    .map(|(x, next_hop)| {
-                                        let msg = Message::new(
-                                            self.mac,
-                                            next_hop,
-                                            PacketType::Data(Data::Downstream(ToDownstream::new(
-                                                &source_mac,
-                                                *x,
-                                                data,
-                                            ))),
-                                        );
-                                        ReplyType::Wire((&msg).into())
-                                    })
-                                    .collect_vec();
-
-                                tracing::trace!(?outgoing, "outgoing from tap");
-                                Ok(Some(outgoing))
-                            }
-                        }
+                            vec![ReplyType::Wire((&Message::new(
+                                self.mac,
+                                hop.mac,
+                                PacketType::Data(Data::Downstream(ToDownstream::new(
+                                    &source_mac,
+                                    target,
+                                    data,
+                                ))),
+                            )).into())]
+                        } else {
+                            routing
+                                .iter_next_hops()
+                                .filter(|x| x != &&self.mac)
+                                .filter_map(|x| {
+                                    let dest = routing.get_route_to(Some(*x))?;
+                                    Some((x, dest))
+                                })
+                                .map(|(x, y)| (x, y.mac))
+                                .unique_by(|(x, _)| *x)
+                                .map(|(x, next_hop)| {
+                                    let msg = Message::new(
+                                        self.mac,
+                                        next_hop,
+                                        PacketType::Data(Data::Downstream(ToDownstream::new(
+                                            &source_mac,
+                                            *x,
+                                            data,
+                                        ))),
+                                    );
+                                    ReplyType::Wire((&msg).into())
+                                })
+                                .collect_vec()
+                        };
+                        tracing::trace!(?outgoing, "outgoing from tap");
+                        Ok(Some(outgoing))
                     }
                 }) => {
                     if let Ok(Some(messages)) = m {

@@ -140,7 +140,7 @@ impl Channel {
         .await;
     }
 
-    fn should_send<'a>(&self, buf: &'a [u8]) -> Result<()> {
+    fn should_send(&self, buf: &[u8]) -> Result<()> {
         let bcast = vec![255; 6];
         let unicast = self.mac.bytes();
         if buf[0..6] != bcast && buf[0..6] != unicast {
@@ -169,7 +169,7 @@ impl Channel {
     async fn priv_send(&self, buf: [u8; 1500], size: usize) {
         async move {
             match self.should_send(&buf[..size]) {
-                Ok(_) => {
+                Ok(()) => {
                     let latency = self.parameters.read().unwrap().latency;
                     let tun = self.tun.clone();
                     let stats = self.stats.clone();
@@ -289,13 +289,13 @@ impl Simulator {
         Ok(device)
     }
 
-    pub fn new<F>(args: SimArgs, callback: F) -> Result<Self>
+    pub fn new<F>(args: &SimArgs, callback: F) -> Result<Self>
     where
         F: Fn(&HashMap<String, Value>) -> Result<(Arc<Device>, Arc<Tun>)> + Clone,
     {
-        let (channels, _namespaces) = Self::parse_topology(&args.config_file, callback)?;
+        let (channels, namespaces) = Self::parse_topology(&args.config_file, callback)?;
         Ok(Self {
-            _namespaces,
+            _namespaces: namespaces,
             channels,
         })
     }

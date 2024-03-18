@@ -29,13 +29,13 @@ pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<
             response
                 .iter()
                 .filter_map(|x| match x {
-                    ReplyType::Tap(x) => Some(DebugReplyType::Tap(x.to_vec())),
+                    ReplyType::Tap(x) => Some(DebugReplyType::Tap(x.clone())),
                     ReplyType::Wire(x) => {
-                        let x = x.iter().flat_map(|x| x.iter()).cloned().collect_vec();
+                        let x = x.iter().flat_map(|x| x.iter()).copied().collect_vec();
                         let Ok(message) = Message::try_from(&x[..]) else {
                             return None;
                         };
-                        Some(DebugReplyType::Wire(format!("{:?}", message)))
+                        Some(DebugReplyType::Wire(format!("{message:?}")))
                     }
                 })
                 .collect_vec(),

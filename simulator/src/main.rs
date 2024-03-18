@@ -22,10 +22,7 @@ async fn get_topology(
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let result: Vec<(_, _)> = topology
         .iter()
-        .flat_map(|(_, y)| {
-            y.iter()
-                .map(move |(on, c)| (on, c.stats.read().unwrap().clone()))
-        })
+        .flat_map(|(_, y)| y.iter().map(move |(on, c)| (on, *c.stats.read().unwrap())))
         .collect();
     let result = result.iter().fold(
         HashMap::default(),
@@ -55,7 +52,7 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    let simulator = Simulator::new(args.clone(), |config| {
+    let simulator = Simulator::new(&args, |config| {
         tracing::info!(?config, "building a node");
         let Some(config) = config.get("config_path") else {
             bail!("no config for node");
@@ -86,7 +83,11 @@ async fn main() -> Result<()> {
                 node_type: NodeType::from_str(&settings.get_string("node_type")?, true)
                     .or_else(|_| bail!("invalid node type"))?,
                 hello_history: settings.get_int("hello_history")?.try_into()?,
-                hello_periodicity: settings.get_int("hello_periodicity").map(|x| x as u32).ok(),
+                hello_periodicity: settings
+                    .get_int("hello_periodicity")
+                    .map(|x| u32::try_from(x).ok())
+                    .ok()
+                    .flatten(),
             },
         };
 
@@ -113,7 +114,7 @@ async fn main() -> Result<()> {
             )
         };
 
-        let dev = Arc::new(Device::new(&tun.name())?);
+        let dev = Arc::new(Device::new(tun.name())?);
         tokio::spawn(node_lib::create_with_vdev(args, virtual_tun, dev.clone()));
         Ok((dev, tun))
     })?;
