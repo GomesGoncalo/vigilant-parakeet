@@ -88,6 +88,7 @@ impl Channel {
         *inner_params = result;
         Ok(())
     }
+
     pub fn new(
         parameters: ChannelParameters,
         mac: MacAddress,

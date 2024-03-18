@@ -76,6 +76,11 @@ pub async fn handle_messages(
     Ok(())
 }
 
+fn buffer() -> [u8; 1500] {
+    let buf = uninit_array![u8; 1500];
+    unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) }
+}
+
 pub async fn wire_traffic<Fut>(
     dev: &Arc<Device>,
     callable: impl FnOnce([u8; 1500], usize) -> Fut,
@@ -83,8 +88,7 @@ pub async fn wire_traffic<Fut>(
 where
     Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,
 {
-    let buf = uninit_array![u8; 1500];
-    let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
+    let mut buf = buffer();
     let n = dev.recv(&mut buf).await?;
     callable(buf, n).await
 }
@@ -96,8 +100,7 @@ pub async fn tap_traffic<Fut>(
 where
     Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,
 {
-    let buf = uninit_array![u8; 1500];
-    let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
+    let mut buf = buffer();
     let n = dev.recv(&mut buf).await?;
     callable(buf, n).await
 }

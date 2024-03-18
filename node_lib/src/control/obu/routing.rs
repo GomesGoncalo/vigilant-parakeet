@@ -225,6 +225,10 @@ impl Routing {
             bail!("no recollection of the next hop for this route");
         };
 
+        if *next_upstream == pkt.from()? {
+            bail!("loop detected");
+        }
+
         let seen_at = Instant::now().duration_since(self.boot);
         let latency = seen_at - *duration;
         match downstream.entry(message.sender()) {
