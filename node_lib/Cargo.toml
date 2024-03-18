@@ -1,0 +1,21 @@
+[package]
+name = "node_lib"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio-tun = "*"
+tokio = {version = "*", features = ["full"]}
+anyhow = "*"
+socket2 = {version = "*", features = ["all"]}
+uninit = "*"
+libc = "*"
+nix = {version = "*", features = ["socket", "net", "ioctl"]}
+tracing = "*"
+clap = { version = "*", features = ["derive"] }
+futures = "*"
+mac_address = "*"
+indexmap = "*"
+tokio-timerfd = "*"
+itertools = "*"
+

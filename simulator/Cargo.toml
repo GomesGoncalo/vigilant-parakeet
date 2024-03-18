@@ -1,12 +1,24 @@
 [package]
-name = "node"
+name = "simulator"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+tokio-tun = "*"
 tokio = {version = "*", features = ["full"]}
 anyhow = "*"
+uninit = "*"
+tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter", "std"] }
 clap = { version = "*", features = ["derive"] }
+futures = "*"
+netns-rs = "*"
+config = "*"
+rand = "*"
+mac_address = "*"
+tokio-timerfd = "*"
+warp = "*"
 node_lib = { path = "../node_lib/" }
+serde = { version = "*", features = ["derive"]}
+itertools = "*"
 
