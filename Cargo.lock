@@ -877,6 +877,7 @@ dependencies = [
  "libc",
  "mac_address",
  "nix 0.28.0",
+ "serde",
  "socket2",
  "tokio",
  "tokio-timerfd",

@@ -17,8 +17,11 @@ config = "*"
 rand = "*"
 mac_address = "*"
 tokio-timerfd = "*"
-warp = "*"
 node_lib = { path = "../node_lib/" }
-serde = { version = "*", features = ["derive"]}
 itertools = "*"
+warp = {version = "*", optional = true}
+serde = { version = "*", features = ["derive"], optional = true}
 
+[features]
+webview = ["dep:serde", "dep:warp", "node_lib/stats"]
+default = ["webview"]

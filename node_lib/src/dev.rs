@@ -2,17 +2,31 @@ use anyhow::{Context, Result};
 use libc::{sockaddr, sockaddr_ll, AF_PACKET};
 use mac_address::MacAddress;
 use nix::sys::socket::{self, LinkAddr, SockaddrLike};
+#[cfg(feature = "stats")]
+use serde::Serialize;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::io::{self, ErrorKind, IoSlice, Read, Write};
 use std::os::fd::IntoRawFd;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::sync::RwLock;
 use tokio::io::unix::AsyncFd;
 
 const ETH_P_ALL: u16 = 0x0003;
 
+#[cfg(feature = "stats")]
+#[derive(Serialize, Default, Clone, Copy)]
+pub struct Stats {
+    received_packets: usize,
+    received_bytes: usize,
+    transmitted_packets: usize,
+    transmitted_bytes: usize,
+}
+
 pub struct Device {
     pub mac_address: MacAddress,
     fd: AsyncFd<DeviceIo>,
+    #[cfg(feature = "stats")]
+    stats: RwLock<Stats>,
 }
 
 pub struct DeviceIo(RawFd);
@@ -129,6 +143,8 @@ impl Device {
         Ok(Self {
             mac_address,
             fd: AsyncFd::new(unsafe { DeviceIo::from_raw_fd(raw_fd) })?,
+            #[cfg(feature = "stats")]
+            stats: Stats::default().into(),
         })
     }
 
@@ -137,6 +153,12 @@ impl Device {
             let mut guard = self.fd.readable().await?;
             match guard.try_io(|inner| inner.get_ref().recv(buf)) {
                 Ok(res) => {
+                    #[cfg(feature = "stats")]
+                    if let Ok(size) = res {
+                        let mut stats = self.stats.write().unwrap();
+                        stats.received_packets += 1;
+                        stats.received_bytes += size;
+                    }
                     return res;
                 }
                 Err(_) => continue,
@@ -148,7 +170,15 @@ impl Device {
         loop {
             let mut guard = self.fd.writable().await?;
             match guard.try_io(|inner| inner.get_ref().send(buf)) {
-                Ok(res) => return res,
+                Ok(res) => {
+                    #[cfg(feature = "stats")]
+                    if let Ok(size) = res {
+                        let mut stats = self.stats.write().unwrap();
+                        stats.transmitted_packets += 1;
+                        stats.transmitted_bytes += size;
+                    }
+                    return res;
+                }
                 Err(_) => continue,
             }
         }
@@ -156,6 +186,7 @@ impl Device {
 
     pub async fn send_all(&self, buf: &[u8]) -> io::Result<()> {
         let mut remaining = buf;
+        let size = buf.len();
         while !remaining.is_empty() {
             match self.send(remaining).await? {
                 0 => return Err(ErrorKind::WriteZero.into()),
@@ -165,6 +196,12 @@ impl Device {
                 }
             }
         }
+        #[cfg(feature = "stats")]
+        {
+            let mut stats = self.stats.write().unwrap();
+            stats.transmitted_packets += 1;
+            stats.transmitted_bytes += size;
+        }
         Ok(())
     }
 
@@ -173,10 +210,21 @@ impl Device {
             let mut guard = self.fd.writable().await?;
             match guard.try_io(|inner| inner.get_ref().sendv(bufs)) {
                 Ok(res) => {
+                    #[cfg(feature = "stats")]
+                    if let Ok(size) = res {
+                        let mut stats = self.stats.write().unwrap();
+                        stats.transmitted_packets += 1;
+                        stats.transmitted_bytes += size;
+                    }
                     return res;
                 }
                 Err(_) => continue,
             }
         }
+    }
+
+    #[cfg(feature = "stats")]
+    pub fn stats(&self) -> Stats {
+        *self.stats.read().unwrap()
     }
 }

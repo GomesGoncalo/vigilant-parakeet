@@ -1,4 +1,5 @@
 use crate::sim_args::SimArgs;
+use anyhow::Context;
 use anyhow::{bail, Error, Result};
 use config::Config;
 use config::Value;
@@ -9,9 +10,9 @@ use mac_address::MacAddress;
 use netns_rs::NetNs;
 use node_lib::dev::Device;
 use serde::Serialize;
+use std::str::FromStr;
 use std::{
     collections::HashMap,
-    ops::AddAssign,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -36,7 +37,7 @@ impl Drop for NamespaceWrapper {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Serialize)]
 pub struct ChannelParameters {
     latency: Duration,
     loss: f64,
@@ -60,23 +61,6 @@ impl From<HashMap<String, Value>> for ChannelParameters {
     }
 }
 
-#[derive(Default, Clone, Debug, Serialize, Copy)]
-pub struct ChannelStats {
-    received_bytes: usize,
-    received_packets: usize,
-    transmitted_bytes: usize,
-    transmitted_packets: usize,
-}
-
-impl AddAssign<ChannelStats> for ChannelStats {
-    fn add_assign(&mut self, rhs: ChannelStats) {
-        self.received_packets += rhs.received_packets;
-        self.received_bytes += rhs.received_bytes;
-        self.transmitted_bytes += rhs.transmitted_bytes;
-        self.transmitted_packets += rhs.transmitted_packets;
-    }
-}
-
 pub struct Channel {
     tx: Sender<([u8; 1500], usize)>,
     parameters: RwLock<ChannelParameters>,
@@ -84,10 +68,26 @@ pub struct Channel {
     tun: Arc<Tun>,
     from: String,
     to: String,
-    pub stats: Arc<RwLock<ChannelStats>>,
 }
 
 impl Channel {
+    pub fn params(&self) -> ChannelParameters {
+        *self.parameters.read().unwrap()
+    }
+
+    pub fn set_params(&self, params: HashMap<String, String>) -> Result<()> {
+        let result = ChannelParameters {
+            latency: Duration::from_millis(u64::from_str_radix(
+                params.get("latency").context("could not get latency")?,
+                10,
+            )?),
+            loss: f64::from_str(params.get("loss").context("could not get loss")?)?,
+        };
+
+        let mut inner_params = self.parameters.write().unwrap();
+        *inner_params = result;
+        Ok(())
+    }
     pub fn new(
         parameters: ChannelParameters,
         mac: MacAddress,
@@ -104,7 +104,6 @@ impl Channel {
             tun,
             from,
             to,
-            stats: Arc::new(ChannelStats::default().into()),
         });
         let thisc = this.clone();
         tokio::spawn(async move {
@@ -128,9 +127,6 @@ impl Channel {
             match self.should_send(&buf[..size]) {
                 Ok(()) => {
                     let _ = self.tun.send_all(&buf[..size]).await;
-                    let mut stats = self.stats.write().unwrap();
-                    stats.received_bytes += size;
-                    stats.received_packets += 1;
                 }
                 Err(e) => {
                     tracing::trace!(self.from, self.to, ?e, "not sent");
@@ -160,9 +156,6 @@ impl Channel {
 
     pub async fn recv(&self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
         let n = self.tun.recv(buf).await?;
-        let mut stats = self.stats.write().unwrap();
-        stats.transmitted_packets += 1;
-        stats.transmitted_bytes += n;
         Ok(n)
     }
 
@@ -172,13 +165,9 @@ impl Channel {
                 Ok(()) => {
                     let latency = self.parameters.read().unwrap().latency;
                     let tun = self.tun.clone();
-                    let stats = self.stats.clone();
                     tokio::spawn(async move {
                         let _ = tokio_timerfd::sleep(latency).await;
                         let _ = tun.send_all(&buf[..size]).await;
-                        let mut stats = stats.write().unwrap();
-                        stats.received_bytes += size;
-                        stats.received_packets += 1;
                     });
                 }
                 Err(e) => {
@@ -198,7 +187,7 @@ pub struct Simulator {
 impl Simulator {
     fn parse_topology(
         config_file: &str,
-        callback: impl Fn(&HashMap<String, Value>) -> Result<(Arc<Device>, Arc<Tun>)> + Clone,
+        callback: impl Fn(&str, &HashMap<String, Value>) -> Result<(Arc<Device>, Arc<Tun>)> + Clone,
     ) -> Result<(
         HashMap<String, HashMap<String, Arc<Channel>>>,
         Vec<NamespaceWrapper>,
@@ -275,23 +264,23 @@ impl Simulator {
         ns_list: &mut Vec<NamespaceWrapper>,
         node: &str,
         node_type: &HashMap<String, Value>,
-        callback: impl Fn(&HashMap<String, Value>) -> Result<(Arc<Device>, Arc<Tun>)>,
+        callback: impl Fn(&str, &HashMap<String, Value>) -> Result<(Arc<Device>, Arc<Tun>)>,
     ) -> Result<(Arc<Device>, Arc<Tun>)> {
         let node_name = format!("sim_ns_{node}");
         let ns = NamespaceWrapper::new(NetNs::new(node_name.clone())?);
-        let ns_result = ns.0.as_ref().expect("").run(|_| callback(node_type));
-
-        let Ok(Ok(device)) = ns_result else {
+        let Some(nsi) = ns.0.as_ref() else {
+            bail!("no namespace");
+        };
+        let Ok(Ok(device)) = nsi.run(|_| callback(&node, node_type)) else {
             bail!("error creating namespace");
         };
-
         ns_list.push(ns);
         Ok(device)
     }
 
     pub fn new<F>(args: &SimArgs, callback: F) -> Result<Self>
     where
-        F: Fn(&HashMap<String, Value>) -> Result<(Arc<Device>, Arc<Tun>)> + Clone,
+        F: Fn(&str, &HashMap<String, Value>) -> Result<(Arc<Device>, Arc<Tun>)> + Clone,
     {
         let (channels, namespaces) = Self::parse_topology(&args.config_file, callback)?;
         Ok(Self {
@@ -330,5 +319,9 @@ impl Simulator {
         let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
         let n = channel.recv(&mut buf).await?;
         Ok((buf, n, node, channel))
+    }
+
+    pub fn get_channels(&self) -> HashMap<String, HashMap<String, Arc<Channel>>> {
+        self.channels.clone()
     }
 }
