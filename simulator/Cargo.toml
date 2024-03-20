@@ -21,7 +21,8 @@ node_lib = { path = "../node_lib/" }
 itertools = "*"
 warp = {version = "*", optional = true}
 serde = { version = "*", features = ["derive"], optional = true}
+common = { path = "../common/" }
 
 [features]
-webview = ["dep:serde", "dep:warp", "node_lib/stats"]
+webview = ["dep:serde", "dep:warp", "node_lib/stats", "common/stats"]
 default = ["webview"]

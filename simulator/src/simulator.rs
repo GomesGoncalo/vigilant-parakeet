@@ -1,6 +1,8 @@
 use crate::sim_args::SimArgs;
 use anyhow::Context;
 use anyhow::{bail, Error, Result};
+use common::device::Device;
+use common::network_interface::NetworkInterface;
 use config::Config;
 use config::Value;
 use futures::stream::FuturesUnordered;
@@ -8,15 +10,17 @@ use futures::StreamExt;
 use itertools::Itertools;
 use mac_address::MacAddress;
 use netns_rs::NetNs;
-use node_lib::dev::Device;
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::str::FromStr;
+use std::sync::Mutex;
+use std::time::Instant;
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
     time::Duration,
 };
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio_tun::Tun;
 use uninit::uninit_array;
 
@@ -61,13 +65,18 @@ impl From<HashMap<String, Value>> for ChannelParameters {
     }
 }
 
+struct Packet {
+    packet: [u8; 1500],
+    size: usize,
+    instant: Instant,
+}
+
 pub struct Channel {
-    tx: Sender<([u8; 1500], usize)>,
+    tx: UnboundedSender<()>,
     parameters: RwLock<ChannelParameters>,
     mac: MacAddress,
     tun: Arc<Tun>,
-    from: String,
-    to: String,
+    queue: Mutex<VecDeque<Packet>>,
 }
 
 impl Channel {
@@ -86,6 +95,7 @@ impl Channel {
 
         let mut inner_params = self.parameters.write().unwrap();
         *inner_params = result;
+        let _ = self.tx.send(());
         Ok(())
     }
 
@@ -93,48 +103,58 @@ impl Channel {
         parameters: ChannelParameters,
         mac: MacAddress,
         tun: Arc<Tun>,
-        from: String,
-        to: String,
+        from: &String,
+        to: &String,
     ) -> Arc<Self> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         tracing::info!(from, to, ?parameters, "Created channel");
         let this = Arc::new(Self {
             tx,
             parameters: parameters.into(),
             mac,
             tun,
-            from,
-            to,
+            queue: VecDeque::with_capacity(1024).into(),
         });
         let thisc = this.clone();
         tokio::spawn(async move {
             loop {
-                let Some((buf, size)) = rx.recv().await else {
+                let Some(packet) = thisc.queue.lock().unwrap().pop_front() else {
+                    let _ = rx.recv().await;
                     continue;
                 };
-                thisc.priv_send(buf, size).await;
+                loop {
+                    let latency = thisc.parameters.read().unwrap().latency;
+                    let duration = (packet.instant + latency).duration_since(Instant::now());
+                    if duration.is_zero() {
+                        let _ = thisc.tun.send_all(&packet.packet[..packet.size]).await;
+                        break;
+                    } else {
+                        tokio::select! {
+                            _ = tokio_timerfd::sleep(duration) => {
+                                let _ = thisc.tun.send_all(&packet.packet[..packet.size]).await;
+                                break;
+                            },
+                            _ = rx.recv() => {},
+                        }
+                    }
+                }
             }
         });
         this
     }
 
-    pub async fn send(&self, buf: [u8; 1500], size: usize) {
-        if !self.parameters.read().unwrap().latency.is_zero() {
-            let _ = self.tx.send((buf, size)).await;
-            return;
+    pub async fn send(&self, packet: [u8; 1500], size: usize) -> Result<()> {
+        self.should_send(&packet[..size])?;
+        let mut queue = self.queue.lock().unwrap();
+        if queue.is_empty() {
+            let _ = self.tx.send(());
         }
-
-        async move {
-            match self.should_send(&buf[..size]) {
-                Ok(()) => {
-                    let _ = self.tun.send_all(&buf[..size]).await;
-                }
-                Err(e) => {
-                    tracing::trace!(self.from, self.to, ?e, "not sent");
-                }
-            }
-        }
-        .await;
+        queue.push_back(Packet {
+            packet,
+            size,
+            instant: Instant::now(),
+        });
+        Ok(())
     }
 
     fn should_send(&self, buf: &[u8]) -> Result<()> {
@@ -158,25 +178,6 @@ impl Channel {
     pub async fn recv(&self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
         let n = self.tun.recv(buf).await?;
         Ok(n)
-    }
-
-    async fn priv_send(&self, buf: [u8; 1500], size: usize) {
-        async move {
-            match self.should_send(&buf[..size]) {
-                Ok(()) => {
-                    let latency = self.parameters.read().unwrap().latency;
-                    let tun = self.tun.clone();
-                    tokio::spawn(async move {
-                        let _ = tokio_timerfd::sleep(latency).await;
-                        let _ = tun.send_all(&buf[..size]).await;
-                    });
-                }
-                Err(e) => {
-                    tracing::trace!(?e, "not sent");
-                }
-            }
-        }
-        .await;
     }
 }
 
@@ -247,10 +248,10 @@ impl Simulator {
                                 node.to_string(),
                                 Channel::new(
                                     *parameters,
-                                    device.0.mac_address,
+                                    device.0.mac_address(),
                                     device.1.clone(),
-                                    tnode.clone(),
-                                    node.to_string(),
+                                    tnode,
+                                    node,
                                 ),
                             );
                             channels
@@ -303,7 +304,7 @@ impl Simulator {
             if let Some(Ok((buf, size, node, channel))) = future_set.next().await {
                 if let Some(connections) = self.channels.get(&node) {
                     for channel in connections.values() {
-                        channel.send(buf, size).await;
+                        let _ = channel.send(buf, size).await;
                     }
                 }
 

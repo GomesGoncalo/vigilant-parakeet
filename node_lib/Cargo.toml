@@ -19,6 +19,7 @@ indexmap = "*"
 tokio-timerfd = "*"
 itertools = "*"
 serde = { version = "*", features = ["derive"]}
+common = { path = "../common/" }
 
 [features]
-stats = []
+stats = [ "common/stats" ]

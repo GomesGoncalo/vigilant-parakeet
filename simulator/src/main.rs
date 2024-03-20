@@ -1,15 +1,16 @@
-use anyhow::Context;
-use anyhow::{bail, Result};
-use clap::Parser;
-use clap::ValueEnum;
+use anyhow::{bail, Context, Result};
+use clap::{Parser, ValueEnum};
+use common::device::Device;
 use config::Config;
 #[cfg(feature = "webview")]
 use itertools::Itertools;
-use node_lib::control::args::NodeType;
-use node_lib::{control::args::Args, dev::Device};
-use std::str::FromStr;
-use std::sync::Mutex;
-use std::{collections::HashMap, net::Ipv4Addr, sync::Arc};
+use node_lib::args::{Args, NodeParameters, NodeType};
+use std::{
+    collections::HashMap,
+    net::Ipv4Addr,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 use tokio::signal;
 use tokio_tun::Tun;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -92,7 +93,7 @@ async fn main() -> Result<()> {
             tap_name: Some("virtual".to_string()),
             ip: Some(Ipv4Addr::from_str(&settings.get_string("ip")?)?),
             mtu: 1459,
-            node_params: node_lib::control::args::NodeParameters {
+            node_params: NodeParameters {
                 node_type: NodeType::from_str(&settings.get_string("node_type")?, true)
                     .or_else(|_| bail!("invalid node type"))?,
                 hello_history: settings.get_int("hello_history")?.try_into()?,

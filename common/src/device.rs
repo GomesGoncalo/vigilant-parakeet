@@ -1,3 +1,4 @@
+use crate::network_interface::NetworkInterface;
 use anyhow::{Context, Result};
 use libc::{sockaddr, sockaddr_ll, AF_PACKET};
 use mac_address::MacAddress;
@@ -8,6 +9,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::io::{self, ErrorKind, IoSlice, Read, Write};
 use std::os::fd::IntoRawFd;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+#[cfg(feature = "stats")]
 use std::sync::RwLock;
 use tokio::io::unix::AsyncFd;
 
@@ -23,7 +25,7 @@ pub struct Stats {
 }
 
 pub struct Device {
-    pub mac_address: MacAddress,
+    mac_address: MacAddress,
     fd: AsyncFd<DeviceIo>,
     #[cfg(feature = "stats")]
     stats: RwLock<Stats>,
@@ -109,6 +111,12 @@ impl DeviceIo {
 impl Drop for DeviceIo {
     fn drop(&mut self) {
         unsafe { libc::close(self.0) };
+    }
+}
+
+impl NetworkInterface for Device {
+    fn mac_address(&self) -> MacAddress {
+        self.mac_address
     }
 }
 

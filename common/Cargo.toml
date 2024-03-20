@@ -1,0 +1,16 @@
+[package]
+name = "common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = {version = "*", features = ["full"]}
+anyhow = "*"
+mac_address = "*"
+nix = {version = "*", features = ["socket", "net", "ioctl"]}
+socket2 = {version = "*", features = ["all"]}
+libc = "*"
+serde = { version = "*", features = ["derive"]}
+
+[features]
+stats = []

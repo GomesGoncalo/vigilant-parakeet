@@ -1,31 +1,29 @@
+pub mod args;
 pub mod control;
-pub mod dev;
+mod data;
 mod messages;
 
-use crate::control::{args::NodeType, obu::Obu, rsu::Rsu};
 use anyhow::{Context, Result};
-use control::{args::Args, node::ReplyType};
-use dev::Device;
+use args::{Args, NodeType};
+use common::device::Device;
+use control::node::ReplyType;
 use std::sync::Arc;
 use tokio_tun::Tun;
 
 pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node_device: Arc<Device>) -> Result<()> {
-    let mac_address = node_device.mac_address;
     match args.node_params.node_type {
         NodeType::Rsu => {
-            let rsu = Rsu::new(args, mac_address, tun, node_device)?;
-            loop {
-                let _ = rsu
-                    .process()
-                    .await
-                    .inspect_err(|e| tracing::error!(?e, "error"));
-            }
+            let rsu = control::rsu::Rsu::new(args, tun, node_device)?;
+            let _ = rsu
+                .process()
+                .await
+                .inspect_err(|e| tracing::error!(?e, "error"));
+            Ok(())
         }
         NodeType::Obu => {
-            let obu = Obu::new(args, mac_address, tun, node_device)?;
-            loop {
-                obu.process().await;
-            }
+            let obu = control::obu::Obu::new(args, tun, node_device)?;
+            let _ = obu.process().await;
+            Ok(())
         }
     }
 }

@@ -1,12 +1,11 @@
-use std::{io::IoSlice, sync::Arc};
-
+use crate::messages::message::Message;
 use anyhow::{bail, Result};
+use common::device::Device;
 use futures::{future::join_all, Future};
 use itertools::Itertools;
+use std::{io::IoSlice, sync::Arc};
 use tokio_tun::Tun;
 use uninit::uninit_array;
-
-use crate::{dev::Device, messages::message::Message};
 
 #[derive(Debug)]
 pub enum ReplyType {

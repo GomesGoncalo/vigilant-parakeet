@@ -29,18 +29,16 @@ struct Target {
 pub struct Routing {
     hb_seq: u32,
     boot: Instant,
-    mac: MacAddress,
     sent: IndexMap<u32, (Duration, HashMap<MacAddress, Vec<Target>>)>,
 }
 
 impl Routing {
-    pub fn new(args: &Args, mac: MacAddress) -> Result<Self> {
+    pub fn new(args: &Args) -> Result<Self> {
         if args.node_params.hello_history == 0 {
             bail!("we need to be able to store at least 1 hello");
         }
         Ok(Self {
             hb_seq: 0,
-            mac,
             boot: Instant::now(),
             sent: IndexMap::with_capacity(usize::try_from(args.node_params.hello_history)?),
         })
