@@ -223,6 +223,7 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
  "libc",
  "mac_address",
  "nix 0.28.0",

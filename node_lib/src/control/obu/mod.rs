@@ -31,18 +31,45 @@ pub struct Obu {
 }
 
 impl Obu {
-    pub fn new(args: Args, tun: Arc<Tun>, device: Arc<Device>) -> Result<Self> {
+    pub fn new(args: Args, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
         let boot = Instant::now();
-        let obu = Self {
+        let obu = Arc::new(Self {
             routing: Arc::new(RwLock::new(Routing::new(&args, &boot)?)),
             args,
             tun: tun.clone(),
             device,
             session: Session::new(tun).into(),
-        };
+        });
 
         tracing::info!(?obu.args, "Setup Obu");
+        obu.session_task()?;
+        Obu::wire_traffic_task(obu.clone())?;
         Ok(obu)
+    }
+
+    fn wire_traffic_task(obu: Arc<Self>) -> Result<()> {
+        let device = obu.device.clone();
+        let tun = obu.tun.clone();
+        tokio::task::spawn(async move {
+            loop {
+                let obu = obu.clone();
+                let messages = node::wire_traffic(&device, |pkt, size| {
+                    async move {
+                        let Ok(msg) = Message::try_from(&pkt[..size]) else {
+                            return Ok(None);
+                        };
+
+                        let response = obu.handle_msg(&msg).await;
+                        tracing::trace!(incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
+                        response
+                    }
+                }).await;
+                if let Ok(Some(messages)) = messages {
+                    let _ = node::handle_messages(messages, &tun, &device).await;
+                }
+            }
+        });
+        Ok(())
     }
 
     fn session_task(&self) -> Result<()> {
@@ -83,26 +110,6 @@ impl Obu {
             }
         });
         Ok(())
-    }
-
-    pub async fn process(&self) -> Result<()> {
-        self.session_task()?;
-        loop {
-            let messages = node::wire_traffic(&self.device, |pkt, size| {
-                    async move {
-                        let Ok(msg) = Message::try_from(&pkt[..size]) else {
-                            return Ok(None);
-                        };
-
-                        let response = self.handle_msg(&msg).await;
-                        tracing::trace!(incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
-                        response
-                    }
-                }).await;
-            if let Ok(Some(messages)) = messages {
-                let _ = node::handle_messages(messages, &self.tun, &self.device).await;
-            }
-        }
     }
 
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {

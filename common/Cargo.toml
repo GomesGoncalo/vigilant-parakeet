@@ -11,6 +11,7 @@ nix = {version = "*", features = ["socket", "net", "ioctl"]}
 socket2 = {version = "*", features = ["all"]}
 libc = "*"
 serde = { version = "*", features = ["derive"]}
+futures = "*"
 
 [features]
 stats = []

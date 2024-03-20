@@ -129,12 +129,12 @@ async fn main() -> Result<()> {
         };
 
         let dev = Arc::new(Device::new(tun.name())?);
-        tokio::spawn(node_lib::create_with_vdev(args, virtual_tun, dev.clone()));
+        let node = node_lib::create_with_vdev(args, virtual_tun, dev.clone())?;
         devices
             .lock()
             .unwrap()
             .insert(name.to_string(), dev.clone());
-        Ok((dev, tun))
+        Ok((dev, tun, node))
     })?;
 
     #[cfg(feature = "webview")]

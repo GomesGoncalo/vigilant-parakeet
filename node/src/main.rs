@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
-use node_lib::control::args::Args;
+use node_lib::args::Args;
+use tokio::signal;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
@@ -11,5 +12,7 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    node_lib::create(args).await
+    let _ = node_lib::create(args);
+    let _ = signal::ctrl_c().await;
+    Ok(())
 }

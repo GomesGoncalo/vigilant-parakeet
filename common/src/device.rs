@@ -1,5 +1,6 @@
 use crate::network_interface::NetworkInterface;
 use anyhow::{Context, Result};
+use futures::ready;
 use libc::{sockaddr, sockaddr_ll, AF_PACKET};
 use mac_address::MacAddress;
 use nix::sys::socket::{self, LinkAddr, SockaddrLike};
@@ -9,9 +10,12 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::io::{self, ErrorKind, IoSlice, Read, Write};
 use std::os::fd::IntoRawFd;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::pin::Pin;
 #[cfg(feature = "stats")]
 use std::sync::RwLock;
+use std::task::{self, Poll};
 use tokio::io::unix::AsyncFd;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 const ETH_P_ALL: u16 = 0x0003;
 
@@ -29,6 +33,88 @@ pub struct Device {
     fd: AsyncFd<DeviceIo>,
     #[cfg(feature = "stats")]
     stats: RwLock<Stats>,
+}
+
+impl AsyncRead for Device {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let self_mut = self.get_mut();
+        loop {
+            let mut guard = ready!(self_mut.fd.poll_read_ready_mut(cx))?;
+
+            match guard.try_io(|inner| inner.get_mut().read(buf.initialize_unfilled())) {
+                Ok(Ok(n)) => {
+                    buf.set_filled(buf.filled().len() + n);
+                    return Poll::Ready(Ok(()));
+                }
+                Ok(Err(err)) => return Poll::Ready(Err(err)),
+                Err(_) => continue,
+            }
+        }
+    }
+}
+
+impl AsyncWrite for Device {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        let self_mut = self.get_mut();
+        loop {
+            let mut guard = ready!(self_mut.fd.poll_write_ready_mut(cx))?;
+
+            match guard.try_io(|inner| inner.get_mut().write(buf)) {
+                Ok(result) => return Poll::Ready(result),
+                Err(_would_block) => continue,
+            }
+        }
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<std::result::Result<usize, io::Error>> {
+        let self_mut = self.get_mut();
+        loop {
+            let mut guard = ready!(self_mut.fd.poll_write_ready_mut(cx))?;
+
+            match guard.try_io(|inner| inner.get_mut().write_vectored(bufs)) {
+                Ok(result) => return Poll::Ready(result),
+                Err(_would_block) => continue,
+            }
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        true
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let self_mut = self.get_mut();
+        loop {
+            let mut guard = ready!(self_mut.fd.poll_write_ready_mut(cx))?;
+
+            match guard.try_io(|inner| inner.get_mut().flush()) {
+                Ok(result) => return Poll::Ready(result),
+                Err(_) => continue,
+            }
+        }
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _: &mut task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
 }
 
 pub struct DeviceIo(RawFd);

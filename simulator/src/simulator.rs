@@ -10,6 +10,7 @@ use futures::StreamExt;
 use itertools::Itertools;
 use mac_address::MacAddress;
 use netns_rs::NetNs;
+use node_lib::Node;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::str::FromStr;
@@ -186,10 +187,12 @@ pub struct Simulator {
     channels: HashMap<String, HashMap<String, Arc<Channel>>>,
 }
 
+type CallbackReturn = Result<(Arc<Device>, Arc<Tun>, Arc<dyn Node>)>;
+
 impl Simulator {
     fn parse_topology(
         config_file: &str,
-        callback: impl Fn(&str, &HashMap<String, Value>) -> Result<(Arc<Device>, Arc<Tun>)> + Clone,
+        callback: impl Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
     ) -> Result<(
         HashMap<String, HashMap<String, Arc<Channel>>>,
         Vec<NamespaceWrapper>,
@@ -266,8 +269,8 @@ impl Simulator {
         ns_list: &mut Vec<NamespaceWrapper>,
         node: &str,
         node_type: &HashMap<String, Value>,
-        callback: impl Fn(&str, &HashMap<String, Value>) -> Result<(Arc<Device>, Arc<Tun>)>,
-    ) -> Result<(Arc<Device>, Arc<Tun>)> {
+        callback: impl Fn(&str, &HashMap<String, Value>) -> CallbackReturn,
+    ) -> CallbackReturn {
         let node_name = format!("sim_ns_{node}");
         let ns = NamespaceWrapper::new(NetNs::new(node_name.clone())?);
         let Some(nsi) = ns.0.as_ref() else {
@@ -282,7 +285,7 @@ impl Simulator {
 
     pub fn new<F>(args: &SimArgs, callback: F) -> Result<Self>
     where
-        F: Fn(&str, &HashMap<String, Value>) -> Result<(Arc<Device>, Arc<Tun>)> + Clone,
+        F: Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
     {
         let (channels, namespaces) = Self::parse_topology(&args.config_file, callback)?;
         Ok(Self {

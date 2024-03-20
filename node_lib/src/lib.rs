@@ -10,25 +10,23 @@ use control::node::ReplyType;
 use std::sync::Arc;
 use tokio_tun::Tun;
 
-pub async fn create_with_vdev(args: Args, tun: Arc<Tun>, node_device: Arc<Device>) -> Result<()> {
+pub trait Node {}
+
+impl Node for control::rsu::Rsu {}
+impl Node for control::obu::Obu {}
+
+pub fn create_with_vdev(
+    args: Args,
+    tun: Arc<Tun>,
+    node_device: Arc<Device>,
+) -> Result<Arc<dyn Node>> {
     match args.node_params.node_type {
-        NodeType::Rsu => {
-            let rsu = control::rsu::Rsu::new(args, tun, node_device)?;
-            let _ = rsu
-                .process()
-                .await
-                .inspect_err(|e| tracing::error!(?e, "error"));
-            Ok(())
-        }
-        NodeType::Obu => {
-            let obu = control::obu::Obu::new(args, tun, node_device)?;
-            let _ = obu.process().await;
-            Ok(())
-        }
+        NodeType::Rsu => Ok(control::rsu::Rsu::new(args, tun, node_device)?),
+        NodeType::Obu => Ok(control::obu::Obu::new(args, tun, node_device)?),
     }
 }
 
-pub async fn create(args: Args) -> Result<()> {
+pub fn create(args: Args) -> Result<Arc<dyn Node>> {
     let tun = Arc::new(if args.ip.is_some() {
         Tun::builder()
             .name(args.tap_name.as_ref().unwrap_or(&String::default()))
@@ -49,5 +47,5 @@ pub async fn create(args: Args) -> Result<()> {
     });
 
     let dev = Device::new(&args.bind)?;
-    create_with_vdev(args, tun, dev.into()).await
+    create_with_vdev(args, tun, dev.into())
 }

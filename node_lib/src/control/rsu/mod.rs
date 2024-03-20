@@ -19,7 +19,7 @@ use routing::Routing;
 use std::{
     io::IoSlice,
     sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio_tun::Tun;
 
@@ -32,38 +32,46 @@ pub struct Rsu {
 }
 
 impl Rsu {
-    pub fn new(args: Args, tun: Arc<Tun>, device: Arc<Device>) -> Result<Self> {
-        let rsu = Self {
+    pub fn new(args: Args, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
+        let rsu = Arc::new(Self {
             routing: Arc::new(RwLock::new(Routing::new(&args)?)),
             args,
             tun,
             device,
             cache: ClientCache::default().into(),
-        };
+        });
 
         tracing::info!(?rsu.args, "Setup Rsu");
+        rsu.hello_task()?;
+        rsu.process_tap_traffic()?;
+        Self::wire_traffic_task(rsu.clone())?;
         Ok(rsu)
     }
 
-    pub async fn process(&self) -> Result<()> {
-        self.hello_task()?;
-        self.process_tap_traffic()?;
-        loop {
-            let messages = node::wire_traffic(&self.device, |pkt, size| {
+    fn wire_traffic_task(rsu: Arc<Self>) -> Result<()> {
+        let device = rsu.device.clone();
+        let tun = rsu.tun.clone();
+
+        tokio::task::spawn(async move {
+            loop {
+                let rsu = rsu.clone();
+                let messages = node::wire_traffic(&device, |pkt, size| {
                     async move {
                         let Ok(msg) = Message::try_from(&pkt[..size]) else {
                             return Ok(None);
                         };
 
-                        let response = self.handle_msg(&msg).await;
+                        let response = rsu.handle_msg(&msg).await;
                         tracing::trace!(incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
                         response
                     }
                 }).await;
-            if let Ok(Some(messages)) = messages {
-                let _ = node::handle_messages(messages, &self.tun, &self.device).await;
+                if let Ok(Some(messages)) = messages {
+                    let _ = node::handle_messages(messages, &tun, &device).await;
+                }
             }
-        }
+        });
+        Ok(())
     }
 
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
