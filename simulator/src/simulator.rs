@@ -1,6 +1,7 @@
 use crate::sim_args::SimArgs;
 use anyhow::Context;
 use anyhow::{bail, Error, Result};
+use common::channel_parameters::ChannelParameters;
 use common::device::Device;
 use common::network_interface::NetworkInterface;
 use config::Config;
@@ -11,7 +12,6 @@ use itertools::Itertools;
 use mac_address::MacAddress;
 use netns_rs::NetNs;
 use node_lib::Node;
-use serde::Serialize;
 use std::collections::VecDeque;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -39,30 +39,6 @@ impl Drop for NamespaceWrapper {
             panic!("No value inside?");
         };
         let _ = ns.remove();
-    }
-}
-
-#[derive(Debug, Copy, Clone, Serialize)]
-pub struct ChannelParameters {
-    latency: Duration,
-    loss: f64,
-}
-
-impl From<HashMap<String, Value>> for ChannelParameters {
-    fn from(param: HashMap<String, Value>) -> Self {
-        let latency = match param.get("latency") {
-            Some(val) => val.clone().into_uint().unwrap_or(0),
-            None => 0,
-        };
-        let loss = match param.get("loss") {
-            Some(val) => val.clone().into_float().unwrap_or(0.0),
-            None => 0.0,
-        };
-
-        Self {
-            latency: Duration::from_millis(latency),
-            loss,
-        }
     }
 }
 

@@ -147,15 +147,31 @@ async fn main() -> Result<()> {
                 warp::reply::json(&devicesc.lock().unwrap().keys().cloned().collect_vec())
             });
 
+        let devicesc = devices.clone();
         let stats = warp::get()
             .and(warp::path("stats"))
             .and(warp::path::end())
             .map(move || {
                 warp::reply::json(
+                    &devicesc
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(|(node, device)| (node, device.stats()))
+                        .collect::<HashMap<_, _>>(),
+                )
+            });
+
+        let node_stats = warp::get()
+            .and(warp::path!("node" / String))
+            .and(warp::path::end())
+            .map(move |node: String| {
+                warp::reply::json(
                     &devices
                         .lock()
                         .unwrap()
                         .iter()
+                        .filter(|(it, _)| it == &&node)
                         .map(|(node, device)| (node, device.stats()))
                         .collect::<HashMap<_, _>>(),
                 )
@@ -190,7 +206,14 @@ async fn main() -> Result<()> {
             .and(warp::body::json())
             .and_then(move |src, dst, post| channel_post_fn(src, dst, post, channelsc.clone()));
 
-        let routes = nodes.or(stats).or(channels_get).or(channel_post);
+        let cors = warp::cors().allow_any_origin();
+
+        let routes = nodes
+            .or(node_stats)
+            .or(stats)
+            .or(channels_get)
+            .or(channel_post)
+            .with(cors);
         tokio::select! {
             _ = warp::serve(routes).run(([127, 0, 0, 1], 3030)) => {}
             _ = simulator.run() => {}

@@ -1,11 +1,10 @@
 use crate::network_interface::NetworkInterface;
+use crate::stats::Stats;
 use anyhow::{Context, Result};
 use futures::ready;
 use libc::{sockaddr, sockaddr_ll, AF_PACKET};
 use mac_address::MacAddress;
 use nix::sys::socket::{self, LinkAddr, SockaddrLike};
-#[cfg(feature = "stats")]
-use serde::Serialize;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::io::{self, ErrorKind, IoSlice, Read, Write};
 use std::os::fd::IntoRawFd;
@@ -18,15 +17,6 @@ use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 const ETH_P_ALL: u16 = 0x0003;
-
-#[cfg(feature = "stats")]
-#[derive(Serialize, Default, Clone, Copy)]
-pub struct Stats {
-    received_packets: usize,
-    received_bytes: usize,
-    transmitted_packets: usize,
-    transmitted_bytes: usize,
-}
 
 pub struct Device {
     mac_address: MacAddress,
@@ -251,7 +241,7 @@ impl Device {
                     if let Ok(size) = res {
                         let mut stats = self.stats.write().unwrap();
                         stats.received_packets += 1;
-                        stats.received_bytes += size;
+                        stats.received_bytes += size as u128;
                     }
                     return res;
                 }
@@ -269,7 +259,7 @@ impl Device {
                     if let Ok(size) = res {
                         let mut stats = self.stats.write().unwrap();
                         stats.transmitted_packets += 1;
-                        stats.transmitted_bytes += size;
+                        stats.transmitted_bytes += size as u128;
                     }
                     return res;
                 }
@@ -294,7 +284,7 @@ impl Device {
         {
             let mut stats = self.stats.write().unwrap();
             stats.transmitted_packets += 1;
-            stats.transmitted_bytes += size;
+            stats.transmitted_bytes += size as u128;
         }
         Ok(())
     }
@@ -308,7 +298,7 @@ impl Device {
                     if let Ok(size) = res {
                         let mut stats = self.stats.write().unwrap();
                         stats.transmitted_packets += 1;
-                        stats.transmitted_bytes += size;
+                        stats.transmitted_bytes += size as u128;
                     }
                     return res;
                 }

@@ -216,13 +216,9 @@ impl Routing {
 
 #[cfg(test)]
 mod tests {
-    use mac_address::MacAddress;
-
     use crate::{
-        control::{
-            args::{NodeParameters, NodeType},
-            rsu::Routing,
-        },
+        args::{NodeParameters, NodeType},
+        control::rsu::Routing,
         messages::{control::Control, message::Message, packet_type::PacketType},
         Args,
     };
@@ -241,7 +237,7 @@ mod tests {
             },
         };
 
-        let Ok(mut routing) = Routing::new(&args, MacAddress::default()) else {
+        let Ok(mut routing) = Routing::new(&args) else {
             panic!("did not build a routing object");
         };
         let message = routing.send_heartbeat([1; 6].into());

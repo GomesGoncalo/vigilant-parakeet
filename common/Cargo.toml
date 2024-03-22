@@ -3,7 +3,7 @@ name = "common"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = {version = "*", features = ["full"]}
 anyhow = "*"
 mac_address = "*"
@@ -12,6 +12,10 @@ socket2 = {version = "*", features = ["all"]}
 libc = "*"
 serde = { version = "*", features = ["derive"]}
 futures = "*"
+config = "*"
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+serde = { version = "*", features = ["derive"]}
 
 [features]
 stats = []
