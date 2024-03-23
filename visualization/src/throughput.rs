@@ -111,7 +111,7 @@ impl Component for Throughput {
                         let Some(fstat) = previous.get(node) else {
                             return 0;
                         };
-                        lstat.received_bytes.saturating_sub(fstat.received_bytes)
+                        lstat.received_bytes.saturating_sub(fstat.received_bytes) * 8
                     })
                     .collect();
                 let tx_diff: Vec<_> = nodes
@@ -125,7 +125,7 @@ impl Component for Throughput {
                         };
                         lstat
                             .transmitted_bytes
-                            .saturating_sub(fstat.transmitted_bytes)
+                            .saturating_sub(fstat.transmitted_bytes) * 8
                     })
                     .collect();
                 let rxp_diff: Vec<_> = nodes
@@ -171,7 +171,7 @@ impl Component for Throughput {
                     .name("Transmitted");
                 bytes_plot.add_trace(rtrace);
                 bytes_plot.add_trace(ttrace);
-                let layout = Layout::new().title("<b>Bytes</b>".into());
+                let layout = Layout::new().title("<b>Bits per second</b>".into());
                 bytes_plot.set_layout(layout);
                 let rtrace = yew_plotly::plotly::Bar::new(ctx.props().nodes.clone(), rxp_diff)
                     .name("Received");
