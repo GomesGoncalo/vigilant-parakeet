@@ -31,10 +31,6 @@ topology:
     n1:
       latency: 0
       loss: 0
-  n3:
-    n1:
-      latency: 0
-      loss: 0
 ```
 
 Then create n1 config (in a yaml file please):
@@ -123,3 +119,6 @@ or ping:
 PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
 64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.530 ms
 ```
+
+You can also go into `visualization` folder and run `trunk serve` which will serve an app on http://127.0.0.1:8080/
+This will let you change channel parameters and visualize the amount of traffic flowing throught the interfaces.
