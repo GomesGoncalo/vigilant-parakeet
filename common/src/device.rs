@@ -1,4 +1,5 @@
 use crate::network_interface::NetworkInterface;
+#[cfg(feature = "stats")]
 use crate::stats::Stats;
 use anyhow::{Context, Result};
 use futures::ready;
@@ -11,7 +12,7 @@ use std::os::fd::IntoRawFd;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::pin::Pin;
 #[cfg(feature = "stats")]
-use std::sync::RwLock;
+use std::sync::Mutex;
 use std::task::{self, Poll};
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -22,7 +23,7 @@ pub struct Device {
     mac_address: MacAddress,
     fd: AsyncFd<DeviceIo>,
     #[cfg(feature = "stats")]
-    stats: RwLock<Stats>,
+    stats: Mutex<Stats>,
 }
 
 impl AsyncRead for Device {
@@ -239,7 +240,7 @@ impl Device {
                 Ok(res) => {
                     #[cfg(feature = "stats")]
                     if let Ok(size) = res {
-                        let mut stats = self.stats.write().unwrap();
+                        let mut stats = self.stats.lock().unwrap();
                         stats.received_packets += 1;
                         stats.received_bytes += size as u128;
                     }
@@ -257,7 +258,7 @@ impl Device {
                 Ok(res) => {
                     #[cfg(feature = "stats")]
                     if let Ok(size) = res {
-                        let mut stats = self.stats.write().unwrap();
+                        let mut stats = self.stats.lock().unwrap();
                         stats.transmitted_packets += 1;
                         stats.transmitted_bytes += size as u128;
                     }
@@ -282,7 +283,7 @@ impl Device {
         }
         #[cfg(feature = "stats")]
         {
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = self.stats.lock().unwrap();
             stats.transmitted_packets += 1;
             stats.transmitted_bytes += size as u128;
         }
@@ -296,7 +297,7 @@ impl Device {
                 Ok(res) => {
                     #[cfg(feature = "stats")]
                     if let Ok(size) = res {
-                        let mut stats = self.stats.write().unwrap();
+                        let mut stats = self.stats.lock().unwrap();
                         stats.transmitted_packets += 1;
                         stats.transmitted_bytes += size as u128;
                     }
@@ -309,6 +310,6 @@ impl Device {
 
     #[cfg(feature = "stats")]
     pub fn stats(&self) -> Stats {
-        *self.stats.read().unwrap()
+        *self.stats.lock().unwrap()
     }
 }

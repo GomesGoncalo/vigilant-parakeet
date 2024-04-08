@@ -2,7 +2,7 @@ use crate::control::node::ReplyType;
 use anyhow::Result;
 use futures::Future;
 use std::sync::Arc;
-use tokio_tun::Tun;
+use common::tun::Tun;
 use uninit::uninit_array;
 
 pub struct SessionParams {}

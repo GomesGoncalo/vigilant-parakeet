@@ -20,7 +20,7 @@ use std::{
     sync::{Arc, RwLock},
     time::Instant,
 };
-use tokio_tun::Tun;
+use common::tun::Tun;
 
 pub struct Obu {
     args: Args,

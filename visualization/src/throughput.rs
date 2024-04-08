@@ -5,7 +5,7 @@ use gloo_timers::callback::Timeout;
 use std::collections::HashMap;
 use yew::prelude::*;
 use yew_plotly::{
-    plotly::{Layout, Plot},
+    plotly::{common::Title, layout::Axis, Layout, Plot},
     Plotly,
 };
 
@@ -16,11 +16,11 @@ pub struct Props {
 
 enum PlotState {
     NoData,
-    First((DateTime<Local>, HashMap<String, Stats>)),
+    First((DateTime<Local>, HashMap<String, (Stats, Stats)>)),
     Diff(
         (
-            (DateTime<Local>, HashMap<String, Stats>),
-            (DateTime<Local>, HashMap<String, Stats>),
+            (DateTime<Local>, HashMap<String, (Stats, Stats)>),
+            (DateTime<Local>, HashMap<String, (Stats, Stats)>),
         ),
     ),
 }
@@ -33,7 +33,7 @@ pub struct Throughput {
 pub enum Msg {
     None,
     Timer,
-    Data(DateTime<Local>, HashMap<String, Stats>),
+    Data(DateTime<Local>, HashMap<String, (Stats, Stats)>),
 }
 
 impl Component for Throughput {
@@ -59,7 +59,8 @@ impl Component for Throughput {
                     else {
                         return Msg::None;
                     };
-                    let Ok(node_stats): Result<HashMap<String, Stats>, _> = request.json().await
+                    let Ok(node_stats): Result<HashMap<String, (Stats, Stats)>, _> =
+                        request.json().await
                     else {
                         return Msg::None;
                     };
@@ -100,41 +101,55 @@ impl Component for Throughput {
             },
             PlotState::Diff(((p_i, previous), (l_i, last))) => {
                 let mut bytes_plot = Plot::new();
+                let mut bytes_plottun = Plot::new();
                 let mut pkt_plot = Plot::new();
                 let nodes = ctx.props().nodes.clone();
                 let rx_diff: Vec<_> = nodes
                     .iter()
                     .map(|node| {
-                        let Some(lstat) = last.get(node) else {
-                            return 0;
+                        let Some((lstat, lstattun)) = last.get(node) else {
+                            return (0, 0);
                         };
-                        let Some(fstat) = previous.get(node) else {
-                            return 0;
+                        let Some((fstat, fstattun)) = previous.get(node) else {
+                            return (0, 0);
                         };
-                        lstat.received_bytes.saturating_sub(fstat.received_bytes) * 8
+                        (
+                            lstat.received_bytes.saturating_sub(fstat.received_bytes) * 8,
+                            lstattun
+                                .received_bytes
+                                .saturating_sub(fstattun.received_bytes)
+                                * 8,
+                        )
                     })
                     .collect();
                 let tx_diff: Vec<_> = nodes
                     .iter()
                     .map(|node| {
-                        let Some(lstat) = last.get(node) else {
-                            return 0;
+                        let Some((lstat, lstattun)) = last.get(node) else {
+                            return (0, 0);
                         };
-                        let Some(fstat) = previous.get(node) else {
-                            return 0;
+                        let Some((fstat, fstattun)) = previous.get(node) else {
+                            return (0, 0);
                         };
-                        lstat
-                            .transmitted_bytes
-                            .saturating_sub(fstat.transmitted_bytes) * 8
+                        (
+                            lstat
+                                .transmitted_bytes
+                                .saturating_sub(fstat.transmitted_bytes)
+                                * 8,
+                            lstattun
+                                .transmitted_bytes
+                                .saturating_sub(fstattun.transmitted_bytes)
+                                * 8,
+                        )
                     })
                     .collect();
                 let rxp_diff: Vec<_> = nodes
                     .iter()
                     .map(|node| {
-                        let Some(lstat) = last.get(node) else {
+                        let Some((lstat, _)) = last.get(node) else {
                             return 0;
                         };
-                        let Some(fstat) = previous.get(node) else {
+                        let Some((fstat, _)) = previous.get(node) else {
                             return 0;
                         };
                         lstat
@@ -145,10 +160,10 @@ impl Component for Throughput {
                 let txp_diff: Vec<_> = nodes
                     .iter()
                     .map(|node| {
-                        let Some(lstat) = last.get(node) else {
+                        let Some((lstat, _)) = last.get(node) else {
                             return 0;
                         };
-                        let Some(fstat) = previous.get(node) else {
+                        let Some((fstat, _)) = previous.get(node) else {
                             return 0;
                         };
                         lstat
@@ -165,25 +180,59 @@ impl Component for Throughput {
                     time_diff = (*l_i - p_i).num_milliseconds(),
                     "plotting"
                 );
-                let rtrace = yew_plotly::plotly::Bar::new(ctx.props().nodes.clone(), rx_diff)
-                    .name("Received");
-                let ttrace = yew_plotly::plotly::Bar::new(ctx.props().nodes.clone(), tx_diff)
-                    .name("Transmitted");
+
+                let rtrace = yew_plotly::plotly::Bar::new(
+                    ctx.props().nodes.clone(),
+                    rx_diff.iter().cloned().map(|(dev, _)| dev).collect(),
+                )
+                .name("Received");
+                let ttrace = yew_plotly::plotly::Bar::new(
+                    ctx.props().nodes.clone(),
+                    tx_diff.iter().cloned().map(|(dev, _)| dev).collect(),
+                )
+                .name("Transmitted");
                 bytes_plot.add_trace(rtrace);
                 bytes_plot.add_trace(ttrace);
-                let layout = Layout::new().title("<b>Bits per second</b>".into());
+                let rtrace = yew_plotly::plotly::Bar::new(
+                    ctx.props().nodes.clone(),
+                    rx_diff.iter().cloned().map(|(_, tun)| tun).collect(),
+                )
+                .name("Received");
+                let ttrace = yew_plotly::plotly::Bar::new(
+                    ctx.props().nodes.clone(),
+                    tx_diff.iter().cloned().map(|(_, tun)| tun).collect(),
+                )
+                .name("Transmitted");
+                bytes_plottun.add_trace(rtrace);
+                bytes_plottun.add_trace(ttrace);
+                let x_axis = Axis::new().title(Title::new("Nodes"));
+                let y_axis = Axis::new().title(Title::new("Bits per second"));
+                let layout = Layout::new()
+                    .title("<b>Traffic</b>".into())
+                    .x_axis(x_axis.clone())
+                    .y_axis(y_axis.clone());
                 bytes_plot.set_layout(layout);
+                let layout = Layout::new()
+                    .title("<b>Traffic (Tun)</b>".into())
+                    .x_axis(x_axis.clone())
+                    .y_axis(y_axis);
+                bytes_plottun.set_layout(layout);
                 let rtrace = yew_plotly::plotly::Bar::new(ctx.props().nodes.clone(), rxp_diff)
                     .name("Received");
                 let ttrace = yew_plotly::plotly::Bar::new(ctx.props().nodes.clone(), txp_diff)
                     .name("Transmitted");
                 pkt_plot.add_trace(rtrace);
                 pkt_plot.add_trace(ttrace);
-                let layout = Layout::new().title("<b>Packets</b>".into());
+                let y_axis = Axis::new().title(Title::new("Packets per second"));
+                let layout = Layout::new()
+                    .title("<b>Packets</b>".into())
+                    .x_axis(x_axis)
+                    .y_axis(y_axis);
                 pkt_plot.set_layout(layout);
                 html! {
                 <>
                     <Plotly plot={bytes_plot}/>
+                    <Plotly plot={bytes_plottun}/>
                     <Plotly plot={pkt_plot}/>
                 </>
                 }

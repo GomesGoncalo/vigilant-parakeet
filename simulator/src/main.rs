@@ -1,10 +1,12 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use common::device::Device;
+use common::tun::Tun;
 use config::Config;
 #[cfg(feature = "webview")]
 use itertools::Itertools;
 use node_lib::args::{Args, NodeParameters, NodeType};
+use serde::Serialize;
 use std::{
     collections::HashMap,
     net::Ipv4Addr,
@@ -12,7 +14,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::signal;
-use tokio_tun::Tun;
+use tokio_tun::Tun as TokioTun;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 #[cfg(feature = "webview")]
 use warp::Filter;
@@ -50,6 +52,12 @@ async fn channel_post_fn(
     }
 }
 
+#[derive(Serialize)]
+struct ErrorMessage {
+    code: u16,
+    message: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = SimArgs::parse();
@@ -79,14 +87,14 @@ async fn main() -> Result<()> {
             .build()?;
         tracing::info!(?settings, "settings");
 
-        let tun = Arc::new(
-            Tun::builder()
+        let tun = Arc::new(Tun::new(
+            TokioTun::builder()
                 .name("real")
                 .tap(true)
                 .packet_info(false)
                 .up()
                 .try_build()?,
-        );
+        ));
 
         let args = Args {
             bind: tun.name().to_string(),
@@ -105,35 +113,31 @@ async fn main() -> Result<()> {
             },
         };
 
-        let virtual_tun = if let Some(ref name) = args.tap_name {
-            Arc::new(
-                Tun::builder()
-                    .tap(true)
-                    .name(name)
-                    .packet_info(false)
-                    .address(args.ip.context("")?)
-                    .mtu(args.mtu)
-                    .up()
-                    .try_build()?,
-            )
+        let virtual_tun = Arc::new(Tun::new(if let Some(ref name) = args.tap_name {
+            TokioTun::builder()
+                .tap(true)
+                .name(name)
+                .packet_info(false)
+                .address(args.ip.context("")?)
+                .mtu(args.mtu)
+                .up()
+                .try_build()?
         } else {
-            Arc::new(
-                Tun::builder()
-                    .tap(true)
-                    .packet_info(false)
-                    .address(args.ip.context("")?)
-                    .mtu(args.mtu)
-                    .up()
-                    .try_build()?,
-            )
-        };
+            TokioTun::builder()
+                .tap(true)
+                .packet_info(false)
+                .address(args.ip.context("")?)
+                .mtu(args.mtu)
+                .up()
+                .try_build()?
+        }));
 
         let dev = Arc::new(Device::new(tun.name())?);
         let node = node_lib::create_with_vdev(args, virtual_tun, dev.clone())?;
         devices
             .lock()
             .unwrap()
-            .insert(name.to_string(), dev.clone());
+            .insert(name.to_string(), (dev.clone(), tun.clone()));
         Ok((dev, tun, node))
     })?;
 
@@ -157,7 +161,7 @@ async fn main() -> Result<()> {
                         .lock()
                         .unwrap()
                         .iter()
-                        .map(|(node, device)| (node, device.stats()))
+                        .map(|(node, (device, tun))| (node, (device.stats(), tun.stats())))
                         .collect::<HashMap<_, _>>(),
                 )
             });
@@ -166,15 +170,23 @@ async fn main() -> Result<()> {
             .and(warp::path!("node" / String))
             .and(warp::path::end())
             .map(move |node: String| {
-                warp::reply::json(
-                    &devices
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .filter(|(it, _)| it == &&node)
-                        .map(|(node, device)| (node, device.stats()))
-                        .collect::<HashMap<_, _>>(),
-                )
+                let Some(reply) = &devices
+                    .lock()
+                    .unwrap()
+                    .get(&node)
+                    .map(|(device, tun)| (device.stats(), tun.stats()))
+                else {
+                    let json = warp::reply::json(&ErrorMessage {
+                        code: 404,
+                        message: "node not found".to_string(),
+                    });
+                    return warp::reply::with_status(json, warp::http::StatusCode::NOT_FOUND);
+                };
+
+                let mut map = HashMap::with_capacity(1);
+                map.insert(node, *reply);
+                let json = warp::reply::json(&map);
+                warp::reply::with_status(json, warp::http::StatusCode::OK)
             });
 
         let channels = simulator.get_channels();

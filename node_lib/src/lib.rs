@@ -8,7 +8,8 @@ use args::{Args, NodeType};
 use common::device::Device;
 use control::node::ReplyType;
 use std::sync::Arc;
-use tokio_tun::Tun;
+use common::tun::Tun;
+use tokio_tun::Tun as TokioTun;
 
 pub trait Node {}
 
@@ -27,8 +28,8 @@ pub fn create_with_vdev(
 }
 
 pub fn create(args: Args) -> Result<Arc<dyn Node>> {
-    let tun = Arc::new(if args.ip.is_some() {
-        Tun::builder()
+    let tun = Arc::new(Tun::new(if args.ip.is_some() {
+        TokioTun::builder()
             .name(args.tap_name.as_ref().unwrap_or(&String::default()))
             .tap(true)
             .mtu(args.mtu)
@@ -37,14 +38,14 @@ pub fn create(args: Args) -> Result<Arc<dyn Node>> {
             .address(args.ip.context("no ip")?)
             .try_build()?
     } else {
-        Tun::builder()
+        TokioTun::builder()
             .name(args.tap_name.as_ref().unwrap_or(&String::default()))
             .mtu(args.mtu)
             .tap(true)
             .packet_info(false)
             .up()
             .try_build()?
-    });
+    }));
 
     let dev = Device::new(&args.bind)?;
     create_with_vdev(args, tun, dev.into())

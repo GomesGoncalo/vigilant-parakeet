@@ -8,11 +8,12 @@ use crate::{
     Args, ReplyType,
 };
 use anyhow::{bail, Result};
+use arc_swap::ArcSwapOption;
 use indexmap::IndexMap;
 use mac_address::MacAddress;
 use std::{
     collections::{hash_map::Entry, HashMap},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
 use tracing::Level;
@@ -41,7 +42,7 @@ pub struct Routing {
             ),
         >,
     >,
-    cached_upstream: Arc<Mutex<Option<MacAddress>>>,
+    cached_upstream: ArcSwapOption<MacAddress>,
 }
 
 impl Routing {
@@ -53,7 +54,7 @@ impl Routing {
             args: args.clone(),
             boot: *boot,
             routes: HashMap::default(),
-            cached_upstream: Arc::new(Mutex::new(None)),
+            cached_upstream: ArcSwapOption::from(None),
         })
     }
 
@@ -336,9 +337,9 @@ impl Routing {
 
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
         let Some(mac) = mac else {
-            return self.cached_upstream.lock().unwrap().map(|mac| Route {
+            return self.cached_upstream.load().as_ref().map(|mac| Route {
                 hops: 1,
-                mac,
+                mac: **mac,
                 latency: None,
             });
         };
@@ -353,11 +354,11 @@ impl Routing {
             .collect();
         upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
 
-        let mut cached = self.cached_upstream.lock().unwrap();
+        let cached = self.cached_upstream.load();
         if let Some(cached_upstream) = cached.as_ref() {
             if let Some((_, _, upstream_route, hops)) = upstream_routes
                 .iter()
-                .find(|(_, rsu_mac, _, _)| *rsu_mac == cached_upstream)
+                .find(|(_, rsu_mac, _, _)| **rsu_mac == **cached_upstream)
             {
                 return Some(Route {
                     hops: **hops,
@@ -367,15 +368,16 @@ impl Routing {
             }
         }
 
+        std::mem::drop(cached);
         if let Some((_, _, upstream_route, hops)) = upstream_routes.first() {
-            *cached = Some(**upstream_route);
+            let upstream_route = **upstream_route;
+            self.cached_upstream.store(Some(upstream_route.into()));
             return Some(Route {
                 hops: **hops,
-                mac: **upstream_route,
+                mac: upstream_route,
                 latency: None,
             });
         }
-        std::mem::drop(cached);
 
         let route_options: IndexMap<_, _> = self
             .routes

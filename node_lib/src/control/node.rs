@@ -4,7 +4,7 @@ use common::device::Device;
 use futures::{future::join_all, Future};
 use itertools::Itertools;
 use std::{io::IoSlice, sync::Arc};
-use tokio_tun::Tun;
+use common::tun::Tun;
 use uninit::uninit_array;
 
 #[derive(Debug)]

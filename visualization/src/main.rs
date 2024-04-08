@@ -12,12 +12,6 @@ use web_sys::wasm_bindgen::JsCast;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
-#[derive(Default)]
-struct State {
-    nodes: Vec<String>,
-    channels: HashMap<String, HashMap<String, ChannelParameters>>,
-}
-
 #[derive(Clone, PartialEq, Properties)]
 struct Props {
     nodes: Vec<String>,
@@ -38,38 +32,59 @@ fn OutterForm(props: &Props) -> Html {
         ));
         fromc.set(Some(node))
     });
-    // let emit = |latency, loss| {
-    //     wasm_bindgen_futures::spawn_local(async move {
-    //         let Ok(request) = Request::post(format!("http://127.0.0.1:3030/channel/{}/{}", *from, *to))
-    //             .send()
-    //             .await
-    //         else {
-    //             gloo_timers::future::sleep(std::time::Duration::from_secs(1)).await;
-    //             continue;
-    //         };
-    //
-    //         if let Ok(mut node_stats) = request.json::<Vec<String>>().await {
-    //             node_stats.sort();
-    //             tracing::info!(?node_stats, "these are the current nodes");
-    //             if *nodes != node_stats {
-    //                 nodes.set(node_stats);
-    //             }
-    //         }
-    //     });
-    // };
+    let fromc = from.clone();
+    let toc = to.clone();
+    let emit = Callback::from(move |(latency, loss)| {
+        let fromc = fromc.clone();
+        let toc = toc.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let (Some(from), Some(to)) = (&*fromc, &*toc) else {
+                return;
+            };
 
+            //let map = HashMap::new();
+            tracing::info!(latency, loss, "emitted params");
+            //let _ = Request::post(&format!("http://127.0.0.1:3030/channel/{}/{}", from, to).to_string()).json(format!("{{\"latency\":\"{latency}\",\"loss\":\"{loss}\"}}")).unwrap()
+            //     .send()
+            //     .await;
+         });
+    });
+
+    let channels = props.channels.clone();
+    let fromc = from.clone();
+    let toc = to.clone();
+    let emitc = emit.clone();
     let emit_latency = Callback::from(move |input_event: Event| {
         let input_event_target = input_event.target().unwrap();
         let current_input_text = input_event_target.unchecked_into::<HtmlInputElement>();
 
-        tracing::info!(?current_input_text, "emitted latency");
+        let Ok(number) = current_input_text.value().parse() else {
+            tracing::info!("Could not parse loss");
+            return;
+        };
+
+        if let (Some(from), Some(to)) = (&*fromc, &*toc) {
+            tracing::info!(number, "emitted latency");
+            emitc.emit((number, channels.get(from).unwrap().get(to).unwrap().loss));
+        }
     });
 
+    let channels = props.channels.clone();
+    let fromc = from.clone();
+    let toc = to.clone();
     let emit_loss = Callback::from(move |input_event: Event| {
         let input_event_target = input_event.target().unwrap();
         let current_input_text = input_event_target.unchecked_into::<HtmlInputElement>();
 
-        tracing::info!(?current_input_text, "emitted loss");
+        let Ok(number) = current_input_text.value().parse() else {
+            tracing::info!("Could not parse loss");
+            return;
+        };
+
+        if let (Some(from), Some(to)) = (&*fromc, &*toc) {
+            tracing::info!(number, "emitted loss");
+            emit.emit((channels.get(from).unwrap().get(to).unwrap().latency.as_millis(), number));
+        }
     });
 
     let toc = to.clone();

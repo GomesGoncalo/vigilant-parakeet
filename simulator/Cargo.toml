@@ -20,9 +20,8 @@ tokio-timerfd = "*"
 node_lib = { path = "../node_lib/" }
 itertools = "*"
 warp = {version = "*", optional = true}
-serde = { version = "*", features = ["derive"], optional = true}
+serde = { version = "*", features = ["derive"]}
 common = { path = "../common/" }
 
 [features]
-webview = ["dep:serde", "dep:warp", "node_lib/stats", "common/stats"]
-default = ["webview"]
+webview = [ "dep:warp", "node_lib/stats" ]

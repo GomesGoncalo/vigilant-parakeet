@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc::UnboundedSender;
-use tokio_tun::Tun;
+use common::tun::Tun;
 use uninit::uninit_array;
 
 pub struct NamespaceWrapper(Option<NetNs>);
@@ -63,10 +63,9 @@ impl Channel {
 
     pub fn set_params(&self, params: HashMap<String, String>) -> Result<()> {
         let result = ChannelParameters {
-            latency: Duration::from_millis(u64::from_str_radix(
-                params.get("latency").context("could not get latency")?,
-                10,
-            )?),
+            latency: Duration::from_millis(
+                (params.get("latency").context("could not get latency")?).parse::<u64>()
+            ?),
             loss: f64::from_str(params.get("loss").context("could not get loss")?)?,
         };
 
@@ -279,10 +278,14 @@ impl Simulator {
             .map(|(node, channel)| Self::generate_channel_reads(node.to_string(), channel.clone()))
             .collect::<FuturesUnordered<_>>();
 
+        let channel_map_vec : HashMap<&String, Vec<Arc<Channel>>> = self.channels.iter().map(|(from, map_to)| {
+            (from, map_to.iter().map(|(_, channel)| channel.clone()).collect_vec())
+        }).collect();
+
         loop {
             if let Some(Ok((buf, size, node, channel))) = future_set.next().await {
-                if let Some(connections) = self.channels.get(&node) {
-                    for channel in connections.values() {
+                if let Some(connections) = channel_map_vec.get(&node) {
+                    for channel in connections {
                         let _ = channel.send(buf, size).await;
                     }
                 }

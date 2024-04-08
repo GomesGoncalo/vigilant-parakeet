@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio-tun = "*"
 tokio = {version = "*", features = ["full"]}
+tokio-tun = "*"
 anyhow = "*"
 socket2 = {version = "*", features = ["all"]}
 uninit = "*"
@@ -20,6 +20,7 @@ tokio-timerfd = "*"
 itertools = "*"
 serde = { version = "*", features = ["derive"]}
 common = { path = "../common/" }
+arc-swap = { version = "*" }
 
 [features]
 stats = [ "common/stats" ]

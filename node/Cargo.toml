@@ -9,4 +9,3 @@ anyhow = "*"
 tracing-subscriber = { version = "*", features = ["env-filter", "std"] }
 clap = { version = "*", features = ["derive"] }
 node_lib = { path = "../node_lib/" }
-

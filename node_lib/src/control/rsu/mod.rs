@@ -21,7 +21,7 @@ use std::{
     sync::{Arc, RwLock},
     time::Duration,
 };
-use tokio_tun::Tun;
+use common::tun::Tun;
 
 pub struct Rsu {
     args: Args,
