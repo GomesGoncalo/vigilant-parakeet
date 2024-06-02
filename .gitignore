@@ -1,2 +1,4 @@
 /target
 *.yaml
+/visualization/dist
+Cargo.lock
