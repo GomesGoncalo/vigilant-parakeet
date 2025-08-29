@@ -107,6 +107,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{get_msgs, ReplyType};
+    use crate::control::node::DebugReplyType;
     use crate::messages::message::Message;
     use anyhow::Result;
 
@@ -125,5 +126,34 @@ mod tests {
         let dbg = get_msgs(&res).expect("ok some").expect("some");
         // should filter out unparsable wire entries
         assert!(dbg.is_empty());
+    }
+
+    #[test]
+    fn get_msgs_ok_some_with_parsable_wire() {
+        use crate::messages::data::ToUpstream;
+        use crate::messages::data::Data;
+        use crate::messages::packet_type::PacketType;
+        use mac_address::MacAddress;
+
+        let from: MacAddress = [2u8; 6].into();
+        let to: MacAddress = [3u8; 6].into();
+        let payload = b"hi";
+        let tu = ToUpstream::new(from, payload);
+        let data = Data::Upstream(tu);
+        let pkt = PacketType::Data(data);
+        let message = Message::new(from, to, pkt);
+
+        let wire: Vec<Vec<u8>> = (&message).into();
+        let replies = vec![ReplyType::Wire(wire)];
+        let res: Result<Option<Vec<ReplyType>>> = Ok(Some(replies));
+        let dbg = get_msgs(&res).expect("ok some").expect("some");
+        // should contain one Wire debug entry
+        assert_eq!(dbg.len(), 1);
+        match &dbg[0] {
+            DebugReplyType::Wire(s) => {
+                assert!(s.contains("Message"));
+            }
+            _ => panic!("expected Wire debug string"),
+        }
     }
 }

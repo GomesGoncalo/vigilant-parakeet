@@ -31,7 +31,12 @@ fn bench_obu_get_route(c: &mut Criterion) {
         )), [9u8;6].into());
     }
 
-    c.bench_function("obu_get_route_100", |b| {
+    let mut short_cfg = Criterion::default()
+        .measurement_time(std::time::Duration::from_secs(1))
+        .warm_up_time(std::time::Duration::from_secs(1))
+        .sample_size(10);
+
+    short_cfg.bench_function("obu_get_route_100", |b| {
         b.iter(|| {
             let _ = routing.get_route_to(black_box(Some(MacAddress::new([50u8;6]))));
         })
@@ -59,7 +64,7 @@ fn bench_rsu_get_route(c: &mut Criterion) {
         let _ = routing.send_heartbeat(src);
     }
 
-    c.bench_function("rsu_get_route_100", |b| {
+    short_cfg.bench_function("rsu_get_route_100", |b| {
         b.iter(|| {
             let _ = routing.get_route_to(black_box(Some(MacAddress::new([50u8;6]))));
         })

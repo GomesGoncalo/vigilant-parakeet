@@ -116,6 +116,38 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod more_tests {
+    use super::Routing;
+    use crate::args::{NodeParameters, NodeType};
+    use crate::Args;
+    use mac_address::MacAddress;
+
+    #[test]
+    fn get_route_to_none_when_empty() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 2,
+                hello_periodicity: None,
+            },
+        };
+
+        let boot = std::time::Instant::now();
+        let routing = Routing::new(&args, &boot).expect("routing built");
+
+        let unknown: MacAddress = [1u8; 6].into();
+        // No routes yet
+        assert!(routing.get_route_to(Some(unknown)).is_none());
+        // No cached upstream
+        assert!(routing.get_route_to(None).is_none());
+    }
+}
+
 #[derive(Debug)]
 #[allow(clippy::type_complexity)]
 pub struct Routing {

@@ -1,5 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use std::time::Duration;
 use std::os::unix::io::{FromRawFd, IntoRawFd};
+use std::io::Read;
+use std::thread;
 use tokio::runtime::Runtime;
 use common::device::DeviceIo;
 use nix::unistd::{pipe, close};
@@ -22,6 +25,29 @@ fn bench_device_async_send(c: &mut Criterion) {
         }
     }
 
+    // Create a single-threaded runtime used for bench iterations to avoid creating/dropping a runtime repeatedly.
+    let rt = Runtime::new().expect("tokio rt");
+    // Enter the runtime context so AsyncFd::new can be called without panicking.
+    let _enter = rt.enter();
+
+    // Spawn a background thread that drains the reader end so the writer never stalls.
+    let reader_handle = thread::spawn(move || {
+        let mut f = unsafe { std::fs::File::from_raw_fd(raw_r) };
+        let mut buf = [0u8; 4096];
+        loop {
+            match f.read(&mut buf) {
+                Ok(0) => break, // EOF
+                Ok(_) => continue,
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+    });
+
     // Wrap the writer fd in DeviceIo and AsyncFd
     let async_fd = tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(raw_w) }).expect("create asyncfd");
 
@@ -29,12 +55,16 @@ fn bench_device_async_send(c: &mut Criterion) {
     let mac: mac_address::MacAddress = [1, 2, 3, 4, 5, 6].into();
     let device = common::device::Device::from_asyncfd_for_bench(mac, async_fd);
 
-    // Create a single-threaded runtime used for bench iterations to avoid creating/dropping a runtime repeatedly.
-    let rt = Runtime::new().expect("tokio rt");
-
     let buf = vec![0u8; 1024];
 
-    c.bench_function("device_send_1k", |b| {
+    // Use a short, local Criterion config so running this in CI / interactively completes quickly
+    // and still produces artifacts under target/criterion.
+    let mut short_cfg = Criterion::default()
+        .measurement_time(Duration::from_secs(1))
+        .warm_up_time(Duration::from_secs(1))
+        .sample_size(10);
+
+    short_cfg.bench_function("device_send_1k", |b| {
         b.iter(|| {
             // Call Device::send inside the runtime; this uses AsyncFd.writable internally.
             let res = rt.block_on(async { device.send(black_box(&buf[..])).await });
@@ -45,8 +75,9 @@ fn bench_device_async_send(c: &mut Criterion) {
         })
     });
 
-    // cleanup the reader end. The writer fd will be closed when `device` is dropped.
-    let _ = close(raw_r);
+    // cleanup: drop the device (closes the writer) so the reader thread sees EOF, then join it.
+    drop(device);
+    let _ = reader_handle.join();
 }
 
 criterion_group!(benches, bench_device_async_send);

@@ -305,3 +305,34 @@ mod tests {
         assert!(route.is_some());
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::Routing;
+    use crate::args::{NodeParameters, NodeType};
+    use crate::Args;
+    use mac_address::MacAddress;
+
+    #[test]
+    fn iter_next_hops_empty_and_get_route_none_when_empty() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Rsu,
+                hello_history: 2,
+                hello_periodicity: None,
+            },
+        };
+
+        let mut routing = Routing::new(&args).expect("routing built");
+
+        // iter_next_hops should be empty
+        assert_eq!(routing.iter_next_hops().count(), 0);
+
+        let unknown: MacAddress = [9u8; 6].into();
+        assert!(routing.get_route_to(Some(unknown)).is_none());
+    }
+}

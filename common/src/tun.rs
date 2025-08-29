@@ -1,7 +1,8 @@
 // Test shim for `tokio_tun::Tun` so unit tests can exercise `Tun` without creating
-// a real tun device. This is compiled only for tests.
-#[cfg(test)]
-mod test_tun {
+// a real tun device. This can be enabled for downstream test harnesses via the
+// `test_helpers` feature.
+#[cfg(any(test, feature = "test_helpers"))]
+pub mod test_tun {
     use std::io::{self, IoSlice};
     use tokio::sync::mpsc;
 
@@ -78,13 +79,61 @@ use crate::stats::Stats;
 #[cfg(feature = "stats")]
 use std::sync::Mutex;
 
-#[cfg(not(test))]
+// Always expose the real tokio_tun::Tun as `TokioTun` for production code.
 use tokio_tun::Tun as TokioTun;
-#[cfg(test)]
-use self::test_tun::TokioTun;
+// The test shim `test_tun::TokioTun` is available when the `test_helpers` feature
+// is enabled (or when compiling common's own tests).
+
+use futures::future::BoxFuture;
+use futures::FutureExt;
+
+pub trait TunInner: Send + Sync {
+    fn send_vectored<'a>(&'a self, bufs: &'a [IoSlice<'_>]) -> BoxFuture<'a, io::Result<usize>>;
+    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> BoxFuture<'a, io::Result<usize>>;
+    fn send_all<'a>(&'a self, buf: &'a [u8]) -> BoxFuture<'a, io::Result<()>>;
+    fn name(&self) -> &str;
+}
+
+impl TunInner for TokioTun {
+    fn send_vectored<'a>(&'a self, bufs: &'a [IoSlice<'_>]) -> BoxFuture<'a, io::Result<usize>> {
+        async move { self.send_vectored(bufs).await }.boxed()
+    }
+
+    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> BoxFuture<'a, io::Result<usize>> {
+        async move { self.recv(buf).await }.boxed()
+    }
+
+    fn send_all<'a>(&'a self, buf: &'a [u8]) -> BoxFuture<'a, io::Result<()>> {
+        async move { self.send_all(buf).await }.boxed()
+    }
+
+    fn name(&self) -> &str {
+        self.name()
+    }
+}
+
+// Implement TunInner for the test shim when available
+#[cfg(any(test, feature = "test_helpers"))]
+impl TunInner for test_tun::TokioTun {
+    fn send_vectored<'a>(&'a self, bufs: &'a [IoSlice<'_>]) -> BoxFuture<'a, io::Result<usize>> {
+        async move { self.send_vectored(bufs).await }.boxed()
+    }
+
+    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> BoxFuture<'a, io::Result<usize>> {
+        async move { self.recv(buf).await }.boxed()
+    }
+
+    fn send_all<'a>(&'a self, buf: &'a [u8]) -> BoxFuture<'a, io::Result<()>> {
+        async move { self.send_all(buf).await }.boxed()
+    }
+
+    fn name(&self) -> &str {
+        self.name()
+    }
+}
 
 pub struct Tun {
-    tun: TokioTun,
+    tun: Box<dyn TunInner>,
     #[cfg(feature = "stats")]
     stats: Mutex<Stats>,
 }
@@ -92,7 +141,16 @@ pub struct Tun {
 impl Tun {
     pub fn new(tun: TokioTun) -> Self {
         Self {
-            tun,
+            tun: Box::new(tun),
+            #[cfg(feature = "stats")]
+            stats: Stats::default().into(),
+        }
+    }
+
+    #[cfg(feature = "test_helpers")]
+    pub fn new_from_shim(tun: test_tun::TokioTun) -> Self {
+        Self {
+            tun: Box::new(tun),
             #[cfg(feature = "stats")]
             stats: Stats::default().into(),
         }
@@ -152,7 +210,7 @@ impl Tun {
         async fn tun_send_and_recv_roundtrip() {
             // create the in-test TokioTun pair (a <-> b)
             let (a, b) = TokioTun::new_pair();
-            let tun_a = Tun::new(a);
+            let tun_a = Tun::new_from_shim(a);
 
             // spawn a task that receives from the peer side
             let handle = task::spawn(async move {
@@ -173,7 +231,7 @@ impl Tun {
         #[tokio::test]
         async fn tun_send_vectored_and_name() {
             let (a, b) = TokioTun::new_pair();
-            let tun_a = Tun::new(a);
+            let tun_a = Tun::new_from_shim(a);
 
             // prepare vectored buffers
             let part1 = b"hello ";
@@ -200,7 +258,7 @@ impl Tun {
         #[tokio::test]
         async fn tun_recv_reads_data() {
             let (a, b) = TokioTun::new_pair();
-            let tun_a = Tun::new(a);
+            let tun_a = Tun::new_from_shim(a);
 
             // spawn a task that sends data from the peer side
             let sender = task::spawn(async move {
@@ -221,7 +279,7 @@ impl Tun {
             use std::io::IoSlice;
 
             let (a, b) = TokioTun::new_pair();
-            let tun_a = Tun::new(a);
+            let tun_a = Tun::new_from_shim(a);
 
             let before = tun_a.stats();
             assert_eq!(before.transmitted_packets, 0);

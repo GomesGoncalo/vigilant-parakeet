@@ -170,3 +170,198 @@ impl Obu {
         }
     }
 }
+
+// Test-only helper that mirrors `handle_msg` logic but operates on supplied
+// routing and device_mac so tests can exercise message handling without
+// constructing a full `Obu` (which requires tun and device runtime setup).
+#[cfg(test)]
+pub(crate) fn handle_msg_for_test(
+    routing: std::sync::Arc<std::sync::RwLock<Routing>>,
+    device_mac: mac_address::MacAddress,
+    msg: &crate::messages::message::Message<'_>,
+) -> anyhow::Result<Option<Vec<ReplyType>>> {
+    use crate::messages::{data::Data, control::Control, packet_type::PacketType};
+
+    match msg.get_packet_type() {
+        PacketType::Data(Data::Upstream(buf)) => {
+            let routing = routing.read().unwrap();
+            let Some(upstream) = routing.get_route_to(None) else {
+                return Ok(None);
+            };
+
+            Ok(Some(vec![ReplyType::Wire(
+                (&crate::messages::message::Message::new(
+                    device_mac,
+                    upstream.mac,
+                    PacketType::Data(Data::Upstream(buf.clone())),
+                ))
+                    .into(),
+            )]))
+        }
+        PacketType::Data(Data::Downstream(buf)) => {
+            let destination: [u8; 6] = buf
+                .destination()
+                .get(0..6)
+                .ok_or_else(|| anyhow::anyhow!("error"))?
+                .try_into()?;
+            let destination: mac_address::MacAddress = destination.into();
+            if destination == device_mac {
+                return Ok(Some(vec![ReplyType::Tap(vec![buf.data().to_vec()])]));
+            }
+
+            let target = destination;
+            let routing = routing.read().unwrap();
+            Ok(Some({
+                let Some(next_hop) = routing.get_route_to(Some(target)) else {
+                    return Ok(None);
+                };
+
+                vec![ReplyType::Wire(
+                    (&crate::messages::message::Message::new(
+                        device_mac,
+                        next_hop.mac,
+                        PacketType::Data(Data::Downstream(buf.clone())),
+                    ))
+                        .into(),
+                )]
+            }))
+        }
+        PacketType::Control(Control::Heartbeat(_)) => routing
+            .write()
+            .unwrap()
+            .handle_heartbeat(msg, device_mac),
+        PacketType::Control(Control::HeartbeatReply(_)) => routing
+            .write()
+            .unwrap()
+            .handle_heartbeat_reply(msg, device_mac),
+    }
+}
+
+#[cfg(test)]
+mod obu_tests {
+    use super::handle_msg_for_test;
+    use crate::args::{NodeParameters, NodeType};
+    use crate::Args;
+    use mac_address::MacAddress;
+    use crate::messages::{control::heartbeat::Heartbeat, control::Control, message::Message, packet_type::PacketType, data::{ToDownstream, ToUpstream, Data}};
+
+    #[test]
+    fn upstream_with_no_cached_upstream_returns_none() {
+        let args = Args { bind: String::new(), tap_name: None, ip: None, mtu: 1500, node_params: NodeParameters { node_type: NodeType::Obu, hello_history: 2, hello_periodicity: None } };
+        let boot = std::time::Instant::now();
+        let routing = std::sync::Arc::new(std::sync::RwLock::new(super::routing::Routing::new(&args, &boot).expect("routing")));
+
+        let from: MacAddress = [2u8;6].into();
+        let to: MacAddress = [3u8;6].into();
+        let payload = b"p";
+        let tu = ToUpstream::new(from, payload);
+        let msg = Message::new(from, to, PacketType::Data(Data::Upstream(tu)));
+
+        let res = handle_msg_for_test(routing, [9u8;6].into(), &msg).expect("ok");
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn downstream_to_self_returns_tap() {
+        let args = Args { bind: String::new(), tap_name: None, ip: None, mtu: 1500, node_params: NodeParameters { node_type: NodeType::Obu, hello_history: 2, hello_periodicity: None } };
+        let boot = std::time::Instant::now();
+        let routing = std::sync::Arc::new(std::sync::RwLock::new(super::routing::Routing::new(&args, &boot).expect("routing")));
+
+        let src = [4u8;6];
+        let dest_mac: MacAddress = [10u8;6].into();
+        let payload = b"abc";
+        let td = ToDownstream::new(&src, dest_mac, payload);
+        let msg = Message::new(dest_mac, [255u8;6].into(), PacketType::Data(Data::Downstream(td)));
+
+        let res = handle_msg_for_test(routing, dest_mac, &msg).expect("ok");
+        assert!(res.is_some());
+        let v = res.unwrap();
+        assert_eq!(v.len(), 1);
+        match &v[0] {
+            super::ReplyType::Tap(bufs) => {
+                assert_eq!(bufs.len(), 1);
+            }
+            _ => panic!("expected Tap"),
+        }
+    }
+
+    #[test]
+    fn upstream_with_cached_upstream_returns_wire() {
+        let args = Args { bind: String::new(), tap_name: None, ip: None, mtu: 1500, node_params: NodeParameters { node_type: NodeType::Obu, hello_history: 2, hello_periodicity: None } };
+        let boot = std::time::Instant::now();
+        let routing = std::sync::Arc::new(std::sync::RwLock::new(super::routing::Routing::new(&args, &boot).expect("routing")));
+
+        // Create a heartbeat to populate routes
+        let hb_source: MacAddress = [7u8;6].into();
+        let pkt_from: MacAddress = [8u8;6].into();
+        let our_mac: MacAddress = [9u8;6].into();
+        let hb = Heartbeat::new(std::time::Duration::from_millis(1), 1u32, hb_source);
+        let hb_msg = Message::new(pkt_from, [255u8;6].into(), PacketType::Control(Control::Heartbeat(hb.clone())));
+        // Insert heartbeat via routing handle
+        let _ = routing.write().unwrap().handle_heartbeat(&hb_msg, our_mac).expect("handled hb");
+
+        // Ensure get_route_to(Some) selects upstream and sets cached upstream
+        let _ = routing.read().unwrap().get_route_to(Some(hb_source));
+
+        // Now send an upstream data packet and expect a Wire reply to the cached upstream
+        let from: MacAddress = [3u8;6].into();
+        let to: MacAddress = [4u8;6].into();
+        let payload = b"x";
+        let tu = ToUpstream::new(from, payload);
+        let msg = Message::new(from, to, PacketType::Data(Data::Upstream(tu)));
+
+        let res = handle_msg_for_test(routing.clone(), our_mac, &msg).expect("ok");
+        assert!(res.is_some());
+        let v = res.unwrap();
+        // should have at least one Wire reply
+        assert!(v.iter().any(|x| matches!(x, super::ReplyType::Wire(_))));
+    }
+
+    #[test]
+    fn heartbeat_generates_forward_and_reply() {
+        let args = Args { bind: String::new(), tap_name: None, ip: None, mtu: 1500, node_params: NodeParameters { node_type: NodeType::Obu, hello_history: 2, hello_periodicity: None } };
+        let boot = std::time::Instant::now();
+        let routing = std::sync::Arc::new(std::sync::RwLock::new(super::routing::Routing::new(&args, &boot).expect("routing")));
+
+        let hb_source: MacAddress = [11u8;6].into();
+        let pkt_from: MacAddress = [12u8;6].into();
+        let our_mac: MacAddress = [13u8;6].into();
+
+        let hb = Heartbeat::new(std::time::Duration::from_millis(1), 2u32, hb_source);
+        let msg = Message::new(pkt_from, [255u8;6].into(), PacketType::Control(Control::Heartbeat(hb.clone())));
+
+        let res = handle_msg_for_test(routing.clone(), our_mac, &msg).expect("ok");
+        assert!(res.is_some());
+        let v = res.unwrap();
+        // expect at least two Wire replies (forward and reply)
+        assert!(v.len() >= 2);
+        assert!(v.iter().all(|x| matches!(x, super::ReplyType::Wire(_))));
+    }
+
+    #[test]
+    fn heartbeat_reply_updates_routing_and_replies() {
+        let args = Args { bind: String::new(), tap_name: None, ip: None, mtu: 1500, node_params: NodeParameters { node_type: NodeType::Obu, hello_history: 2, hello_periodicity: None } };
+        let boot = std::time::Instant::now();
+        let routing = std::sync::Arc::new(std::sync::RwLock::new(super::routing::Routing::new(&args, &boot).expect("routing")));
+
+        let hb_source: MacAddress = [21u8;6].into();
+        let pkt_from: MacAddress = [22u8;6].into();
+        let our_mac: MacAddress = [23u8;6].into();
+
+        // Insert initial heartbeat
+        let hb = Heartbeat::new(std::time::Duration::from_millis(1), 7u32, hb_source);
+        let initial = Message::new(pkt_from, [255u8;6].into(), PacketType::Control(Control::Heartbeat(hb.clone())));
+        let _ = routing.write().unwrap().handle_heartbeat(&initial, our_mac).expect("handled");
+
+        // Create a HeartbeatReply from some sender
+        let reply_sender: MacAddress = [42u8;6].into();
+        let hbr = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb, reply_sender);
+        let reply_from: MacAddress = [55u8;6].into();
+        let reply_msg = Message::new(reply_from, [255u8;6].into(), PacketType::Control(Control::HeartbeatReply(hbr.clone())));
+
+        let res = handle_msg_for_test(routing.clone(), our_mac, &reply_msg).expect("ok");
+        assert!(res.is_some());
+        let out = res.unwrap();
+        assert!(!out.is_empty());
+    }
+}

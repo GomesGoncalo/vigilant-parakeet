@@ -19,7 +19,14 @@ config = "*"
 serde = { version = "*", features = ["derive"]}
 
 [features]
+# When enabled, exposes test-only helpers (TokioTun) for downstream test harnesses
+test_helpers = []
 stats = []
 
 [dev-dependencies]
 criterion = "0.5"
+node_lib = { path = "../node_lib" }
+
+[[bench]]
+name = "device_send_recv"
+harness = false

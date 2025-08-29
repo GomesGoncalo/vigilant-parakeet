@@ -27,3 +27,4 @@ stats = [ "common/stats" ]
 
 [dev-dependencies]
 criterion = "0.5"
+common = { path = "../common/", features = ["test_helpers"] }
