@@ -6,9 +6,9 @@ mod messages;
 use anyhow::{Context, Result};
 use args::{Args, NodeType};
 use common::device::Device;
+use common::tun::Tun;
 use control::node::ReplyType;
 use std::sync::Arc;
-use common::tun::Tun;
 use tokio_tun::Tun as TokioTun;
 
 pub trait Node {}
@@ -31,20 +31,24 @@ pub fn create(args: Args) -> Result<Arc<dyn Node>> {
     let tun = Arc::new(Tun::new(if args.ip.is_some() {
         TokioTun::builder()
             .name(args.tap_name.as_ref().unwrap_or(&String::default()))
-            .tap(true)
+            .tap()
             .mtu(args.mtu)
-            .packet_info(false)
             .up()
             .address(args.ip.context("no ip")?)
-            .try_build()?
+            .build()?
+            .into_iter()
+            .next()
+            .expect("Expecting at least 1 item in vec")
     } else {
         TokioTun::builder()
             .name(args.tap_name.as_ref().unwrap_or(&String::default()))
             .mtu(args.mtu)
-            .tap(true)
-            .packet_info(false)
+            .tap()
             .up()
-            .try_build()?
+            .build()?
+            .into_iter()
+            .next()
+            .expect("Expecting at least 1 item in vec")
     }));
 
     let dev = Device::new(&args.bind)?;

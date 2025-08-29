@@ -1,7 +1,6 @@
 use arc_swap::ArcSwap;
-use libc::posix_spawnattr_setsigdefault;
 use mac_address::MacAddress;
-use std::{collections::HashMap, sync::RwLock};
+use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct ClientCache {
@@ -17,7 +16,7 @@ impl ClientCache {
             }
             _ => {}
         }
-        
+
         let cache = self.cache.load();
         let mut cache = (**cache).clone();
         cache.insert(client, node);

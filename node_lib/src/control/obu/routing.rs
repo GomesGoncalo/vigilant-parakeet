@@ -13,7 +13,6 @@ use indexmap::IndexMap;
 use mac_address::MacAddress;
 use std::{
     collections::{hash_map::Entry, HashMap},
-    sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
 use tracing::Level;
@@ -26,6 +25,7 @@ struct Target {
 }
 
 #[derive(Debug)]
+#[allow(clippy::type_complexity)]
 pub struct Routing {
     args: Args,
     boot: Instant,

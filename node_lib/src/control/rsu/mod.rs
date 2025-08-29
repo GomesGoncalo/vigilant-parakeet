@@ -12,6 +12,7 @@ use crate::{
     Args,
 };
 use anyhow::{anyhow, bail, Result};
+use common::tun::Tun;
 use common::{device::Device, network_interface::NetworkInterface};
 use itertools::Itertools;
 use mac_address::MacAddress;
@@ -21,7 +22,6 @@ use std::{
     sync::{Arc, RwLock},
     time::Duration,
 };
-use common::tun::Tun;
 
 pub struct Rsu {
     args: Args,

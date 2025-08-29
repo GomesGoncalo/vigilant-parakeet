@@ -36,7 +36,7 @@ impl<'a> Message<'a> {
         Ok(opt.into())
     }
 
-    pub fn get_packet_type(&'a self) -> &PacketType<'a> {
+    pub fn get_packet_type(&self) -> &PacketType<'a> {
         &self.next
     }
 }

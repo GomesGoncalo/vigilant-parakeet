@@ -14,6 +14,7 @@ pub struct Props {
     pub nodes: Vec<String>,
 }
 
+#[allow(clippy::type_complexity)]
 enum PlotState {
     NoData,
     First((DateTime<Local>, HashMap<String, (Stats, Stats)>)),

@@ -1,10 +1,10 @@
 use crate::messages::message::Message;
 use anyhow::{bail, Result};
 use common::device::Device;
+use common::tun::Tun;
 use futures::{future::join_all, Future};
 use itertools::Itertools;
 use std::{io::IoSlice, sync::Arc};
-use common::tun::Tun;
 use uninit::uninit_array;
 
 #[derive(Debug)]

@@ -13,6 +13,7 @@ use crate::{
     Args,
 };
 use anyhow::{anyhow, Result};
+use common::tun::Tun;
 use common::{device::Device, network_interface::NetworkInterface};
 use mac_address::MacAddress;
 use routing::Routing;
@@ -20,7 +21,6 @@ use std::{
     sync::{Arc, RwLock},
     time::Instant,
 };
-use common::tun::Tun;
 
 pub struct Obu {
     args: Args,

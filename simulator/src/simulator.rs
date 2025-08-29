@@ -4,6 +4,7 @@ use anyhow::{bail, Error, Result};
 use common::channel_parameters::ChannelParameters;
 use common::device::Device;
 use common::network_interface::NetworkInterface;
+use common::tun::Tun;
 use config::Config;
 use config::Value;
 use futures::stream::FuturesUnordered;
@@ -22,8 +23,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc::UnboundedSender;
-use common::tun::Tun;
-use uninit::uninit_array;
+// uninit_array is not used here
 
 pub struct NamespaceWrapper(Option<NetNs>);
 
@@ -56,6 +56,7 @@ pub struct Channel {
     queue: Mutex<VecDeque<Packet>>,
 }
 
+#[allow(dead_code)]
 impl Channel {
     pub fn params(&self) -> ChannelParameters {
         *self.parameters.read().unwrap()
@@ -64,8 +65,8 @@ impl Channel {
     pub fn set_params(&self, params: HashMap<String, String>) -> Result<()> {
         let result = ChannelParameters {
             latency: Duration::from_millis(
-                (params.get("latency").context("could not get latency")?).parse::<u64>()
-            ?),
+                (params.get("latency").context("could not get latency")?).parse::<u64>()?,
+            ),
             loss: f64::from_str(params.get("loss").context("could not get loss")?)?,
         };
 
@@ -165,6 +166,7 @@ pub struct Simulator {
 type CallbackReturn = Result<(Arc<Device>, Arc<Tun>, Arc<dyn Node>)>;
 
 impl Simulator {
+    #[allow(clippy::type_complexity)]
     fn parse_topology(
         config_file: &str,
         callback: impl Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
@@ -251,7 +253,8 @@ impl Simulator {
         let Some(nsi) = ns.0.as_ref() else {
             bail!("no namespace");
         };
-        let Ok(Ok(device)) = nsi.run(|_| callback(&node, node_type)) else {
+        // Avoid creating an &&str by passing `node` directly
+        let Ok(Ok(device)) = nsi.run(|_| callback(node, node_type)) else {
             bail!("error creating namespace");
         };
         ns_list.push(ns);
@@ -278,9 +281,11 @@ impl Simulator {
             .map(|(node, channel)| Self::generate_channel_reads(node.to_string(), channel.clone()))
             .collect::<FuturesUnordered<_>>();
 
-        let channel_map_vec : HashMap<&String, Vec<Arc<Channel>>> = self.channels.iter().map(|(from, map_to)| {
-            (from, map_to.iter().map(|(_, channel)| channel.clone()).collect_vec())
-        }).collect();
+        let channel_map_vec: HashMap<&String, Vec<Arc<Channel>>> = self
+            .channels
+            .iter()
+            .map(|(from, map_to)| (from, map_to.values().cloned().collect_vec()))
+            .collect();
 
         loop {
             if let Some(Ok((buf, size, node, channel))) = future_set.next().await {
@@ -299,12 +304,12 @@ impl Simulator {
         node: String,
         channel: Arc<Channel>,
     ) -> Result<([u8; 1500], usize, String, Arc<Channel>), Error> {
-        let buf = uninit_array![u8; 1500];
-        let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
+        let mut buf: [u8; 1500] = [0u8; 1500];
         let n = channel.recv(&mut buf).await?;
         Ok((buf, n, node, channel))
     }
 
+    #[allow(dead_code)]
     pub fn get_channels(&self) -> HashMap<String, HashMap<String, Arc<Channel>>> {
         self.channels.clone()
     }

@@ -38,7 +38,7 @@ fn OutterForm(props: &Props) -> Html {
         let fromc = fromc.clone();
         let toc = toc.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let (Some(from), Some(to)) = (&*fromc, &*toc) else {
+            let (Some(_from), Some(_to)) = (&*fromc, &*toc) else {
                 return;
             };
 
@@ -47,7 +47,7 @@ fn OutterForm(props: &Props) -> Html {
             //let _ = Request::post(&format!("http://127.0.0.1:3030/channel/{}/{}", from, to).to_string()).json(format!("{{\"latency\":\"{latency}\",\"loss\":\"{loss}\"}}")).unwrap()
             //     .send()
             //     .await;
-         });
+        });
     });
 
     let channels = props.channels.clone();
@@ -83,7 +83,16 @@ fn OutterForm(props: &Props) -> Html {
 
         if let (Some(from), Some(to)) = (&*fromc, &*toc) {
             tracing::info!(number, "emitted loss");
-            emit.emit((channels.get(from).unwrap().get(to).unwrap().latency.as_millis(), number));
+            emit.emit((
+                channels
+                    .get(from)
+                    .unwrap()
+                    .get(to)
+                    .unwrap()
+                    .latency
+                    .as_millis(),
+                number,
+            ));
         }
     });
 
@@ -116,8 +125,8 @@ fn OutterForm(props: &Props) -> Html {
 
 #[function_component(App)]
 fn app() -> Html {
-    let nodes = use_state(|| Vec::default());
-    let channels = use_state(|| HashMap::default());
+    let nodes = use_state(Vec::default);
+    let channels = use_state(HashMap::default);
     {
         let nodes = nodes.clone();
         use_effect_with((), move |_| {

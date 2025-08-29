@@ -23,7 +23,7 @@ mod sim_args;
 use sim_args::SimArgs;
 
 mod simulator;
-use simulator::{Channel, Simulator};
+use simulator::Simulator;
 
 #[cfg(feature = "webview")]
 async fn channel_post_fn(
@@ -52,6 +52,7 @@ async fn channel_post_fn(
     }
 }
 
+#[allow(dead_code)]
 #[derive(Serialize)]
 struct ErrorMessage {
     code: u16,
@@ -90,10 +91,12 @@ async fn main() -> Result<()> {
         let tun = Arc::new(Tun::new(
             TokioTun::builder()
                 .name("real")
-                .tap(true)
-                .packet_info(false)
+                .tap()
                 .up()
-                .try_build()?,
+                .build()?
+                .into_iter()
+                .next()
+                .expect("Expecting at least 1 item in vec"),
         ));
 
         let args = Args {
@@ -115,21 +118,25 @@ async fn main() -> Result<()> {
 
         let virtual_tun = Arc::new(Tun::new(if let Some(ref name) = args.tap_name {
             TokioTun::builder()
-                .tap(true)
+                .tap()
                 .name(name)
-                .packet_info(false)
                 .address(args.ip.context("")?)
                 .mtu(args.mtu)
                 .up()
-                .try_build()?
+                .build()?
+                .into_iter()
+                .next()
+                .expect("Expecting at least 1 item in vec")
         } else {
             TokioTun::builder()
-                .tap(true)
-                .packet_info(false)
+                .tap()
                 .address(args.ip.context("")?)
                 .mtu(args.mtu)
                 .up()
-                .try_build()?
+                .build()?
+                .into_iter()
+                .next()
+                .expect("Expecting at least 1 item in vec")
         }));
 
         let dev = Arc::new(Device::new(tun.name())?);

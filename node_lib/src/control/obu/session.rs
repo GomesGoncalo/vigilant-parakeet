@@ -1,14 +1,18 @@
 use crate::control::node::ReplyType;
 use anyhow::Result;
+use common::tun::Tun;
 use futures::Future;
 use std::sync::Arc;
-use common::tun::Tun;
-use uninit::uninit_array;
 
+#[allow(dead_code)]
 pub struct SessionParams {}
-struct InnerSession {
+
+#[allow(dead_code)]
+pub(crate) struct InnerSession {
     tun: Arc<Tun>,
 }
+
+#[allow(dead_code)]
 pub enum Session {
     NoSession(Arc<Tun>),
     ValidSession(InnerSession),
@@ -28,12 +32,13 @@ impl Session {
     {
         match self {
             Self::NoSession(tun) => {
-                let buf = uninit_array![u8; 1500];
-                let mut buf = unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) };
+                // allocate a zeroed buffer and read into it safely
+                let mut buf: [u8; 1500] = [0u8; 1500];
                 let n = tun.recv(&mut buf).await?;
                 callable(buf, n).await
             }
-            Self::ValidSession(session) => {
+            Self::ValidSession(_session) => {
+                // session handling not implemented yet
                 todo!()
             }
         }
