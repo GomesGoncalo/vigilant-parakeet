@@ -11,6 +11,26 @@ use tracing_web::{performance_layer, MakeWebConsoleWriter};
 use web_sys::wasm_bindgen::JsCast;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsValue;
+use js_sys;
+use serde_wasm_bindgen;
+use std::collections::BTreeMap;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap as StdHashMap;
+
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+struct UpstreamInfo {
+    hops: u32,
+    mac: String,
+    node_name: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+struct NodeInfo {
+    node_type: String,
+    upstream: Option<UpstreamInfo>,
+}
 
 #[derive(Clone, PartialEq, Properties)]
 struct Props {
@@ -127,6 +147,8 @@ fn OutterForm(props: &Props) -> Html {
 fn app() -> Html {
     let nodes = use_state(Vec::default);
     let channels = use_state(HashMap::default);
+    // node_info: node -> { node_type: String, upstream: Option<{hops, mac}> }
+    let node_info = use_state(|| StdHashMap::<String, NodeInfo>::default());
     {
         let nodes = nodes.clone();
         use_effect_with((), move |_| {
@@ -183,10 +205,69 @@ fn app() -> Html {
         });
     }
 
+    // Poll node_info endpoint
+    {
+        let node_info = node_info.clone();
+        use_effect_with((), move |_| {
+            let node_info = node_info.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                loop {
+                    let Ok(request) = Request::get("http://127.0.0.1:3030/node_info").send().await
+                    else {
+                        gloo_timers::future::sleep(std::time::Duration::from_secs(1)).await;
+                        continue;
+                    };
+
+                    if let Ok(map) = request.json::<StdHashMap<String, NodeInfo>>().await {
+                        if *node_info != map {
+                            node_info.set(map);
+                        }
+                    }
+
+                    gloo_timers::future::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            });
+            || ()
+        });
+    }
+
+    // Watch nodes, channels and node_info state and call the JS graph updater when any changes.
+    {
+        let nodes_watch = nodes.clone();
+        let channels_watch = channels.clone();
+        let node_info_watch = node_info.clone();
+        use_effect_with(((*nodes_watch).clone(), (*channels_watch).clone(), (*node_info_watch).clone()), move |(n,c,u)| {
+            let n = n.clone();
+            let c = c.clone();
+            let u = u.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Some(win) = web_sys::window() {
+                    let func = js_sys::Reflect::get(&win, &JsValue::from_str("update_graph"));
+                    if let Ok(func) = func {
+                        if func.is_function() {
+                            let func: js_sys::Function = func.dyn_into().unwrap();
+                            let n = serde_wasm_bindgen::to_value(&n).unwrap_or(JsValue::NULL);
+                            let c = serde_wasm_bindgen::to_value(&c).unwrap_or(JsValue::NULL);
+                            let u = serde_wasm_bindgen::to_value(&u).unwrap_or(JsValue::NULL);
+                            let args = js_sys::Array::new();
+                            args.push(&n);
+                            args.push(&c);
+                            args.push(&u);
+                            let _ = func.apply(&win.into(), &args.into());
+                        }
+                    }
+                }
+            });
+            || ()
+        });
+    }
+
     html! {
         <>
             <OutterForm nodes={nodes.to_vec()} channels={(*channels).clone()}/>
+            <div id={"graph"}></div>
             <Throughput nodes={nodes.to_vec()}/>
+            
         </>
     }
 }

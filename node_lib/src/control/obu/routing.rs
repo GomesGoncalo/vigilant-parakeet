@@ -197,6 +197,11 @@ impl Routing {
         })
     }
 
+    /// Return the cached upstream MAC if present.
+    pub fn get_cached_upstream(&self) -> Option<MacAddress> {
+        self.cached_upstream.load().as_ref().map(|m| **m)
+    }
+
     pub fn handle_heartbeat(
         &mut self,
         pkt: &Message,

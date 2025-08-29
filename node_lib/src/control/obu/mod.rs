@@ -47,6 +47,17 @@ impl Obu {
         Ok(obu)
     }
 
+    /// Return the cached upstream MAC if present.
+    pub fn cached_upstream_mac(&self) -> Option<mac_address::MacAddress> {
+    self.routing.read().unwrap().get_cached_upstream()
+    }
+
+    /// Return the cached upstream Route if present (hops, mac, latency).
+    pub fn cached_upstream_route(&self) -> Option<crate::control::route::Route> {
+        // routing.get_route_to(None) returns Option<Route>
+        self.routing.read().unwrap().get_route_to(None)
+    }
+
     fn wire_traffic_task(obu: Arc<Self>) -> Result<()> {
         let device = obu.device.clone();
         let tun = obu.tun.clone();

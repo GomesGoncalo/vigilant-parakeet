@@ -10,10 +10,24 @@ use common::device::Device;
 use common::tun::Tun;
 use std::sync::Arc;
 
-pub trait Node {}
+use std::any::Any;
 
-impl Node for control::rsu::Rsu {}
-impl Node for control::obu::Obu {}
+pub trait Node: Send + Sync {
+    /// For runtime downcasting to concrete node types.
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl Node for control::rsu::Rsu {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl Node for control::obu::Obu {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
 
 pub fn create_with_vdev(
     args: Args,

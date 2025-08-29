@@ -18,3 +18,7 @@ yew = { version = "*", features = [ "csr" ]}
 yew-plotly = "*"
 web-sys = "*"
 chrono = "*"
+wasm-bindgen = { version = "*", features = ["serde-serialize"] }
+serde_json = "*"
+js-sys = "*"
+serde-wasm-bindgen = "*"

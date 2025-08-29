@@ -1,7 +1,9 @@
 use anyhow::{bail, Result};
+use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use common::device::Device;
 use common::tun::Tun;
+use common::network_interface::NetworkInterface;
 use config::Config;
 #[cfg(feature = "webview")]
 use itertools::Itertools;
@@ -26,6 +28,7 @@ use sim_args::SimArgs;
 
 mod simulator;
 use simulator::Simulator;
+use crate::simulator::Channel;
 
 #[cfg(feature = "webview")]
 async fn channel_post_fn(
@@ -243,10 +246,69 @@ async fn main() -> Result<()> {
 
         let cors = warp::cors().allow_any_origin();
 
+        // Build a /node_info endpoint returning per-node metadata: { node: { node_type: "Obu"|"Rsu", upstream: Option<{hops, mac}> } }
+        let sim_nodes = simulator.get_nodes();
+        let sim_nodesc = sim_nodes.clone();
+        let node_info = warp::get()
+            .and(warp::path("node_info"))
+            .and(warp::path::end())
+            .map(move || {
+                // Build a mapping of MAC -> node name
+                let mac_map: HashMap<mac_address::MacAddress, String> = sim_nodesc
+                    .iter()
+                    .map(|(name, (dev, _tun, _node))| (dev.mac_address(), name.clone()))
+                    .collect();
+
+                #[derive(serde::Serialize)]
+                struct UpstreamInfo {
+                    hops: u32,
+                    mac: String,
+                    node_name: Option<String>,
+                }
+
+                #[derive(serde::Serialize)]
+                struct NodeInfo {
+                    node_type: String,
+                    upstream: Option<UpstreamInfo>,
+                }
+
+                let mut out: HashMap<String, NodeInfo> = HashMap::new();
+                for (name, (dev, _tun, node)) in sim_nodes.iter() {
+                    // try downcast to obu to get a cached route
+                    let node_type = if node.as_any().is::<node_lib::control::obu::Obu>() {
+                        "Obu".to_string()
+                    } else if node.as_any().is::<node_lib::control::rsu::Rsu>() {
+                        "Rsu".to_string()
+                    } else {
+                        "Unknown".to_string()
+                    };
+
+                    let upstream_route = node
+                        .as_any()
+                        .downcast_ref::<node_lib::control::obu::Obu>()
+                        .and_then(|obu| obu.cached_upstream_route())
+                        .map(|r| UpstreamInfo {
+                            hops: r.hops,
+                            mac: format!("{}", r.mac),
+                            node_name: mac_map.get(&r.mac).cloned(),
+                        });
+
+                    out.insert(
+                        name.clone(),
+                        NodeInfo {
+                            node_type,
+                            upstream: upstream_route,
+                        },
+                    );
+                }
+                warp::reply::json(&out)
+            });
+
         let routes = nodes
             .or(node_stats)
             .or(stats)
             .or(channels_get)
+            .or(node_info)
             .or(channel_post)
             .with(cors);
         tokio::select! {

@@ -4,6 +4,260 @@
     <meta charset="utf-8" />
     <title>Network Viz</title>
     <script src="https://cdn.plot.ly/plotly-2.16.1.min.js"></script>
+        <!-- vis-network for graph rendering -->
+        <link href="https://unpkg.com/vis-network/styles/vis-network.min.css" rel="stylesheet" type="text/css" />
+        <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+        <style>
+            /* Graph container sizing */
+            #graph { height: 520px; width: 100%; border: 1px solid #ddd; margin: 8px 0; }
+                #legend { font-family: sans-serif; font-size: 13px; margin: 8px 0; }
+                #legend .item { display:inline-flex; align-items:center; margin-right:1rem; }
+                #legend .swatch { width:14px; height:14px; display:inline-block; margin-right:6px; border:1px solid #333; }
+        </style>
 </head>
-    <body></body>
+<body>
+    <div id="legend">
+        <span class="item"><span class="swatch" style="background:#2E8B57;border-color:#1E6B47"></span> RSU (square)</span>
+        <span class="item"><span class="swatch" style="background:#AAD3FF;border-color:#2B7BBF"></span> OBU (dot)</span>
+        <span class="item"><span class="swatch" style="background:#FFA500;border-color:#CC8400"></span> Selected OBU</span>
+        <span class="item"><span class="swatch" style="background:#FF0000;border-color:#CC0000"></span> Highlighted upstream edge</span>
+    </div>
+<!-- The Yew app will render its elements; we expose a small JS helper to update the graph. -->
+<script>
+window._vis = window._vis || { network: null, nodes: null, edges: null };
+
+window.update_graph = function(nodes_json, channels_json, upstreams_json) {
+    try {
+        const nodes = typeof nodes_json === 'string' ? JSON.parse(nodes_json) : (nodes_json || []);
+        let channels = typeof channels_json === 'string' ? JSON.parse(channels_json) : (channels_json || {});
+        // if the wasm interop provided a Map, convert to plain object
+        if (channels instanceof Map) {
+            try { channels = Object.fromEntries(channels.entries()); } catch (e) { /* ignore */ }
+        }
+        // normalize inner maps: channels[src] might itself be a Map (wasm interop), convert to plain object
+        Object.keys(channels).forEach(src => {
+            const v = channels[src];
+            if (v instanceof Map) {
+                try { channels[src] = Object.fromEntries(v.entries()); } catch (e) { /* ignore */ }
+            }
+        });
+        // upstreams may be an object or a Map (from wasm); normalize to plain object
+        let upstreams = upstreams_json;
+        if (typeof upstreams_json === 'string') {
+            upstreams = JSON.parse(upstreams_json);
+        } else if (upstreams_json instanceof Map) {
+            upstreams = Object.fromEntries(upstreams_json.entries());
+        } else if (!upstreams_json) {
+            upstreams = {};
+        }
+
+        const container = document.getElementById('graph');
+        if (!container) return;
+
+        // Build vis nodes and edges
+        // nodeInfo is expected to be: { nodeName: { node_type: "Obu"|"Rsu", upstream: null | { hops: u32, mac: string } } }
+        const nodeInfo = upstreams; // rename for clarity (param previously called upstreams_json)
+        const visNodes = nodes.map(n => {
+            const info = nodeInfo && nodeInfo[n] ? nodeInfo[n] : null;
+            // compute nodeType robustly (coerce to string if needed)
+            let nodeType = null;
+            if (info && info.node_type !== undefined && info.node_type !== null) {
+                try {
+                    if (typeof info.node_type === 'string') {
+                        nodeType = info.node_type;
+                    } else if (info.node_type && typeof info.node_type === 'object' && info.node_type.toString) {
+                        nodeType = info.node_type.toString();
+                    } else {
+                        nodeType = String(info.node_type);
+                    }
+                } catch (e) {
+                    nodeType = String(info.node_type);
+                }
+            }
+            const isRsu = nodeType === 'Rsu';
+            if (!nodeType) {
+                nodeType = isRsu ? 'Rsu' : 'Obu';
+            }
+            try { console.debug('node', n, 'nodeType', nodeType, 'rawInfo', info); } catch (e) {}
+            const titleParts = [];
+            titleParts.push(`${n}`);
+            titleParts.push(`Type: ${nodeType}`);
+            if (info && info.upstream) {
+                const up = info.upstream;
+                titleParts.push(`Upstream hops: ${up.hops}`);
+                titleParts.push(`Upstream mac: ${up.mac}`);
+            } else {
+                titleParts.push('Upstream: none');
+            }
+            // Use plain-text newlines so vis-network tooltip displays clean text
+            const title = titleParts.join('\n');
+            return {
+                id: n,
+                label: n,
+                title: title,
+                shape: isRsu ? 'box' : 'dot',
+                color: isRsu ? { background: '#2E8B57', border: '#1E6B47' } : { background: '#AAD3FF', border: '#2B7BBF' },
+                size: 16,
+            };
+        });
+
+        const visEdges = [];
+        Object.keys(channels).forEach(src => {
+            Object.keys(channels[src]).forEach(dst => {
+                const edgeId = src < dst ? `${src}-${dst}` : `${dst}-${src}`;
+                if (!visEdges.find(e => e.id === edgeId)) {
+                    // try to extract latency ms if present
+                    let latms = '';
+                    try {
+                        const lat = channels[src][dst].latency;
+                        if (lat && typeof lat === 'object') {
+                            latms = (lat.secs || 0) * 1000 + (lat.nanos || 0) / 1e6;
+                            latms = Math.round(latms);
+                        }
+                    } catch (e) {}
+                    const label = `lat:${latms}ms l:${channels[src][dst].loss}`;
+                    visEdges.push({ id: edgeId, from: src, to: dst, label, color: { color: '#666' }, width: 2 });
+                }
+            });
+        });
+        try { console.debug('visEdges length:', visEdges.length); } catch (e) {}
+
+        const data = { nodes: new vis.DataSet(visNodes), edges: new vis.DataSet(visEdges) };
+        const options = {
+            autoResize: true,
+            layout: { improvedLayout: true },
+            interaction: { hover: true, multiselect: false },
+            physics: { stabilization: true, barnesHut: { gravitationalConstant: -2000 } },
+            nodes: { shape: 'dot', size: 16 },
+        };
+
+        if (!window._vis.network) {
+            window._vis.network = new vis.Network(container, data, options);
+            window._vis.nodes = data.nodes;
+            window._vis.edges = data.edges;
+        } else {
+            window._vis.nodes.clear();
+            window._vis.nodes.add(visNodes);
+            window._vis.edges.clear();
+            window._vis.edges.add(visEdges);
+        }
+
+    // build quick edge lookup (store both orderings so upstream direction doesn't matter)
+        const edgeLookup = {};
+        window._vis.edges.forEach(function(e) {
+            edgeLookup[e.id] = e;
+            try {
+                const k1 = `${e.from}-${e.to}`;
+                const k2 = `${e.to}-${e.from}`;
+                edgeLookup[k1] = e;
+                edgeLookup[k2] = e;
+            } catch (err) {
+                // ignore if edge doesn't have from/to
+            }
+        });
+    // debug: list available edge keys
+    try { console.debug('edgeLookup keys:', Object.keys(edgeLookup)); } catch (e) {}
+
+        // Reset node styles according to nodeInfo: only nodes whose upstream is null are RSUs (boxes)
+        try {
+            window._vis.nodes.forEach(function(n) {
+                const info = nodeInfo && nodeInfo[n.id] ? nodeInfo[n.id] : null;
+                const isRsu = info && info.node_type === 'Rsu';
+                if (isRsu) {
+                    window._vis.nodes.update({ id: n.id, shape: 'box', color: { background: '#2E8B57', border: '#1E6B47' } });
+                } else {
+                    window._vis.nodes.update({ id: n.id, shape: 'dot', color: { background: '#AAD3FF', border: '#2B7BBF' } });
+                }
+            });
+        } catch (e) { /* ignore */ }
+
+        // For each node that has an upstream, highlight the single edge from the node to its immediate upstream
+        Object.keys(nodeInfo || {}).forEach(function(node) {
+            const info = nodeInfo[node];
+            if (info && info.upstream) {
+                const up = info.upstream;
+                // upstream may only include mac/hops; we need to find the node name by matching mac -> node id if available
+                // try to find a node whose upstream mac or device mac matches; simplest: find node by comparing nodeInfo entries' upstream.mac? (not ideal)
+                // Here we assume upstream.mac is available and that node names are used in edges; if not found, skip highlighting.
+                const upstreamMac = up.mac;
+                // attempt to find node name that has this mac in its device mac field; we don't have device macs here, so fallback to scanning nodeInfo for a node whose 'mac' equals upstreamMac
+                // If backend later includes upstream.node_name, we can use it directly. For now, try to match by inspecting nodeInfo entries for upstream.mac equality.
+                let upstreamName = null;
+                Object.keys(nodeInfo).forEach(function(k) {
+                    const kinf = nodeInfo[k];
+                    if (kinf && kinf.upstream && kinf.upstream.mac === upstreamMac) {
+                        // kinf.upstream.mac equals upstreamMac means k's upstream is that mac; not helpful. Skip.
+                    }
+                    // If backend provides node macs inside nodeInfo (not currently present), match here.
+                });
+
+                // If backend does not provide node name, and upstream.mac is actually a node name (string like "n1"), then handle it
+                if (typeof upstreamMac === 'string' && upstreamMac.startsWith('n')) {
+                    upstreamName = upstreamMac;
+                }
+
+                if (!upstreamName) {
+                    // best-effort: if up.mac equals some node id
+                    if (nodeInfo[upstreamMac]) {
+                        upstreamName = upstreamMac;
+                    }
+                }
+
+                if (!upstreamName) {
+                    // cannot resolve node name -> skip
+                    return;
+                }
+
+                const a = node;
+                const b = upstreamName;
+                const edgeId = a < b ? `${a}-${b}` : `${b}-${a}`;
+                const entry = edgeLookup[edgeId];
+                if (entry) {
+                    const updateId = entry.id || edgeId;
+                    // color this edge as highlighted upstream
+                    window._vis.edges.update({ id: updateId, color: { color: '#FFA500' }, width: 4 });
+                    // style source endpoint (OBU) orange circle
+                    window._vis.nodes.update({ id: node, shape: 'dot', color: { background: '#FFA500', border: '#CC8400' } });
+                    // also color the upstream node orange to show path
+                    window._vis.nodes.update({ id: upstreamName, shape: 'dot', color: { background: '#FFA500', border: '#CC8400' } });
+                } else {
+                    try {
+                        console.debug('edge not found for', node, '->', upstreamName, 'expected', edgeId, 'available:', Object.keys(edgeLookup));
+                    } catch (e) {
+                        console.debug('edge not found for', node, '->', upstreamName, 'expected', edgeId);
+                    }
+                }
+            }
+        });
+
+        // Additionally, walk the upstream chain to color full paths (if node_info contains node_name in upstream)
+        try {
+            Object.keys(nodeInfo || {}).forEach(function(start) {
+                const seen = new Set();
+                let cur = start;
+                while (cur && nodeInfo[cur] && nodeInfo[cur].upstream && nodeInfo[cur].upstream.node_name) {
+                    const next = nodeInfo[cur].upstream.node_name;
+                    if (!next || seen.has(cur) || seen.has(next)) break;
+                    seen.add(cur);
+                    const a = cur;
+                    const b = next;
+                    const eid = a < b ? `${a}-${b}` : `${b}-${a}`;
+                    const ent = edgeLookup[eid];
+                    if (ent) {
+                        const updateId = ent.id || eid;
+                        window._vis.edges.update({ id: updateId, color: { color: '#FFA500' }, width: 3 });
+                        window._vis.nodes.update({ id: cur, color: { background: '#FFA500', border: '#CC8400' } });
+                        window._vis.nodes.update({ id: next, color: { background: '#FFA500', border: '#CC8400' } });
+                    }
+                    cur = next;
+                }
+            });
+        } catch (e) { /* ignore */ }
+
+    } catch (e) {
+        console.error('update_graph error', e);
+    }
+};
+</script>
+</body>
 </html>

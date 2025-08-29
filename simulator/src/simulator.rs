@@ -161,6 +161,8 @@ impl Channel {
 pub struct Simulator {
     _namespaces: Vec<NamespaceWrapper>,
     channels: HashMap<String, HashMap<String, Arc<Channel>>>,
+    /// Keep created nodes so external code (e.g. webview) may query node state.
+    nodes: HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Node>)>,
 }
 
 type CallbackReturn = Result<(Arc<Device>, Arc<Tun>, Arc<dyn Node>)>;
@@ -173,6 +175,7 @@ impl Simulator {
     ) -> Result<(
         HashMap<String, HashMap<String, Arc<Channel>>>,
         Vec<NamespaceWrapper>,
+        HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Node>)>,
     )> {
         let settings = Config::builder()
             .add_source(config::File::with_name(config_file))
@@ -208,13 +211,16 @@ impl Simulator {
             .collect();
 
         Ok(nodes.iter().fold(
-            (HashMap::default(), Vec::default()),
-            |(channels, mut namespaces), (node, node_params)| {
+            (HashMap::default(), Vec::default(), HashMap::default()),
+            |(channels, mut namespaces, mut node_map), (node, node_params)| {
                 let Ok(device) =
                     Self::create_namespaces(&mut namespaces, node, node_params, callback.clone())
                 else {
-                    return (channels, namespaces);
+                    return (channels, namespaces, node_map);
                 };
+
+                // Insert node into node_map for later querying.
+                node_map.insert(node.clone(), device.clone());
 
                 (
                     topology
@@ -237,6 +243,7 @@ impl Simulator {
                             channels
                         }),
                     namespaces,
+                    node_map,
                 )
             },
         ))
@@ -265,10 +272,11 @@ impl Simulator {
     where
         F: Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
     {
-        let (channels, namespaces) = Self::parse_topology(&args.config_file, callback)?;
+        let (channels, namespaces, nodes) = Self::parse_topology(&args.config_file, callback)?;
         Ok(Self {
             _namespaces: namespaces,
             channels,
+            nodes,
         })
     }
 
@@ -312,5 +320,10 @@ impl Simulator {
     #[allow(dead_code)]
     pub fn get_channels(&self) -> HashMap<String, HashMap<String, Arc<Channel>>> {
         self.channels.clone()
+    }
+
+    /// Return a clone of the created nodes (name -> (dev, tun, node)).
+    pub fn get_nodes(&self) -> HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Node>)> {
+        self.nodes.clone()
     }
 }

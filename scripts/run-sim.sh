@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 # Build the simulator release binary
-cargo build --bin simulator --release
+cargo build --bin simulator --release --features webview
 
 # Prefer examples/simulator.yaml if present
 if [ -f "examples/simulator.yaml" ]; then
