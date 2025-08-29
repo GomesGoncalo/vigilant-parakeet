@@ -62,27 +62,30 @@ mod tests {
 
     #[test]
     fn packet_type_roundtrip_control() {
-    // construct a control packet type directly and ensure conversion includes leading byte
-    use crate::messages::control::{Control, heartbeat::Heartbeat};
-    use mac_address::MacAddress;
-    use std::time::Duration;
+        // construct a control packet type directly and ensure conversion includes leading byte
+        use crate::messages::control::{heartbeat::Heartbeat, Control};
+        use mac_address::MacAddress;
+        use std::time::Duration;
 
-    let hb = Heartbeat::new(Duration::default(), 0, MacAddress::new([0u8;6]));
-    let ctrl = Control::Heartbeat(hb);
-    let pt = PacketType::Control(ctrl);
-    let v: Vec<Vec<u8>> = (&pt).into();
-    assert_eq!(v[0], vec![0u8]);
+        let hb = Heartbeat::new(Duration::default(), 0, MacAddress::new([0u8; 6]));
+        let ctrl = Control::Heartbeat(hb);
+        let pt = PacketType::Control(ctrl);
+        let v: Vec<Vec<u8>> = (&pt).into();
+        assert_eq!(v[0], vec![0u8]);
     }
 
     #[test]
     fn packet_type_roundtrip_data() {
-    // construct a data packet type directly and ensure conversion includes leading byte
-    use crate::messages::data::Data;
-    use mac_address::MacAddress;
+        // construct a data packet type directly and ensure conversion includes leading byte
+        use crate::messages::data::Data;
+        use mac_address::MacAddress;
 
-    let data = Data::Upstream(crate::messages::data::ToUpstream::new(MacAddress::new([0u8;6]), &[]));
-    let pt = PacketType::Data(data);
-    let v: Vec<Vec<u8>> = (&pt).into();
-    assert_eq!(v[0], vec![1u8]);
+        let data = Data::Upstream(crate::messages::data::ToUpstream::new(
+            MacAddress::new([0u8; 6]),
+            &[],
+        ));
+        let pt = PacketType::Data(data);
+        let v: Vec<Vec<u8>> = (&pt).into();
+        assert_eq!(v[0], vec![1u8]);
     }
 }

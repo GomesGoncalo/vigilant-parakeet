@@ -8,9 +8,7 @@ use anyhow::{Context, Result};
 use args::NodeType;
 use common::device::Device;
 use common::tun::Tun;
-use control::node::ReplyType;
 use std::sync::Arc;
-use tokio_tun::Tun as TokioTun;
 
 pub trait Node {}
 
@@ -28,9 +26,13 @@ pub fn create_with_vdev(
     }
 }
 
+#[cfg(not(any(test, feature = "test_helpers")))]
 pub fn create(args: Args) -> Result<Arc<dyn Node>> {
-    let tun = Arc::new(Tun::new(if args.ip.is_some() {
-        TokioTun::builder()
+    // Use the real tokio_tun builder type in non-test builds.
+    use tokio_tun::Tun as RealTokioTun;
+
+    let real_tun: RealTokioTun = if args.ip.is_some() {
+        RealTokioTun::builder()
             .name(args.tap_name.as_ref().unwrap_or(&String::default()))
             .tap()
             .mtu(args.mtu)
@@ -41,7 +43,7 @@ pub fn create(args: Args) -> Result<Arc<dyn Node>> {
             .next()
             .expect("Expecting at least 1 item in vec")
     } else {
-        TokioTun::builder()
+        RealTokioTun::builder()
             .name(args.tap_name.as_ref().unwrap_or(&String::default()))
             .mtu(args.mtu)
             .tap()
@@ -50,8 +52,16 @@ pub fn create(args: Args) -> Result<Arc<dyn Node>> {
             .into_iter()
             .next()
             .expect("Expecting at least 1 item in vec")
-    }));
+    };
+
+    // Use From/Into impl to convert the concrete real_tun into our `Tun`.
+    let tun = Arc::new(Tun::from(real_tun));
 
     let dev = Device::new(&args.bind)?;
     create_with_vdev(args, tun, dev.into())
+}
+
+#[cfg(any(test, feature = "test_helpers"))]
+pub fn create(_args: Args) -> Result<Arc<dyn Node>> {
+    anyhow::bail!("create() with TokioTun::builder() is unavailable in test builds")
 }

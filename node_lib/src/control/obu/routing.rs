@@ -1,3 +1,4 @@
+use crate::control::node::ReplyType;
 use crate::{
     control::route::Route,
     messages::{
@@ -5,7 +6,7 @@ use crate::{
         message::Message,
         packet_type::PacketType,
     },
-    Args, ReplyType,
+    Args,
 };
 use anyhow::{bail, Result};
 use arc_swap::ArcSwapOption;
@@ -30,14 +31,12 @@ mod tests {
     use crate::{
         args::{NodeParameters, NodeType},
         messages::{
-            control::heartbeat::Heartbeat,
-            control::heartbeat::HeartbeatReply,
-            control::Control,
-            message::Message,
-            packet_type::PacketType,
+            control::heartbeat::Heartbeat, control::heartbeat::HeartbeatReply, control::Control,
+            message::Message, packet_type::PacketType,
         },
-        Args, ReplyType,
+        Args,
     };
+    // ReplyType is not used in these test helpers; remove unused import.
     use mac_address::MacAddress;
     use std::time::{Duration, Instant};
 
@@ -63,7 +62,11 @@ mod tests {
         let our_mac: MacAddress = [9u8; 6].into();
 
         let hb = Heartbeat::new(Duration::from_millis(1), 1u32, hb_source);
-        let msg = Message::new(pkt_from, [255u8; 6].into(), PacketType::Control(Control::Heartbeat(hb.clone())));
+        let msg = Message::new(
+            pkt_from,
+            [255u8; 6].into(),
+            PacketType::Control(Control::Heartbeat(hb.clone())),
+        );
 
         let res = routing.handle_heartbeat(&msg, our_mac).expect("handled");
         assert!(res.is_some());
@@ -99,16 +102,28 @@ mod tests {
 
         // Insert initial heartbeat to create state
         let hb = Heartbeat::new(Duration::from_millis(1), 7u32, hb_source);
-        let initial = Message::new(pkt_from, [255u8; 6].into(), PacketType::Control(Control::Heartbeat(hb.clone())));
-        let _ = routing.handle_heartbeat(&initial, our_mac).expect("handled");
+        let initial = Message::new(
+            pkt_from,
+            [255u8; 6].into(),
+            PacketType::Control(Control::Heartbeat(hb.clone())),
+        );
+        let _ = routing
+            .handle_heartbeat(&initial, our_mac)
+            .expect("handled");
 
         // Create a HeartbeatReply from some sender (not equal to next_upstream)
         let reply_sender: MacAddress = [42u8; 6].into();
         let hbr = HeartbeatReply::from_sender(&hb, reply_sender);
         let reply_from: MacAddress = [55u8; 6].into();
-        let reply_msg = Message::new(reply_from, [255u8; 6].into(), PacketType::Control(Control::HeartbeatReply(hbr.clone())));
+        let reply_msg = Message::new(
+            reply_from,
+            [255u8; 6].into(),
+            PacketType::Control(Control::HeartbeatReply(hbr.clone())),
+        );
 
-        let res = routing.handle_heartbeat_reply(&reply_msg, our_mac).expect("handled reply");
+        let res = routing
+            .handle_heartbeat_reply(&reply_msg, our_mac)
+            .expect("handled reply");
         // Should return an Ok(Some(_)) with a wire reply
         assert!(res.is_some());
         let out = res.unwrap();

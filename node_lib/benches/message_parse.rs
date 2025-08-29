@@ -1,8 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use std::time::Duration;
 use node_lib::messages::message::Message;
+use std::time::Duration;
 
-fn bench_message_parse(c: &mut Criterion) {
+fn bench_message_parse(_c: &mut Criterion) {
     // build a representative message buffer (heartbeat-like)
     let pkt = vec![
         vec![1u8; 6],

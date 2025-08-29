@@ -25,3 +25,4 @@ common = { path = "../common/" }
 
 [features]
 webview = [ "dep:warp", "node_lib/stats" ]
+test_helpers = [ "common/test_helpers" ]

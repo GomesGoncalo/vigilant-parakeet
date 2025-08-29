@@ -130,8 +130,8 @@ mod tests {
 
     #[test]
     fn get_msgs_ok_some_with_parsable_wire() {
-        use crate::messages::data::ToUpstream;
         use crate::messages::data::Data;
+        use crate::messages::data::ToUpstream;
         use crate::messages::packet_type::PacketType;
         use mac_address::MacAddress;
 

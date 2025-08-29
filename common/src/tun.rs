@@ -8,7 +8,7 @@ pub mod test_tun {
 
     pub struct TokioTun {
         tx: mpsc::Sender<Vec<u8>>,
-    rx: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
+        rx: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
         name: String,
     }
 
@@ -79,61 +79,17 @@ use crate::stats::Stats;
 #[cfg(feature = "stats")]
 use std::sync::Mutex;
 
-// Always expose the real tokio_tun::Tun as `TokioTun` for production code.
-use tokio_tun::Tun as TokioTun;
-// The test shim `test_tun::TokioTun` is available when the `test_helpers` feature
-// is enabled (or when compiling common's own tests).
-
-use futures::future::BoxFuture;
-use futures::FutureExt;
-
-pub trait TunInner: Send + Sync {
-    fn send_vectored<'a>(&'a self, bufs: &'a [IoSlice<'_>]) -> BoxFuture<'a, io::Result<usize>>;
-    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> BoxFuture<'a, io::Result<usize>>;
-    fn send_all<'a>(&'a self, buf: &'a [u8]) -> BoxFuture<'a, io::Result<()>>;
-    fn name(&self) -> &str;
-}
-
-impl TunInner for TokioTun {
-    fn send_vectored<'a>(&'a self, bufs: &'a [IoSlice<'_>]) -> BoxFuture<'a, io::Result<usize>> {
-        async move { self.send_vectored(bufs).await }.boxed()
-    }
-
-    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> BoxFuture<'a, io::Result<usize>> {
-        async move { self.recv(buf).await }.boxed()
-    }
-
-    fn send_all<'a>(&'a self, buf: &'a [u8]) -> BoxFuture<'a, io::Result<()>> {
-        async move { self.send_all(buf).await }.boxed()
-    }
-
-    fn name(&self) -> &str {
-        self.name()
-    }
-}
-
-// Implement TunInner for the test shim when available
+// Use a conditional alias so `TokioTun` refers to the test shim when running
+// tests or when the `test_helpers` feature is enabled, otherwise use the
+// real `tokio_tun::Tun` type.
 #[cfg(any(test, feature = "test_helpers"))]
-impl TunInner for test_tun::TokioTun {
-    fn send_vectored<'a>(&'a self, bufs: &'a [IoSlice<'_>]) -> BoxFuture<'a, io::Result<usize>> {
-        async move { self.send_vectored(bufs).await }.boxed()
-    }
+pub use test_tun::TokioTun;
 
-    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> BoxFuture<'a, io::Result<usize>> {
-        async move { self.recv(buf).await }.boxed()
-    }
-
-    fn send_all<'a>(&'a self, buf: &'a [u8]) -> BoxFuture<'a, io::Result<()>> {
-        async move { self.send_all(buf).await }.boxed()
-    }
-
-    fn name(&self) -> &str {
-        self.name()
-    }
-}
+#[cfg(not(any(test, feature = "test_helpers")))]
+pub use tokio_tun::Tun as TokioTun;
 
 pub struct Tun {
-    tun: Box<dyn TunInner>,
+    tun: TokioTun,
     #[cfg(feature = "stats")]
     stats: Mutex<Stats>,
 }
@@ -141,19 +97,21 @@ pub struct Tun {
 impl Tun {
     pub fn new(tun: TokioTun) -> Self {
         Self {
-            tun: Box::new(tun),
+            tun,
             #[cfg(feature = "stats")]
             stats: Stats::default().into(),
         }
     }
 
     #[cfg(feature = "test_helpers")]
-    pub fn new_from_shim(tun: test_tun::TokioTun) -> Self {
-        Self {
-            tun: Box::new(tun),
-            #[cfg(feature = "stats")]
-            stats: Stats::default().into(),
-        }
+    pub fn new_from_shim(_tun: test_tun::TokioTun) -> Self {
+        // Since TokioTun is aliased to the test shim under the feature, the
+        // argument type already matches `TokioTun`. This constructor exists
+        // for clarity in tests; simply forward to `Tun::new`.
+        // Note: keep the parameter name to maintain signature parity with
+        // previous code paths.
+        // SAFETY: parameter type equals TokioTun under cfg toggles.
+        Tun::new(_tun)
     }
 
     #[cfg(feature = "stats")]
@@ -199,110 +157,138 @@ impl Tun {
     }
 }
 
-    #[cfg(test)]
-    mod tests {
-    use super::Tun;
-    use super::test_tun::TokioTun;
-        use std::io::IoSlice;
-        use tokio::task;
-
-        #[tokio::test]
-        async fn tun_send_and_recv_roundtrip() {
-            // create the in-test TokioTun pair (a <-> b)
-            let (a, b) = TokioTun::new_pair();
-            let tun_a = Tun::new_from_shim(a);
-
-            // spawn a task that receives from the peer side
-            let handle = task::spawn(async move {
-                let mut buf = vec![0u8; 128];
-                let n = b.recv(&mut buf).await.expect("recv failed");
-                buf.truncate(n);
-                buf
-            });
-
-            // send data via Tun::send_all and verify the peer receives it
-            let payload = b"hello tun";
-            tun_a.send_all(payload).await.expect("send_all failed");
-
-            let received = handle.await.expect("task panicked");
-            assert_eq!(received.as_slice(), payload);
-        }
-
-        #[tokio::test]
-        async fn tun_send_vectored_and_name() {
-            let (a, b) = TokioTun::new_pair();
-            let tun_a = Tun::new_from_shim(a);
-
-            // prepare vectored buffers
-            let part1 = b"hello ";
-            let part2 = b"world";
-            let bufs = [IoSlice::new(part1), IoSlice::new(part2)];
-
-            // spawn reader that collects the incoming bytes
-            let handle = task::spawn(async move {
-                let mut buf = vec![0u8; 128];
-                let n = b.recv(&mut buf).await.expect("recv failed");
-                buf.truncate(n);
-                buf
-            });
-
-            let size = tun_a.send_vectored(&bufs).await.expect("send_vectored failed");
-            assert_eq!(size, part1.len() + part2.len());
-
-            let received = handle.await.expect("task panicked");
-            let expected = [part1.as_ref(), part2.as_ref()].concat();
-            assert_eq!(received, expected);
-            assert!(tun_a.name().starts_with("tun-"));
-        }
-
-        #[tokio::test]
-        async fn tun_recv_reads_data() {
-            let (a, b) = TokioTun::new_pair();
-            let tun_a = Tun::new_from_shim(a);
-
-            // spawn a task that sends data from the peer side
-            let sender = task::spawn(async move {
-                let payload = b"reply";
-                b.send_all(payload).await.expect("peer send_all failed");
-            });
-
-            let mut buf = vec![0u8; 64];
-            let n = tun_a.recv(&mut buf).await.expect("recv failed");
-            assert_eq!(&buf[..n], b"reply");
-
-            sender.await.expect("sender panicked");
-        }
-
-        #[cfg(feature = "stats")]
-        #[tokio::test]
-        async fn tun_stats_increment_on_send_and_recv() {
-            use std::io::IoSlice;
-
-            let (a, b) = TokioTun::new_pair();
-            let tun_a = Tun::new_from_shim(a);
-
-            let before = tun_a.stats();
-            assert_eq!(before.transmitted_packets, 0);
-            assert_eq!(before.transmitted_bytes, 0);
-
-            // send vectored
-            let part1 = b"hi ";
-            let part2 = b"there";
-            let bufs = [IoSlice::new(part1), IoSlice::new(part2)];
-            let sent = tun_a.send_vectored(&bufs).await.expect("send_vectored");
-            assert_eq!(sent, part1.len() + part2.len());
-
-            let after_send = tun_a.stats();
-            assert_eq!(after_send.transmitted_packets, before.transmitted_packets + 1);
-            assert_eq!(after_send.transmitted_bytes, before.transmitted_bytes + sent as u128);
-
-            // have peer send to this tun
-            b.send_all(b"reply").await.expect("peer send_all");
-            let mut buf = vec![0u8; 64];
-            let recv_n = tun_a.recv(&mut buf).await.expect("recv");
-
-            let after_recv = tun_a.stats();
-            assert_eq!(after_recv.received_packets, before.received_packets + 1);
-            assert_eq!(after_recv.received_bytes, before.received_bytes + recv_n as u128);
-        }
+// Provide convenient conversion from concrete tokio_tun::Tun into our wrapper
+#[cfg(not(any(test, feature = "test_helpers")))]
+impl From<tokio_tun::Tun> for Tun {
+    fn from(t: tokio_tun::Tun) -> Self {
+        Tun::new(t)
     }
+}
+
+// When the test shim is active, allow converting from the shim type as well
+#[cfg(any(test, feature = "test_helpers"))]
+impl From<test_tun::TokioTun> for Tun {
+    fn from(t: test_tun::TokioTun) -> Self {
+        Tun::new(t)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_tun::TokioTun;
+    use super::Tun;
+    use std::io::IoSlice;
+    use tokio::task;
+
+    #[tokio::test]
+    async fn tun_send_and_recv_roundtrip() {
+        // create the in-test TokioTun pair (a <-> b)
+        let (a, b) = TokioTun::new_pair();
+        let tun_a = Tun::new_from_shim(a);
+
+        // spawn a task that receives from the peer side
+        let handle = task::spawn(async move {
+            let mut buf = vec![0u8; 128];
+            let n = b.recv(&mut buf).await.expect("recv failed");
+            buf.truncate(n);
+            buf
+        });
+
+        // send data via Tun::send_all and verify the peer receives it
+        let payload = b"hello tun";
+        tun_a.send_all(payload).await.expect("send_all failed");
+
+        let received = handle.await.expect("task panicked");
+        assert_eq!(received.as_slice(), payload);
+    }
+
+    #[tokio::test]
+    async fn tun_send_vectored_and_name() {
+        let (a, b) = TokioTun::new_pair();
+        let tun_a = Tun::new_from_shim(a);
+
+        // prepare vectored buffers
+        let part1 = b"hello ";
+        let part2 = b"world";
+        let bufs = [IoSlice::new(part1), IoSlice::new(part2)];
+
+        // spawn reader that collects the incoming bytes
+        let handle = task::spawn(async move {
+            let mut buf = vec![0u8; 128];
+            let n = b.recv(&mut buf).await.expect("recv failed");
+            buf.truncate(n);
+            buf
+        });
+
+        let size = tun_a
+            .send_vectored(&bufs)
+            .await
+            .expect("send_vectored failed");
+        assert_eq!(size, part1.len() + part2.len());
+
+        let received = handle.await.expect("task panicked");
+        let expected = [part1.as_ref(), part2.as_ref()].concat();
+        assert_eq!(received, expected);
+        assert!(tun_a.name().starts_with("tun-"));
+    }
+
+    #[tokio::test]
+    async fn tun_recv_reads_data() {
+        let (a, b) = TokioTun::new_pair();
+        let tun_a = Tun::new_from_shim(a);
+
+        // spawn a task that sends data from the peer side
+        let sender = task::spawn(async move {
+            let payload = b"reply";
+            b.send_all(payload).await.expect("peer send_all failed");
+        });
+
+        let mut buf = vec![0u8; 64];
+        let n = tun_a.recv(&mut buf).await.expect("recv failed");
+        assert_eq!(&buf[..n], b"reply");
+
+        sender.await.expect("sender panicked");
+    }
+
+    #[cfg(feature = "stats")]
+    #[tokio::test]
+    async fn tun_stats_increment_on_send_and_recv() {
+        use std::io::IoSlice;
+
+        let (a, b) = TokioTun::new_pair();
+        let tun_a = Tun::new_from_shim(a);
+
+        let before = tun_a.stats();
+        assert_eq!(before.transmitted_packets, 0);
+        assert_eq!(before.transmitted_bytes, 0);
+
+        // send vectored
+        let part1 = b"hi ";
+        let part2 = b"there";
+        let bufs = [IoSlice::new(part1), IoSlice::new(part2)];
+        let sent = tun_a.send_vectored(&bufs).await.expect("send_vectored");
+        assert_eq!(sent, part1.len() + part2.len());
+
+        let after_send = tun_a.stats();
+        assert_eq!(
+            after_send.transmitted_packets,
+            before.transmitted_packets + 1
+        );
+        assert_eq!(
+            after_send.transmitted_bytes,
+            before.transmitted_bytes + sent as u128
+        );
+
+        // have peer send to this tun
+        b.send_all(b"reply").await.expect("peer send_all");
+        let mut buf = vec![0u8; 64];
+        let recv_n = tun_a.recv(&mut buf).await.expect("recv");
+
+        let after_recv = tun_a.stats();
+        assert_eq!(after_recv.received_packets, before.received_packets + 1);
+        assert_eq!(
+            after_recv.received_bytes,
+            before.received_bytes + recv_n as u128
+        );
+    }
+}

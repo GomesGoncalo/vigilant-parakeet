@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
 use common::device::Device;
 use common::tun::Tun;
@@ -14,7 +14,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::signal;
-use tokio_tun::Tun as TokioTun;
+ // Context is unused in current builds; remove the import.
+ #[cfg(not(feature = "test_helpers"))]
+ use tokio_tun::Tun as TokioTun;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 #[cfg(feature = "webview")]
 use warp::Filter;
@@ -88,6 +90,7 @@ async fn main() -> Result<()> {
             .build()?;
         tracing::info!(?settings, "settings");
 
+        #[cfg(not(feature = "test_helpers"))]
         let tun = Arc::new(Tun::new(
             TokioTun::builder()
                 .name("real")
@@ -98,6 +101,13 @@ async fn main() -> Result<()> {
                 .next()
                 .expect("Expecting at least 1 item in vec"),
         ));
+        #[cfg(feature = "test_helpers")]
+        let tun = {
+            // test build: the test shim is active; construct a placeholder
+            // Tun by creating the shim via its new_pair and taking one end.
+            let (a, _b) = common::tun::test_tun::TokioTun::new_pair();
+            Arc::new(Tun::from(a))
+        };
 
         let args = Args {
             bind: tun.name().to_string(),
@@ -116,6 +126,7 @@ async fn main() -> Result<()> {
             },
         };
 
+        #[cfg(not(feature = "test_helpers"))]
         let virtual_tun = Arc::new(Tun::new(if let Some(ref name) = args.tap_name {
             TokioTun::builder()
                 .tap()
@@ -138,6 +149,11 @@ async fn main() -> Result<()> {
                 .next()
                 .expect("Expecting at least 1 item in vec")
         }));
+        #[cfg(feature = "test_helpers")]
+        let virtual_tun = {
+            let (a, _b) = common::tun::test_tun::TokioTun::new_pair();
+            Arc::new(Tun::from(a))
+        };
 
         let dev = Arc::new(Device::new(tun.name())?);
         let node = node_lib::create_with_vdev(args, virtual_tun, dev.clone())?;

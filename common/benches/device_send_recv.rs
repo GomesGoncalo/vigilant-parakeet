@@ -1,15 +1,15 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use std::time::Duration;
-use std::os::unix::io::{FromRawFd, IntoRawFd};
-use std::io::Read;
-use std::thread;
-use tokio::runtime::Runtime;
 use common::device::DeviceIo;
-use nix::unistd::{pipe, close};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use nix::unistd::pipe;
+use std::io::Read;
+use std::os::unix::io::{FromRawFd, IntoRawFd};
+use std::thread;
+use std::time::Duration;
+use tokio::runtime::Runtime;
 
 /// AsyncFd-driven bench that uses a pipe writer wrapped in `AsyncFd<DeviceIo>` and
 /// a Tokio runtime to exercise the same async path `Device::send` would use.
-fn bench_device_async_send(c: &mut Criterion) {
+fn bench_device_async_send(_c: &mut Criterion) {
     // Create a pipe (reader, writer). nix 0.29 returns OwnedFd; consume them into RawFd.
     let (r_owned, w_owned) = pipe().expect("pipe");
 
@@ -49,7 +49,8 @@ fn bench_device_async_send(c: &mut Criterion) {
     });
 
     // Wrap the writer fd in DeviceIo and AsyncFd
-    let async_fd = tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(raw_w) }).expect("create asyncfd");
+    let async_fd = tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(raw_w) })
+        .expect("create asyncfd");
 
     // Construct a Device using the helper so we exercise Device::send path.
     let mac: mac_address::MacAddress = [1, 2, 3, 4, 5, 6].into();
@@ -70,7 +71,7 @@ fn bench_device_async_send(c: &mut Criterion) {
             let res = rt.block_on(async { device.send(black_box(&buf[..])).await });
             match res {
                 Ok(_n) => {}
-                Err(e) => panic!("device send error: {}", e),
+                    Err(e) => panic!("device send error: {e}"),
             }
         })
     });

@@ -2,11 +2,9 @@ use crate::network_interface::NetworkInterface;
 #[cfg(feature = "stats")]
 use crate::stats::Stats;
 use anyhow::{Context, Result};
-// (integration tests moved to `node_lib/tests` to avoid duplicate `common` crate build issues)
-// Integration tests moved to `node_lib/tests` to avoid duplicate `common` crate builds.
+#[cfg(feature = "stats")]
+use std::sync::Mutex;
 
-// Test-only shim for managing fds in unit tests. We provide local stubs so
-// running coverage (tarpaulin) doesn't require an external crate.
 #[cfg(test)]
 mod test_fd_registry {
     use std::os::unix::io::RawFd;
@@ -20,30 +18,30 @@ mod test_fd_registry {
     }
 
     pub fn close_raw_fd(fd: RawFd) {
-    unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
     }
 }
 
 #[cfg(test)]
 use test_fd_registry::{close_raw_fd, register_owned_fd, unregister_owned_fd};
 
-// Common imports required by the Device implementation and test harnesses
+use futures::ready;
+use libc::{sockaddr, sockaddr_ll, AF_PACKET};
+use mac_address::MacAddress;
+use nix::sys::socket::{bind as nix_bind, LinkAddr, SockaddrLike};
+use socket2::{Domain, Protocol, Socket, Type};
+use std::convert::TryFrom;
+use std::io;
+use std::io::{ErrorKind, IoSlice, Read, Write};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::pin::Pin;
 use std::task;
 use std::task::Poll;
-use futures::ready;
+use tokio::io::unix::AsyncFd;
 use tokio::io::ReadBuf;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::io::unix::AsyncFd;
-use std::io;
-use std::io::{IoSlice, Read, Write, ErrorKind};
-use std::os::unix::io::{RawFd, FromRawFd, AsRawFd, IntoRawFd};
-use mac_address::MacAddress;
-use std::sync::Mutex;
-use socket2::{Socket, Domain, Type, Protocol};
-use nix::sys::socket::{LinkAddr, SockaddrLike, bind as nix_bind};
-use libc::{sockaddr_ll, AF_PACKET, sockaddr};
-use std::convert::TryFrom;
 
 const ETH_P_ALL: u16 = 0x0003;
 
@@ -76,17 +74,15 @@ impl AsyncRead for Device {
     }
 }
 
-// Feature-gated tests that exercise stats increment via the public Device API.
 #[cfg(all(test, feature = "stats"))]
 mod stats_tests {
-    use super::DeviceIo;
     use super::Device;
+    use super::DeviceIo;
     use crate::device::close_raw_fd;
     use crate::stats::Stats;
     use mac_address::MacAddress;
     use std::os::unix::io::FromRawFd;
 
-    // Helper: set fd non-blocking using libc directly to avoid feature-gated nix items
     fn set_nonblocking(fd: i32) {
         unsafe {
             let flags = libc::fcntl(fd, libc::F_GETFL);
@@ -110,7 +106,8 @@ mod stats_tests {
         // Build a Device that uses the writer end for send()
         let mac: MacAddress = [0, 1, 2, 3, 4, 5].into();
         // Safety: take ownership of the fd for DeviceIo
-        let async_fd = tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
+        let async_fd =
+            tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
         let device = Device {
             mac_address: mac,
             fd: async_fd,
@@ -127,13 +124,16 @@ mod stats_tests {
 
         let after = device.stats();
         assert_eq!(after.transmitted_packets, before.transmitted_packets + 1);
-        assert_eq!(after.transmitted_bytes, before.transmitted_bytes + n as u128);
+        assert_eq!(
+            after.transmitted_bytes,
+            before.transmitted_bytes + n as u128
+        );
 
         // drain the reader side to keep OS state clean
         let mut buf = [0u8; 16];
         let r = unsafe { libc::read(reader_fd, buf.as_mut_ptr().cast(), buf.len()) };
         assert!(r > 0);
-    close_raw_fd(reader_fd);
+        close_raw_fd(reader_fd);
     }
 
     #[tokio::test]
@@ -149,7 +149,8 @@ mod stats_tests {
 
         // Build Device using reader end for recv()
         let mac: MacAddress = [6, 7, 8, 9, 10, 11].into();
-        let async_fd = tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(reader_fd) }).unwrap();
+        let async_fd =
+            tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(reader_fd) }).unwrap();
         let device = Device {
             mac_address: mac,
             fd: async_fd,
@@ -173,7 +174,7 @@ mod stats_tests {
         assert_eq!(after.received_packets, before.received_packets + 1);
         assert_eq!(after.received_bytes, before.received_bytes + n as u128);
 
-    close_raw_fd(writer_fd);
+        close_raw_fd(writer_fd);
     }
 }
 
@@ -364,8 +365,8 @@ impl Device {
             )
         }
         .context("casting link storage")?;
-    // bind using nix's socket bind helpers
-    let _ = nix_bind(fd.as_raw_fd(), &storage);
+        // bind using nix's socket bind helpers
+        let _ = nix_bind(fd.as_raw_fd(), &storage);
         let raw_fd: RawFd = fd.into_raw_fd();
         Ok(Self {
             mac_address,
@@ -378,10 +379,17 @@ impl Device {
     /// Public helper to construct a Device from an existing AsyncFd<DeviceIo>.
     /// This is a convenience used by benches and external harnesses to avoid
     /// opening raw packet sockets (which require elevated privileges).
-    pub fn from_asyncfd_for_bench(mac_address: mac_address::MacAddress, fd: AsyncFd<DeviceIo>) -> Self {
+    pub fn from_asyncfd_for_bench(
+        mac_address: mac_address::MacAddress,
+        fd: AsyncFd<DeviceIo>,
+    ) -> Self {
         #[cfg(feature = "stats")]
         {
-            Device { mac_address, fd, stats: Stats::default().into() }
+            Device {
+                mac_address,
+                fd,
+                stats: Stats::default().into(),
+            }
         }
         #[cfg(not(feature = "stats"))]
         {
@@ -427,7 +435,7 @@ impl Device {
 
     pub async fn send_all(&self, buf: &[u8]) -> io::Result<()> {
         let mut remaining = buf;
-    let _size = buf.len();
+        let _size = buf.len();
         while !remaining.is_empty() {
             match self.send(remaining).await? {
                 0 => return Err(ErrorKind::WriteZero.into()),
@@ -472,12 +480,12 @@ impl Device {
 
 #[cfg(test)]
 mod tests {
-    use super::DeviceIo;
     use super::Device;
+    use super::DeviceIo;
     use crate::device::close_raw_fd;
-    use std::io::{Read, Write, IoSlice};
-    use mac_address::MacAddress;
     use crate::network_interface::NetworkInterface;
+    use mac_address::MacAddress;
+    use std::io::{IoSlice, Read, Write};
     use std::os::unix::io::AsRawFd;
 
     // Helper: set fd non-blocking using libc
@@ -502,11 +510,18 @@ mod tests {
         #[cfg(feature = "stats")]
         {
             use crate::stats::Stats;
-            Device { mac_address: mac, fd, stats: Stats::default().into() }
+            Device {
+                mac_address: mac,
+                fd,
+                stats: Stats::default().into(),
+            }
         }
         #[cfg(not(feature = "stats"))]
         {
-            Device { mac_address: mac, fd }
+            Device {
+                mac_address: mac,
+                fd,
+            }
         }
     }
 
@@ -590,8 +605,9 @@ mod tests {
         set_nonblocking(writer_fd);
 
         let mac: MacAddress = [10, 11, 12, 13, 14, 15].into();
-        let async_fd = tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
-    let device = device_from_parts(mac, async_fd);
+        let async_fd =
+            tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
+        let device = device_from_parts(mac, async_fd);
 
         let n = device.send(b"hello").await.expect("send");
         assert_eq!(n, 5);
@@ -601,7 +617,7 @@ mod tests {
         assert_eq!(r, 5);
         assert_eq!(&out, b"hello");
 
-    close_raw_fd(reader_fd);
+        close_raw_fd(reader_fd);
     }
 
     #[tokio::test]
@@ -617,8 +633,9 @@ mod tests {
         set_nonblocking(reader_fd);
 
         let mac: MacAddress = [16, 17, 18, 19, 20, 21].into();
-        let async_fd = tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(reader_fd) }).unwrap();
-    let device = device_from_parts(mac, async_fd);
+        let async_fd =
+            tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(reader_fd) }).unwrap();
+        let device = device_from_parts(mac, async_fd);
 
         // write into writer_fd so recv can read
         let payload = b"world";
@@ -630,7 +647,7 @@ mod tests {
         assert_eq!(n, payload.len());
         assert_eq!(&buf[..n], payload);
 
-    close_raw_fd(writer_fd);
+        close_raw_fd(writer_fd);
     }
 
     #[tokio::test]
@@ -645,8 +662,9 @@ mod tests {
         set_nonblocking(writer_fd);
 
         let mac: MacAddress = [22, 23, 24, 25, 26, 27].into();
-        let async_fd = tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
-    let device = device_from_parts(mac, async_fd);
+        let async_fd =
+            tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
+        let device = device_from_parts(mac, async_fd);
 
         let a = b"12";
         let b = b"34";
@@ -659,7 +677,7 @@ mod tests {
         assert_eq!(r, 4);
         assert_eq!(&out, b"1234");
 
-    close_raw_fd(reader_fd);
+        close_raw_fd(reader_fd);
     }
 
     #[tokio::test]
@@ -673,8 +691,9 @@ mod tests {
         set_nonblocking(writer_fd);
 
         let mac: MacAddress = [30, 31, 32, 33, 34, 35].into();
-        let async_fd = tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
-    let device = device_from_parts(mac, async_fd);
+        let async_fd =
+            tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
+        let device = device_from_parts(mac, async_fd);
 
         // call trait method
         assert!(<Device as AsyncWrite>::is_write_vectored(&device));
@@ -682,8 +701,8 @@ mod tests {
 
     #[tokio::test]
     async fn device_asyncread_trait_reads() {
-        use tokio::io::AsyncReadExt;
         use std::os::unix::io::FromRawFd;
+        use tokio::io::AsyncReadExt;
 
         // create pipe: reader is fds[0]
         let mut fds = [0; 2];
@@ -694,9 +713,10 @@ mod tests {
         set_nonblocking(reader_fd);
 
         let mac: MacAddress = [40, 41, 42, 43, 44, 45].into();
-    let async_fd = tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(reader_fd) }).unwrap();
-    // create a Device by consuming async_fd
-    let mut device = device_from_parts(mac, async_fd);
+        let async_fd =
+            tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(reader_fd) }).unwrap();
+        // create a Device by consuming async_fd
+        let mut device = device_from_parts(mac, async_fd);
 
         // write into writer_fd
         let payload = b"asyncread";
@@ -708,13 +728,13 @@ mod tests {
         assert_eq!(n, payload.len());
         assert_eq!(&buf[..n], payload);
 
-    close_raw_fd(writer_fd);
+        close_raw_fd(writer_fd);
     }
 
     #[tokio::test]
     async fn device_flush_returns_err_on_pipe() {
-        use tokio::io::AsyncWriteExt;
         use std::os::unix::io::FromRawFd;
+        use tokio::io::AsyncWriteExt;
 
         let mut fds = [0; 2];
         unsafe { libc::pipe(fds.as_mut_ptr()) };
@@ -722,7 +742,10 @@ mod tests {
         set_nonblocking(writer_fd);
 
         let mac: MacAddress = [50, 51, 52, 53, 54, 55].into();
-    let mut device = device_from_parts(mac, tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap());
+        let mut device = device_from_parts(
+            mac,
+            tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap(),
+        );
 
         // flushing a pipe-backed fd via fsync typically fails; ensure we get an Err
         let res = device.flush().await;
@@ -740,7 +763,10 @@ mod tests {
         set_nonblocking(writer_fd);
 
         let mac: MacAddress = [60, 61, 62, 63, 64, 65].into();
-    let device = device_from_parts(mac, tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap());
+        let device = device_from_parts(
+            mac,
+            tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap(),
+        );
 
         let payload = b"this will be sent via send_all";
         device.send_all(payload).await.expect("send_all");
@@ -751,7 +777,7 @@ mod tests {
         assert_eq!(r, payload.len() as isize);
         assert_eq!(&out, payload);
 
-    close_raw_fd(reader_fd);
+        close_raw_fd(reader_fd);
     }
 
     #[tokio::test]
@@ -762,23 +788,23 @@ mod tests {
         unsafe { libc::pipe(fds.as_mut_ptr()) };
         let writer_fd = fds[1];
         let mac: MacAddress = [70, 71, 72, 73, 74, 75].into();
-        let async_fd = tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
-    let device = device_from_parts(mac, async_fd);
+        let async_fd =
+            tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
+        let device = device_from_parts(mac, async_fd);
 
         // trait method is available because NetworkInterface is in scope in tests
         assert_eq!(device.mac_address(), mac);
-
     }
 
     #[cfg(feature = "stats")]
     #[tokio::test]
     async fn device_stats_increment_on_send_recv() {
-    use crate::stats::Stats;
+        use crate::stats::Stats;
 
-        let (mut r, mut w) = make_pipe();
-        // wrap r and w into AsyncFd and Device-like struct manually
-        let async_r = tokio::io::unix::AsyncFd::new(r).expect("asyncfd r");
-        let async_w = tokio::io::unix::AsyncFd::new(w).expect("asyncfd w");
+    let (r, w) = make_pipe();
+    // wrap r and w into AsyncFd and Device-like struct manually
+    let _async_r = tokio::io::unix::AsyncFd::new(r).expect("asyncfd r");
+    let _async_w = tokio::io::unix::AsyncFd::new(w).expect("asyncfd w");
 
         // we can't construct the full Device without a real interface, but we can
         // check Stats default and manual increment behavior
@@ -804,12 +830,12 @@ mod tests {
         let reader_fd = fds[0];
         let writer_fd = fds[1];
 
-    // Take ownership of writer_fd for DeviceIo; Drop will close it.
-    let dio = DeviceIo::from(writer_fd);
+        // Take ownership of writer_fd for DeviceIo; Drop will close it.
+        let dio = DeviceIo::from(writer_fd);
         assert_eq!(dio.as_raw_fd(), writer_fd);
 
         // close the unused reader end to avoid leaks
-    close_raw_fd(reader_fd);
+        close_raw_fd(reader_fd);
     }
 
     #[test]
@@ -818,12 +844,24 @@ mod tests {
         use std::os::unix::io::IntoRawFd;
 
         // create a small temp file and take ownership of its fd
-        let tmp = std::env::temp_dir().join(format!("vp_test_flush_{}_{}.tmp", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let f = OpenOptions::new().write(true).create(true).open(&tmp).expect("create tmp");
+        let tmp = std::env::temp_dir().join(format!(
+            "vp_test_flush_{}_{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)
+            .expect("create tmp");
         let raw = f.into_raw_fd();
 
         // DeviceIo should be able to fsync a regular file
-    let mut dio = DeviceIo::from(raw);
+        let mut dio = DeviceIo::from(raw);
         let n = dio.write(b"hello").expect("write");
         assert_eq!(n, 5);
         dio.flush().expect("fsync should succeed on a regular file");
@@ -841,9 +879,9 @@ mod tests {
         let writer_fd = fds[1];
 
         // close writer end to simulate EOF
-    close_raw_fd(writer_fd);
+        close_raw_fd(writer_fd);
 
-    let dio = DeviceIo::from(reader_fd);
+        let dio = DeviceIo::from(reader_fd);
         let mut buf = [0u8; 8];
         let n = dio.recv(&mut buf).expect("recv should return Ok");
         assert_eq!(n, 0);

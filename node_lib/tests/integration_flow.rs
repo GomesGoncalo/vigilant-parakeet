@@ -1,17 +1,17 @@
-use common::tun::test_tun::TokioTun;
-use common::tun::Tun;
 use common::device::Device;
 use common::device::DeviceIo;
+use common::tun::test_tun::TokioTun;
+use common::tun::Tun;
 use mac_address::MacAddress;
-use tokio::io::unix::AsyncFd;
+use node_lib::control::node::{handle_messages, ReplyType};
 use std::os::unix::io::FromRawFd;
 use std::sync::Arc;
-use node_lib::control::node::{ReplyType, handle_messages};
+use tokio::io::unix::AsyncFd;
 
 #[tokio::test]
 async fn handle_messages_sends_to_tun_and_device() {
-    let (a, b) = TokioTun::new_pair();
-    let tun = Tun::new_from_shim(a);
+    let (a, _b) = TokioTun::new_pair();
+    let tun = Tun::new(a);
 
     // create a pipe to stand in for device fd
     let mut fds = [0; 2];
@@ -23,14 +23,14 @@ async fn handle_messages_sends_to_tun_and_device() {
     unsafe { libc::fcntl(writer_fd, libc::F_SETFL, libc::O_NONBLOCK) };
 
     let async_fd = AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
-    let mac: MacAddress = [1u8;6].into();
+    let mac: MacAddress = [1u8; 6].into();
     let device = Device::from_asyncfd_for_bench(mac, async_fd);
 
     let tun = Arc::new(tun);
     let device = Arc::new(device);
 
-    let tap = ReplyType::Tap(vec![vec![1u8,2u8,3u8]]);
-    let wire = ReplyType::Wire(vec![vec![0u8;14]]);
+    let tap = ReplyType::Tap(vec![vec![1u8, 2u8, 3u8]]);
+    let wire = ReplyType::Wire(vec![vec![0u8; 14]]);
 
     let msgs = vec![tap, wire];
     handle_messages(msgs, &tun, &device).await.expect("ok");

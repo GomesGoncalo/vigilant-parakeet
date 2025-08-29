@@ -108,7 +108,7 @@ mod tests {
         pkt.extend_from_slice(&[1u8; 6]); // to
         pkt.extend_from_slice(&[2u8; 6]); // from
         pkt.extend_from_slice(&[0x30, 0x30]); // marker
-        // no more bytes
+                                              // no more bytes
         let msg = Message::try_from(&pkt[..]);
         assert!(msg.is_err());
     }

@@ -280,14 +280,14 @@ mod tests {
 
     #[test]
     fn heartbeat_try_from_too_short_fails() {
-        let pkt = vec![0u8; 10];
+        let pkt = [0u8; 10];
         let res = Heartbeat::try_from(&pkt[..]);
         assert!(res.is_err());
     }
 
     #[test]
     fn heartbeat_reply_try_from_too_short_fails() {
-        let pkt = vec![0u8; 20];
+        let pkt = [0u8; 20];
         let res = crate::messages::control::heartbeat::HeartbeatReply::try_from(&pkt[..]);
         assert!(res.is_err());
     }

@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn data_invalid_first_byte_is_error() {
-        let pkt = vec![2u8, 0, 1, 2];
+        let pkt = [2u8, 0, 1, 2];
         assert!(Data::try_from(&pkt[..]).is_err());
     }
 }
