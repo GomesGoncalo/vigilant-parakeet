@@ -142,3 +142,62 @@ impl<'a> From<&Data<'a>> for Vec<Vec<u8>> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Data, ToDownstream, ToUpstream};
+    use mac_address::MacAddress;
+
+    #[test]
+    fn to_upstream_parse_and_roundtrip() {
+        let mac: MacAddress = [7u8; 6].into();
+        let payload = [9u8, 8u8];
+        let tu = ToUpstream::new(mac, &payload);
+        let v: Vec<Vec<u8>> = (&tu).into();
+        assert_eq!(v[0], mac.bytes().to_vec());
+        assert_eq!(v[1], payload.to_vec());
+
+        let mut full = vec![vec![0u8]];
+        full.extend(v.clone());
+        let flat: Vec<u8> = full.iter().flat_map(|x| x.iter()).copied().collect();
+        let parsed = Data::try_from(&flat[..]).expect("parse upstream");
+        match parsed {
+            Data::Upstream(u) => {
+                assert_eq!(u.source().to_vec(), mac.bytes().to_vec());
+                assert_eq!(u.data().to_vec(), payload.to_vec());
+            }
+            _ => panic!("expected upstream"),
+        }
+    }
+
+    #[test]
+    fn to_downstream_parse_and_roundtrip() {
+        let origin = [5u8; 6];
+        let dest: MacAddress = [6u8; 6].into();
+        let payload = [1u8, 2u8, 3u8];
+        let td = ToDownstream::new(&origin, dest, &payload);
+        let v: Vec<Vec<u8>> = (&td).into();
+        assert_eq!(v[0], origin.to_vec());
+        assert_eq!(v[1], dest.bytes().to_vec());
+        assert_eq!(v[2], payload.to_vec());
+
+        let mut full = vec![vec![1u8]];
+        full.extend(v.clone());
+        let flat: Vec<u8> = full.iter().flat_map(|x| x.iter()).copied().collect();
+        let parsed = Data::try_from(&flat[..]).expect("parse downstream");
+        match parsed {
+            Data::Downstream(d) => {
+                assert_eq!(d.source().to_vec(), origin.to_vec());
+                assert_eq!(d.destination().to_vec(), dest.bytes().to_vec());
+                assert_eq!(d.data().to_vec(), payload.to_vec());
+            }
+            _ => panic!("expected downstream"),
+        }
+    }
+
+    #[test]
+    fn data_invalid_first_byte_is_error() {
+        let pkt = vec![2u8, 0, 1, 2];
+        assert!(Data::try_from(&pkt[..]).is_err());
+    }
+}

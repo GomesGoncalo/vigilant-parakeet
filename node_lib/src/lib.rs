@@ -1,10 +1,11 @@
 pub mod args;
+pub use args::Args;
 pub mod control;
 mod data;
-mod messages;
+pub mod messages;
 
 use anyhow::{Context, Result};
-use args::{Args, NodeType};
+use args::NodeType;
 use common::device::Device;
 use common::tun::Tun;
 use control::node::ReplyType;

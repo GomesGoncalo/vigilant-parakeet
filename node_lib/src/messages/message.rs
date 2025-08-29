@@ -92,4 +92,24 @@ mod tests {
         let msg = Message::try_from(&pkt[..]);
         assert!(msg.is_err());
     }
+
+    #[test]
+    fn message_too_short_is_error() {
+        // shorter than the minimum header length -> error
+        let pkt = [0u8; 8];
+        let msg = Message::try_from(&pkt[..]);
+        assert!(msg.is_err());
+    }
+
+    #[test]
+    fn message_with_no_packet_type_is_error() {
+        // Build a slice that contains the protocol marker and from/to but no payload
+        let mut pkt = Vec::new();
+        pkt.extend_from_slice(&[1u8; 6]); // to
+        pkt.extend_from_slice(&[2u8; 6]); // from
+        pkt.extend_from_slice(&[0x30, 0x30]); // marker
+        // no more bytes
+        let msg = Message::try_from(&pkt[..]);
+        assert!(msg.is_err());
+    }
 }

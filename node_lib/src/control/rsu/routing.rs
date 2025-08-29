@@ -11,12 +11,12 @@ use anyhow::{bail, Result};
 use indexmap::IndexMap;
 use itertools::Itertools;
 use mac_address::MacAddress;
+use tracing::Level;
 use std::{
     collections::{hash_map::Entry, HashMap},
     fmt::Debug,
     time::{Duration, Instant},
 };
-use tracing::Level;
 
 #[derive(Debug)]
 struct Target {
@@ -222,6 +222,9 @@ mod tests {
         messages::{control::Control, message::Message, packet_type::PacketType},
         Args,
     };
+    use crate::messages::control::heartbeat::{Heartbeat, HeartbeatReply};
+    use mac_address::MacAddress;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn can_generate_heartbeat() {
@@ -265,5 +268,40 @@ mod tests {
         assert_eq!(hb.source(), [1; 6].into());
         assert_eq!(hb.hops(), 1);
         assert_eq!(hb.id(), 0);
+    }
+
+    #[test]
+    fn rsu_handle_heartbeat_reply_inserts_route() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Rsu,
+                hello_history: 2,
+                hello_periodicity: None,
+            },
+        };
+
+        let Ok(mut routing) = Routing::new(&args) else { panic!("did not build a routing object"); };
+
+    // use send_heartbeat to create initial state for the given rsu source
+    let src: MacAddress = [101u8; 6].into();
+    let _ = routing.send_heartbeat(src);
+
+    // the first heartbeat inserted will have id 0, construct a matching heartbeat
+    let hb = Heartbeat::new(Duration::from_millis(0), 0u32, src);
+    let reply_sender: MacAddress = [200u8; 6].into();
+    let hbr = HeartbeatReply::from_sender(&hb, reply_sender);
+        let reply_from: MacAddress = [201u8; 6].into();
+        let reply_msg = Message::new(reply_from, [255u8; 6].into(), PacketType::Control(Control::HeartbeatReply(hbr.clone())));
+
+    let res = routing.handle_heartbeat_reply(&reply_msg, [103u8;6].into()).expect("handled reply");
+    // implementation returns Ok(None) for this code path, ensure no reply and that route exists
+    assert!(res.is_none());
+
+    let route = routing.get_route_to(Some(reply_sender));
+        assert!(route.is_some());
     }
 }

@@ -1,4 +1,4 @@
-mod routing;
+pub mod routing;
 mod session;
 
 use super::node::ReplyType;

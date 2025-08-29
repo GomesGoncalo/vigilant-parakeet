@@ -103,3 +103,27 @@ where
     let n = dev.recv(&mut buf).await?;
     callable(buf, n).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{get_msgs, ReplyType};
+    use crate::messages::message::Message;
+    use anyhow::Result;
+
+    #[test]
+    fn get_msgs_ok_none() {
+        let res: Result<Option<Vec<ReplyType>>> = Ok(None);
+        let out = get_msgs(&res).expect("ok none");
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn get_msgs_ok_some_with_unparsable_wire() {
+        // ReplyType::Wire with random bytes that won't parse to Message -> filtered out
+        let replies = vec![ReplyType::Wire(vec![vec![0u8; 3]])];
+        let res: Result<Option<Vec<ReplyType>>> = Ok(Some(replies));
+        let dbg = get_msgs(&res).expect("ok some").expect("some");
+        // should filter out unparsable wire entries
+        assert!(dbg.is_empty());
+    }
+}

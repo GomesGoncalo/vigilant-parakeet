@@ -28,3 +28,31 @@ impl ClientCache {
         cache.get(&client).copied()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ClientCache;
+    use mac_address::MacAddress;
+
+    #[test]
+    fn store_and_get_mac() {
+        let cache = ClientCache::default();
+        let client: MacAddress = [1u8; 6].into();
+        let node: MacAddress = [2u8; 6].into();
+        assert!(cache.get(client).is_none());
+        cache.store_mac(client, node);
+        let got = cache.get(client);
+        assert_eq!(got, Some(node));
+    }
+
+    #[test]
+    fn storing_same_mapping_is_noop() {
+        let cache = ClientCache::default();
+        let client: MacAddress = [3u8; 6].into();
+        let node: MacAddress = [4u8; 6].into();
+        cache.store_mac(client, node);
+        // store same mapping again; should not panic and should still return same value
+        cache.store_mac(client, node);
+        assert_eq!(cache.get(client), Some(node));
+    }
+}

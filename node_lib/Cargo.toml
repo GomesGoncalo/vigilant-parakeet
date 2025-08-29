@@ -24,3 +24,6 @@ arc-swap = { version = "*" }
 
 [features]
 stats = [ "common/stats" ]
+
+[dev-dependencies]
+criterion = "0.5"

@@ -19,4 +19,4 @@ else
 fi
 
 # Run simulator (sudo required for netns)
-sudo RUST_LOG="node=info" "$ROOT_DIR/target/release/simulator" --config-file "$CONFIG" --pretty
+sudo RUST_LOG="node=debug" "$ROOT_DIR/target/release/simulator" --config-file "$CONFIG" --pretty

@@ -20,3 +20,6 @@ serde = { version = "*", features = ["derive"]}
 
 [features]
 stats = []
+
+[dev-dependencies]
+criterion = "0.5"

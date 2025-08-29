@@ -1,4 +1,4 @@
-mod routing;
+pub mod routing;
 
 use super::{client_cache::ClientCache, node::ReplyType};
 use crate::{
