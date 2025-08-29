@@ -4,260 +4,398 @@
     <meta charset="utf-8" />
     <title>Network Viz</title>
     <script src="https://cdn.plot.ly/plotly-2.16.1.min.js"></script>
-        <!-- vis-network for graph rendering -->
-        <link href="https://unpkg.com/vis-network/styles/vis-network.min.css" rel="stylesheet" type="text/css" />
-        <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
-        <style>
-            /* Graph container sizing */
-            #graph { height: 520px; width: 100%; border: 1px solid #ddd; margin: 8px 0; }
-                #legend { font-family: sans-serif; font-size: 13px; margin: 8px 0; }
-                #legend .item { display:inline-flex; align-items:center; margin-right:1rem; }
-                #legend .swatch { width:14px; height:14px; display:inline-block; margin-right:6px; border:1px solid #333; }
-        </style>
+    <style>
+        html, body, #graph {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        #graph {
+            width: 100%;
+            min-height: 480px;
+        }
+    </style>
 </head>
 <body>
-    <div id="legend">
-        <span class="item"><span class="swatch" style="background:#2E8B57;border-color:#1E6B47"></span> RSU (square)</span>
-        <span class="item"><span class="swatch" style="background:#AAD3FF;border-color:#2B7BBF"></span> OBU (dot)</span>
-        <span class="item"><span class="swatch" style="background:#FFA500;border-color:#CC8400"></span> Selected OBU</span>
-        <span class="item"><span class="swatch" style="background:#FF0000;border-color:#CC0000"></span> Highlighted upstream edge</span>
-    </div>
-<!-- The Yew app will render its elements; we expose a small JS helper to update the graph. -->
-<script>
-window._vis = window._vis || { network: null, nodes: null, edges: null };
+    <div id="graph"></div>
 
-window.update_graph = function(nodes_json, channels_json, upstreams_json) {
-    try {
-        const nodes = typeof nodes_json === 'string' ? JSON.parse(nodes_json) : (nodes_json || []);
-        let channels = typeof channels_json === 'string' ? JSON.parse(channels_json) : (channels_json || {});
-        // if the wasm interop provided a Map, convert to plain object
-        if (channels instanceof Map) {
-            try { channels = Object.fromEntries(channels.entries()); } catch (e) { /* ignore */ }
-        }
-        // normalize inner maps: channels[src] might itself be a Map (wasm interop), convert to plain object
-        Object.keys(channels).forEach(src => {
-            const v = channels[src];
-            if (v instanceof Map) {
-                try { channels[src] = Object.fromEntries(v.entries()); } catch (e) { /* ignore */ }
+    <script>
+    // update_graph(nodes, channels, node_info, stats)
+    // nodes: array of node names
+    // node_info: map node -> { node_type: "Rsu"|"Obu", upstream: { node_name: <string>, hops, mac } }
+    window.update_graph = function(nodes, channels, node_info, stats) {
+        try {
+            if (!nodes || nodes.length === 0) {
+                Plotly.purge('graph');
+                return;
             }
-        });
-        // upstreams may be an object or a Map (from wasm); normalize to plain object
-        let upstreams = upstreams_json;
-        if (typeof upstreams_json === 'string') {
-            upstreams = JSON.parse(upstreams_json);
-        } else if (upstreams_json instanceof Map) {
-            upstreams = Object.fromEntries(upstreams_json.entries());
-        } else if (!upstreams_json) {
-            upstreams = {};
-        }
 
-        const container = document.getElementById('graph');
-        if (!container) return;
+            // Separate RSUs and OBUs
+            const rsus = [];
+            const obus = [];
+            for (const n of nodes) {
+                const info = node_info && node_info[n];
+                const t = info && info.node_type ? info.node_type : null;
+                if (t && t.toLowerCase() === 'rsu') rsus.push(n);
+                else obus.push(n);
+            }
 
-        // Build vis nodes and edges
-        // nodeInfo is expected to be: { nodeName: { node_type: "Obu"|"Rsu", upstream: null | { hops: u32, mac: string } } }
-        const nodeInfo = upstreams; // rename for clarity (param previously called upstreams_json)
-        const visNodes = nodes.map(n => {
-            const info = nodeInfo && nodeInfo[n] ? nodeInfo[n] : null;
-            // compute nodeType robustly (coerce to string if needed)
-            let nodeType = null;
-            if (info && info.node_type !== undefined && info.node_type !== null) {
+            // Compute positions
+            const positions = {};
+            // Place RSUs on a top row (y=1)
+            const rsuCount = Math.max(1, rsus.length);
+            for (let i = 0; i < rsus.length; i++) {
+                const x = (i - (rsuCount - 1) / 2) * 2.0; // spacing
+                positions[rsus[i]] = { x: x, y: 1.5 };
+            }
+
+            // Place OBUs in a circle below (centered under RSUs)
+            const obuCount = obus.length;
+            const radius = Math.max(1.5, 1.0 + obuCount / 6.0);
+            for (let i = 0; i < obuCount; i++) {
+                const angle = (2 * Math.PI * i) / Math.max(1, obuCount);
+                const x = Math.cos(angle) * radius;
+                const y = -1.0 + Math.sin(angle) * (radius * 0.25); // slightly elliptical
+                positions[obus[i]] = { x: x, y: y };
+            }
+
+            // If there are RSUs but some OBUs have upstream pointing to a specific RSU, nudge their x toward that RSU for readability
+            for (const n of obus) {
+                const info = node_info && node_info[n];
+                const up = info && info.upstream && info.upstream.node_name ? info.upstream.node_name : null;
+                if (up && positions[up]) {
+                    // move OBU x halfway toward upstream x
+                    positions[n].x = (positions[n].x + positions[up].x) / 2.0;
+                }
+            }
+
+            // Build traces for RSUs and OBUs
+            const rsuX = [];
+            const rsuY = [];
+            const rsuText = [];
+            for (const r of rsus) {
+                rsuX.push(positions[r].x);
+                rsuY.push(positions[r].y);
+                rsuText.push(r);
+            }
+
+            const obuX = [];
+            const obuY = [];
+            const obuText = [];
+            for (const o of obus) {
+                obuX.push(positions[o].x);
+                obuY.push(positions[o].y);
+                obuText.push(o);
+            }
+
+            const data = [];
+
+            // Normalize node_info into a plain object `din` so we can access keys/fields
+            const din = {};
+            if (node_info) {
+                // If it's a Map-like (wasm sometimes produces Map), copy entries
                 try {
-                    if (typeof info.node_type === 'string') {
-                        nodeType = info.node_type;
-                    } else if (info.node_type && typeof info.node_type === 'object' && info.node_type.toString) {
-                        nodeType = info.node_type.toString();
-                    } else {
-                        nodeType = String(info.node_type);
+                    if (typeof node_info.entries === 'function' && typeof node_info.forEach === 'function') {
+                        // JS Map or similar
+                        node_info.forEach((v, k) => {
+                            din[k] = v;
+                        });
+                    } else if (typeof node_info === 'object') {
+                        // plain object
+                        Object.keys(node_info).forEach(k => (din[k] = node_info[k]));
                     }
                 } catch (e) {
-                    nodeType = String(info.node_type);
+                    // Fallback: try to treat as plain object
+                    try {
+                        Object.keys(node_info).forEach(k => (din[k] = node_info[k]));
+                    } catch (e2) {}
                 }
             }
-            const isRsu = nodeType === 'Rsu';
-            if (!nodeType) {
-                nodeType = isRsu ? 'Rsu' : 'Obu';
-            }
-            try { console.debug('node', n, 'nodeType', nodeType, 'rawInfo', info); } catch (e) {}
-            const titleParts = [];
-            titleParts.push(`${n}`);
-            titleParts.push(`Type: ${nodeType}`);
-            if (info && info.upstream) {
-                const up = info.upstream;
-                titleParts.push(`Upstream hops: ${up.hops}`);
-                titleParts.push(`Upstream mac: ${up.mac}`);
-            } else {
-                titleParts.push('Upstream: none');
-            }
-            // Use plain-text newlines so vis-network tooltip displays clean text
-            const title = titleParts.join('\n');
-            return {
-                id: n,
-                label: n,
-                title: title,
-                shape: isRsu ? 'box' : 'dot',
-                color: isRsu ? { background: '#2E8B57', border: '#1E6B47' } : { background: '#AAD3FF', border: '#2B7BBF' },
-                size: 16,
-            };
-        });
 
-        const visEdges = [];
-        Object.keys(channels).forEach(src => {
-            Object.keys(channels[src]).forEach(dst => {
-                const edgeId = src < dst ? `${src}-${dst}` : `${dst}-${src}`;
-                if (!visEdges.find(e => e.id === edgeId)) {
-                    // try to extract latency ms if present
-                    let latms = '';
-                    try {
-                        const lat = channels[src][dst].latency;
-                        if (lat && typeof lat === 'object') {
-                            latms = (lat.secs || 0) * 1000 + (lat.nanos || 0) / 1e6;
-                            latms = Math.round(latms);
+            // Lines for upstream edges
+            const edgeTraces = [];
+            const annotations = [];
+
+            // Prefer iterating keys from normalized node_info (it reflects simulator state) but fall back to nodes
+            const edgeNodeList = Object.keys(din).length > 0 ? Object.keys(din) : nodes;
+            for (const n of edgeNodeList) {
+                const info = din[n];
+                const up = info && info.upstream && info.upstream.node_name ? info.upstream.node_name : null;
+                if (up) {
+                    if (positions[n] && positions[up]) {
+                        edgeTraces.push({ x0: positions[n].x, y0: positions[n].y, x1: positions[up].x, y1: positions[up].y, from: n, to: up });
+                    }
+                }
+            }
+
+            // Prepare stats-driven visuals: normalize stats into plain object `dstat`
+            const dstat = {};
+            if (stats && typeof stats === 'object') {
+                try {
+                    // Map-like (wasm bindings may produce Map) -> use entries()
+                    if (typeof stats.entries === 'function') {
+                        for (const [k, v] of stats.entries()) {
+                            dstat[k] = v;
                         }
-                    } catch (e) {}
-                    const label = `lat:${latms}ms l:${channels[src][dst].loss}`;
-                    visEdges.push({ id: edgeId, from: src, to: dst, label, color: { color: '#666' }, width: 2 });
-                }
-            });
-        });
-        try { console.debug('visEdges length:', visEdges.length); } catch (e) {}
-
-        const data = { nodes: new vis.DataSet(visNodes), edges: new vis.DataSet(visEdges) };
-        const options = {
-            autoResize: true,
-            layout: { improvedLayout: true },
-            interaction: { hover: true, multiselect: false },
-            physics: { stabilization: true, barnesHut: { gravitationalConstant: -2000 } },
-            nodes: { shape: 'dot', size: 16 },
-        };
-
-        if (!window._vis.network) {
-            window._vis.network = new vis.Network(container, data, options);
-            window._vis.nodes = data.nodes;
-            window._vis.edges = data.edges;
-        } else {
-            window._vis.nodes.clear();
-            window._vis.nodes.add(visNodes);
-            window._vis.edges.clear();
-            window._vis.edges.add(visEdges);
-        }
-
-    // build quick edge lookup (store both orderings so upstream direction doesn't matter)
-        const edgeLookup = {};
-        window._vis.edges.forEach(function(e) {
-            edgeLookup[e.id] = e;
-            try {
-                const k1 = `${e.from}-${e.to}`;
-                const k2 = `${e.to}-${e.from}`;
-                edgeLookup[k1] = e;
-                edgeLookup[k2] = e;
-            } catch (err) {
-                // ignore if edge doesn't have from/to
-            }
-        });
-    // debug: list available edge keys
-    try { console.debug('edgeLookup keys:', Object.keys(edgeLookup)); } catch (e) {}
-
-        // Reset node styles according to nodeInfo: only nodes whose upstream is null are RSUs (boxes)
-        try {
-            window._vis.nodes.forEach(function(n) {
-                const info = nodeInfo && nodeInfo[n.id] ? nodeInfo[n.id] : null;
-                const isRsu = info && info.node_type === 'Rsu';
-                if (isRsu) {
-                    window._vis.nodes.update({ id: n.id, shape: 'box', color: { background: '#2E8B57', border: '#1E6B47' } });
-                } else {
-                    window._vis.nodes.update({ id: n.id, shape: 'dot', color: { background: '#AAD3FF', border: '#2B7BBF' } });
-                }
-            });
-        } catch (e) { /* ignore */ }
-
-        // For each node that has an upstream, highlight the single edge from the node to its immediate upstream
-        Object.keys(nodeInfo || {}).forEach(function(node) {
-            const info = nodeInfo[node];
-            if (info && info.upstream) {
-                const up = info.upstream;
-                // upstream may only include mac/hops; we need to find the node name by matching mac -> node id if available
-                // try to find a node whose upstream mac or device mac matches; simplest: find node by comparing nodeInfo entries' upstream.mac? (not ideal)
-                // Here we assume upstream.mac is available and that node names are used in edges; if not found, skip highlighting.
-                const upstreamMac = up.mac;
-                // attempt to find node name that has this mac in its device mac field; we don't have device macs here, so fallback to scanning nodeInfo for a node whose 'mac' equals upstreamMac
-                // If backend later includes upstream.node_name, we can use it directly. For now, try to match by inspecting nodeInfo entries for upstream.mac equality.
-                let upstreamName = null;
-                Object.keys(nodeInfo).forEach(function(k) {
-                    const kinf = nodeInfo[k];
-                    if (kinf && kinf.upstream && kinf.upstream.mac === upstreamMac) {
-                        // kinf.upstream.mac equals upstreamMac means k's upstream is that mac; not helpful. Skip.
+                    } else if (typeof stats.forEach === 'function') {
+                        // Map or object with forEach
+                        stats.forEach((v, k) => { dstat[k] = v; });
+                    } else {
+                        // plain object
+                        Object.keys(stats).forEach(k => { dstat[k] = stats[k]; });
                     }
-                    // If backend provides node macs inside nodeInfo (not currently present), match here.
+                } catch (e) {
+                    // fallback to Object.keys if iteration failed
+                    try { Object.keys(stats).forEach(k => { dstat[k] = stats[k]; }); } catch (e2) { /* ignore */ }
+                }
+            }
+
+            // Compute per-node delta bytes by comparing against last snapshot stored on window
+            const last = window.__vp_last_stats || {};
+
+            const getStatFor = (node) => {
+                if (dstat && Object.prototype.hasOwnProperty.call(dstat, node)) return dstat[node];
+                try {
+                    if (stats && typeof stats.get === 'function') {
+                        const v = stats.get(node);
+                        if (typeof v !== 'undefined') return v;
+                    }
+                } catch (e) {}
+                try {
+                    if (stats && typeof stats[node] !== 'undefined') return stats[node];
+                } catch (e) {}
+                return undefined;
+            };
+
+            const readPartBytes = (part) => {
+                if (!part) return { tx: 0, rx: 0 };
+                try {
+                    // Map-like (wasm may produce Map instances)
+                    if (typeof part.get === 'function') {
+                        const tx = Number(part.get('transmitted_bytes') || 0);
+                        const rx = Number(part.get('received_bytes') || 0);
+                        return { tx, rx };
+                    }
+                } catch (e) {}
+                try {
+                    // plain object
+                    if (typeof part === 'object') {
+                        const tx = Number(part.transmitted_bytes || 0);
+                        const rx = Number(part.received_bytes || 0);
+                        return { tx, rx };
+                    }
+                } catch (e) {}
+                return { tx: 0, rx: 0 };
+            };
+            // friendly bits/sec formatter (input is bytes/sec)
+            const bitsToHuman = (bytesPerSec) => {
+                const bps = (Number(bytesPerSec) || 0) * 8;
+                if (bps < 1000) return `${Math.round(bps)} bps`;
+                const units = ['Kbps','Mbps','Gbps','Tbps'];
+                let v = bps / 1000.0;
+                let i = 0;
+                while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
+                const fmt = v < 10 ? v.toFixed(1) : Math.round(v).toString();
+                return `${fmt} ${units[i]}`;
+            };
+            // compute elapsed time since last snapshot to produce bytes/sec
+            const now = Date.now();
+            const last_ts = window.__vp_last_stats_ts || (now - 1000);
+            const dt = Math.max(0.001, (now - last_ts) / 1000.0);
+
+            const deltas = {}; // node -> { tx: bytes, rx: bytes, tx_bps, rx_bps }
+            for (const node of Object.keys(positions)) {
+                const cur = getStatFor(node);
+                // stats payload may be [device_stats, tun_stats] or a single object; sum both entries when present
+                let cur_tx = 0;
+                let cur_rx = 0;
+                try {
+                    if (Array.isArray(cur)) {
+                        for (const part of cur) {
+                            const p = readPartBytes(part);
+                            cur_tx += p.tx;
+                            cur_rx += p.rx;
+                        }
+                    } else if (cur && typeof cur === 'object') {
+                        const p = readPartBytes(cur);
+                        cur_tx = p.tx;
+                        cur_rx = p.rx;
+                    }
+                } catch (e) {
+                    cur_tx = 0; cur_rx = 0;
+                }
+                const last_entry = last[node] || { tx: cur_tx, rx: cur_rx };
+                const txd = Math.max(0, cur_tx - (last_entry.tx || 0));
+                const rxd = Math.max(0, cur_rx - (last_entry.rx || 0));
+                const tx_bps = txd / dt;
+                const rx_bps = rxd / dt;
+                deltas[node] = { tx: txd, rx: rxd, tx_bps, rx_bps };
+            }
+
+            // Save current as last for next call
+            window.__vp_last_stats = {};
+            for (const k of Object.keys(dstat)) {
+                try {
+                    const cur = dstat[k];
+                    let total_tx = 0;
+                    let total_rx = 0;
+                    if (Array.isArray(cur)) {
+                        for (const part of cur) {
+                            const p = readPartBytes(part);
+                            total_tx += p.tx;
+                            total_rx += p.rx;
+                        }
+                    } else if (cur && typeof cur === 'object') {
+                        const p = readPartBytes(cur);
+                        total_tx = p.tx;
+                        total_rx = p.rx;
+                    }
+                    window.__vp_last_stats[k] = { tx: total_tx, rx: total_rx };
+                } catch (e) {
+                    window.__vp_last_stats[k] = { tx: 0, rx: 0 };
+                }
+            }
+            // update last timestamp
+            window.__vp_last_stats_ts = now;
+
+            // curved per-edge traces (use Bezier approximation) and midpoint hover markers
+            const midXUp = [];
+            const midYUp = [];
+            const midTextUp = [];
+            const midMarkerSizeUp = [];
+            const midXDown = [];
+            const midYDown = [];
+            const midTextDown = [];
+            const midMarkerSizeDown = [];
+
+            const mapSize = (b) => Math.min(30, Math.max(4, 2 + Math.log10(b + 1) * 6));
+
+            // helper: quadratic Bezier sample (P0, Pc, P1)
+            const bezierPoints = (x0, y0, x1, y1, offset, samples=30) => {
+                // compute perpendicular offset at midpoint
+                const mx = (x0 + x1) / 2;
+                const my = (y0 + y1) / 2;
+                const dx = x1 - x0;
+                const dy = y1 - y0;
+                const dist = Math.hypot(dx, dy) || 1.0;
+                // normalized perpendicular
+                const nx = -dy / dist;
+                const ny = dx / dist;
+                const cx = mx + nx * offset;
+                const cy = my + ny * offset;
+                const xs = [];
+                const ys = [];
+                for (let i = 0; i <= samples; i++) {
+                    const t = i / samples;
+                    const omt = (1 - t);
+                    const bx = omt * omt * x0 + 2 * omt * t * cx + t * t * x1;
+                    const by = omt * omt * y0 + 2 * omt * t * cy + t * t * y1;
+                    xs.push(bx);
+                    ys.push(by);
+                }
+                return { xs, ys };
+            };
+
+            for (const e of edgeTraces) {
+                const from = e.from;
+                const up_bps = (deltas[from] && deltas[from].tx_bps) ? deltas[from].tx_bps : 0;
+                const down_bps = (deltas[from] && deltas[from].rx_bps) ? deltas[from].rx_bps : 0;
+
+                // baseline straight faint line (for context)
+                data.push({ x: [e.x0, e.x1], y: [e.y0, e.y1], mode: 'lines', line: { color: '#333', width: 1, dash: 'dot' }, hoverinfo: 'none', showlegend: false, type: 'scatter' });
+
+                // choose offset magnitude proportional to distance and bps (small constant if zero)
+                const dist = Math.hypot(e.x1 - e.x0, e.y1 - e.y0) || 1.0;
+                // reduced curvature: smaller base and multiplier, lower cap
+                const offsetScale = (v) => Math.min(0.25, 0.02 + Math.log10((v || 1) + 1) * 0.015);
+
+                if (up_bps > 0) {
+                    const offset = dist * offsetScale(up_bps);
+                    const { xs, ys } = bezierPoints(e.x0, e.y0, e.x1, e.y1, offset);
+                    data.push({ x: xs, y: ys, mode: 'lines', hoverinfo: 'text', text: Array(xs.length).fill(`${from} → ${e.to}\nup: ${bitsToHuman(up_bps)}`), line: { color: 'rgba(200,30,30,0.9)', width: Math.max(2, mapSize(up_bps) / 3) }, showlegend: false, type: 'scatter' });
+                    // midpoint marker for easy hover/select
+                    midXUp.push((e.x0 + e.x1) / 2);
+                    midYUp.push((e.y0 + e.y1) / 2);
+                    midTextUp.push(`${from} → ${e.to}\nup: ${bitsToHuman(up_bps)}`);
+                    midMarkerSizeUp.push(mapSize(up_bps));
+                }
+
+                if (down_bps > 0) {
+                    const offset = -dist * offsetScale(down_bps);
+                    const { xs, ys } = bezierPoints(e.x0, e.y0, e.x1, e.y1, offset);
+                    data.push({ x: xs, y: ys, mode: 'lines', hoverinfo: 'text', text: Array(xs.length).fill(`${e.to} → ${from}\ndown: ${bitsToHuman(down_bps)}`), line: { color: 'rgba(30,100,200,0.9)', width: Math.max(2, mapSize(down_bps) / 3) }, showlegend: false, type: 'scatter' });
+                    midXDown.push((e.x0 + e.x1) / 2);
+                    midYDown.push((e.y0 + e.y1) / 2);
+                    midTextDown.push(`${from} → ${e.to}\ndown: ${bitsToHuman(down_bps)}`);
+                    midMarkerSizeDown.push(mapSize(down_bps));
+                }
+            }
+
+            // Add midpoint scatter traces for up and down to provide hover text
+            if (midXUp.length > 0) {
+                data.push({ x: midXUp, y: midYUp, mode: 'markers', type: 'scatter', marker: { size: midMarkerSizeUp, color: 'rgba(200,30,30,0.8)' }, text: midTextUp, hoverinfo: 'text', showlegend: false });
+            }
+            if (midXDown.length > 0) {
+                data.push({ x: midXDown, y: midYDown, mode: 'markers', type: 'scatter', marker: { size: midMarkerSizeDown, color: 'rgba(30,100,200,0.8)' }, text: midTextDown, hoverinfo: 'text', showlegend: false });
+            }
+
+            // RSU trace (square markers)
+            if (rsuX.length > 0) {
+                data.push({
+                    x: rsuX,
+                    y: rsuY,
+                    mode: 'markers+text',
+                    type: 'scatter',
+                    text: rsuText,
+                    textposition: 'top center',
+                    marker: { symbol: 'square', size: 28, color: '#ff7f0e', line: { width: 1, color: '#333' } },
+                    hoverinfo: 'text',
+                    hovertext: rsuText.map(n => {
+                        const d = deltas[n] || { tx: 0, rx: 0, tx_bps: 0, rx_bps: 0 };
+                        return `${n} (RSU)\nup: ${bitsToHuman(d.tx_bps)}\ndown: ${bitsToHuman(d.rx_bps)}`;
+                    })
                 });
-
-                // If backend does not provide node name, and upstream.mac is actually a node name (string like "n1"), then handle it
-                if (typeof upstreamMac === 'string' && upstreamMac.startsWith('n')) {
-                    upstreamName = upstreamMac;
-                }
-
-                if (!upstreamName) {
-                    // best-effort: if up.mac equals some node id
-                    if (nodeInfo[upstreamMac]) {
-                        upstreamName = upstreamMac;
-                    }
-                }
-
-                if (!upstreamName) {
-                    // cannot resolve node name -> skip
-                    return;
-                }
-
-                const a = node;
-                const b = upstreamName;
-                const edgeId = a < b ? `${a}-${b}` : `${b}-${a}`;
-                const entry = edgeLookup[edgeId];
-                if (entry) {
-                    const updateId = entry.id || edgeId;
-                    // color this edge as highlighted upstream
-                    window._vis.edges.update({ id: updateId, color: { color: '#FFA500' }, width: 4 });
-                    // style source endpoint (OBU) orange circle
-                    window._vis.nodes.update({ id: node, shape: 'dot', color: { background: '#FFA500', border: '#CC8400' } });
-                    // also color the upstream node orange to show path
-                    window._vis.nodes.update({ id: upstreamName, shape: 'dot', color: { background: '#FFA500', border: '#CC8400' } });
-                } else {
-                    try {
-                        console.debug('edge not found for', node, '->', upstreamName, 'expected', edgeId, 'available:', Object.keys(edgeLookup));
-                    } catch (e) {
-                        console.debug('edge not found for', node, '->', upstreamName, 'expected', edgeId);
-                    }
-                }
             }
-        });
 
-        // Additionally, walk the upstream chain to color full paths (if node_info contains node_name in upstream)
-        try {
-            Object.keys(nodeInfo || {}).forEach(function(start) {
-                const seen = new Set();
-                let cur = start;
-                while (cur && nodeInfo[cur] && nodeInfo[cur].upstream && nodeInfo[cur].upstream.node_name) {
-                    const next = nodeInfo[cur].upstream.node_name;
-                    if (!next || seen.has(cur) || seen.has(next)) break;
-                    seen.add(cur);
-                    const a = cur;
-                    const b = next;
-                    const eid = a < b ? `${a}-${b}` : `${b}-${a}`;
-                    const ent = edgeLookup[eid];
-                    if (ent) {
-                        const updateId = ent.id || eid;
-                        window._vis.edges.update({ id: updateId, color: { color: '#FFA500' }, width: 3 });
-                        window._vis.nodes.update({ id: cur, color: { background: '#FFA500', border: '#CC8400' } });
-                        window._vis.nodes.update({ id: next, color: { background: '#FFA500', border: '#CC8400' } });
-                    }
-                    cur = next;
-                }
-            });
-        } catch (e) { /* ignore */ }
+            // OBU trace (circle markers)
+            if (obuX.length > 0) {
+                data.push({
+                    x: obuX,
+                    y: obuY,
+                    mode: 'markers+text',
+                    type: 'scatter',
+                    text: obuText,
+                    textposition: 'bottom center',
+                    marker: { symbol: 'circle', size: 18, color: '#1f77b4', line: { width: 1, color: '#333' } },
+                    hoverinfo: 'text',
+                    hovertext: obuText.map(n => {
+                        const d = deltas[n] || { tx: 0, rx: 0, tx_bps: 0, rx_bps: 0 };
+                        return `${n} (OBU)\nup: ${bitsToHuman(d.tx_bps)}\ndown: ${bitsToHuman(d.rx_bps)}`;
+                    })
+                });
+            }
 
-    } catch (e) {
-        console.error('update_graph error', e);
-    }
-};
-</script>
+            const layout = {
+                xaxis: { showgrid: false, zeroline: false, showticklabels: false, fixedrange: true },
+                yaxis: { showgrid: false, zeroline: false, showticklabels: false, fixedrange: true },
+                margin: { l: 10, r: 10, t: 10, b: 10 },
+                hovermode: 'closest',
+                showlegend: false,
+                annotations: annotations,
+                height: Math.max(480, window.innerHeight - 20),
+                // disable default drag mode box zoom
+                dragmode: false,
+            };
+
+            // Plotly config: disable scroll zoom and hide mode bar (remove zoom controls)
+            const cfg = { responsive: true, scrollZoom: false, displayModeBar: false };
+
+            Plotly.newPlot('graph', data, layout, cfg);
+        } catch (err) {
+            console.error('update_graph error', err);
+        }
+    };
+    </script>
 </body>
 </html>
