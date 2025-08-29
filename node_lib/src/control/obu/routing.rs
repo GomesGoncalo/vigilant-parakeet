@@ -558,45 +558,52 @@ impl Routing {
 
         let (min_hops, _) = route_options.first()?;
 
+        // Compute deterministic integer-based metrics for latency in microseconds.
+        // For each candidate MAC, compute:
+        //  - min_latency_us: minimum observed latency in microseconds
+        //  - avg_latency_us: average observed latency in microseconds
+        // We then select the candidate with the smallest (min_latency_us + avg_latency_us) value
+        // (sum) as an integer tie-breaker. This avoids floating point rounding and is deterministic.
         let route_options: IndexMap<_, _> = route_options
             .iter()
             .filter(|(h, _)| h == &min_hops)
             .flat_map(|(hops, (_count, _min_seq, next, latency))| {
+                let hop_val = *hops as u32;
                 latency.iter().zip(next).fold(
                     HashMap::default(),
-                    |mut hm: HashMap<MacAddress, (f32, f32, f32, f32, u32)>, (val, mac)| {
-                        let entry = hm
-                            .entry(*mac)
-                            .or_insert((f32::MAX, 0.0, f32::MIN, 0.0, *hops));
-                        if let Some(val) = *val {
-                            let val = val as f32;
-
-                            if entry.0 > val {
-                                entry.0 = val;
+                    |mut hm: HashMap<MacAddress, (u128, u128, u32, u32)>, (val, mac)| {
+                        // val is Option<micros> (reference)
+                        if let Some(v) = *val {
+                            let micros = v as u128;
+                            let entry = hm.entry(*mac).or_insert((u128::MAX, 0u128, 0u32, hop_val));
+                            if entry.0 > micros {
+                                entry.0 = micros; // min
                             }
-
-                            if entry.2 < val {
-                                entry.2 = val;
-                            }
-
-                            entry.1 += val;
-                            entry.3 += 1.0;
+                            entry.1 += micros; // sum
+                            entry.2 += 1; // count
+                            // hops is already stored in entry.3
                         }
                         hm
                     },
                 )
             })
-            .map(|(mac, (min, sum, _, n, hops))| {
-                (((min + (sum / n)) / 2.0) as usize, (mac, hops, sum / n))
+            .map(|(mac, (min_us, sum_us, n, hops_val))| {
+                let avg_us = if n > 0 { sum_us / (n as u128) } else { u128::MAX };
+                let score = if min_us == u128::MAX || avg_us == u128::MAX {
+                    u128::MAX
+                } else {
+                    min_us + avg_us
+                };
+                (score as usize, (mac, hops_val, avg_us))
             })
             .collect();
 
         route_options
             .first()
-            .map(|(_, (mac, hops, latency))| Route {
+            .map(|(_, (mac, hops, latency_us))| Route {
                 hops: *hops,
                 mac: *mac,
-                latency: Some(Duration::from_micros(*latency as u64)),
+                latency: Some(Duration::from_micros((*latency_us) as u64)),
             })
     }
 }

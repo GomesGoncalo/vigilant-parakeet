@@ -52,24 +52,24 @@ impl<'a> TryFrom<&'a [u8]> for Heartbeat<'a> {
     type Error = anyhow::Error;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let (Some(source), Some(hops), Some(id), Some(duration)) = (
-            value.get(24..30),
-            value.get(20..24),
-            value.get(16..20),
-            value.get(..16),
-        ) else {
-            bail!("cannot get members");
-        };
-        let duration = Cow::Borrowed(duration);
-        let id = Cow::Borrowed(id);
-        let hops = Cow::Borrowed(hops);
-        let source = Cow::Borrowed(source);
+        let source = value
+            .get(24..30)
+            .ok_or_else(|| anyhow::anyhow!("cannot get source bytes for Heartbeat"))?;
+        let hops = value
+            .get(20..24)
+            .ok_or_else(|| anyhow::anyhow!("cannot get hops bytes for Heartbeat"))?;
+        let id = value
+            .get(16..20)
+            .ok_or_else(|| anyhow::anyhow!("cannot get id bytes for Heartbeat"))?;
+        let duration = value
+            .get(..16)
+            .ok_or_else(|| anyhow::anyhow!("cannot get duration bytes for Heartbeat"))?;
 
         Ok(Self {
-            duration,
-            id,
-            hops,
-            source,
+            duration: Cow::Borrowed(duration),
+            id: Cow::Borrowed(id),
+            hops: Cow::Borrowed(hops),
+            source: Cow::Borrowed(source),
         })
     }
 }
@@ -150,27 +150,28 @@ impl<'a> TryFrom<&'a [u8]> for HeartbeatReply<'a> {
     type Error = anyhow::Error;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let (Some(sender), Some(source), Some(hops), Some(id), Some(duration)) = (
-            value.get(30..36),
-            value.get(24..30),
-            value.get(20..24),
-            value.get(16..20),
-            value.get(..16),
-        ) else {
-            bail!("cannot get members");
-        };
-        let duration = Cow::Borrowed(duration);
-        let id = Cow::Borrowed(id);
-        let hops = Cow::Borrowed(hops);
-        let source = Cow::Borrowed(source);
-        let sender = Cow::Borrowed(sender);
+        let sender = value
+            .get(30..36)
+            .ok_or_else(|| anyhow::anyhow!("cannot get sender bytes for HeartbeatReply"))?;
+        let source = value
+            .get(24..30)
+            .ok_or_else(|| anyhow::anyhow!("cannot get source bytes for HeartbeatReply"))?;
+        let hops = value
+            .get(20..24)
+            .ok_or_else(|| anyhow::anyhow!("cannot get hops bytes for HeartbeatReply"))?;
+        let id = value
+            .get(16..20)
+            .ok_or_else(|| anyhow::anyhow!("cannot get id bytes for HeartbeatReply"))?;
+        let duration = value
+            .get(..16)
+            .ok_or_else(|| anyhow::anyhow!("cannot get duration bytes for HeartbeatReply"))?;
 
         Ok(Self {
-            duration,
-            id,
-            hops,
-            source,
-            sender,
+            duration: Cow::Borrowed(duration),
+            id: Cow::Borrowed(id),
+            hops: Cow::Borrowed(hops),
+            source: Cow::Borrowed(source),
+            sender: Cow::Borrowed(sender),
         })
     }
 }
