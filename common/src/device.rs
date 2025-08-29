@@ -313,3 +313,49 @@ impl Device {
         *self.stats.lock().unwrap()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::DeviceIo;
+    use std::io::{Read, Write, IoSlice};
+
+    fn make_pipe() -> (DeviceIo, DeviceIo) {
+        let mut fds = [0; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        (DeviceIo::from(fds[0]), DeviceIo::from(fds[1]))
+    }
+
+    #[test]
+    fn deviceio_send_and_recv_roundtrip() {
+        let (reader, writer) = make_pipe();
+        let mut r = reader;
+        let mut w = writer;
+
+        let buf = b"hello";
+        let n = w.write(buf).expect("write succeeded");
+        assert_eq!(n, 5);
+
+        let mut out = [0u8; 5];
+        let n = r.read(&mut out).expect("read succeeded");
+        assert_eq!(n, 5);
+        assert_eq!(&out, buf);
+    }
+
+    #[test]
+    fn deviceio_writev_works() {
+        let (reader, writer) = make_pipe();
+        let mut r = reader;
+        let mut w = writer;
+
+        let a = b"ab";
+        let b = b"cd";
+        let bufs = [IoSlice::new(a), IoSlice::new(b)];
+        let n = w.write_vectored(&bufs).expect("writev");
+        assert_eq!(n, 4);
+
+        let mut out = [0u8; 4];
+        let n = r.read(&mut out).expect("read");
+        assert_eq!(n, 4);
+        assert_eq!(&out, b"abcd");
+    }
+}

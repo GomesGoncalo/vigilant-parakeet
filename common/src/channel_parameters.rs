@@ -27,3 +27,30 @@ impl From<HashMap<String, Value>> for ChannelParameters {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ChannelParameters;
+    use config::Value;
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    #[test]
+    fn channel_parameters_from_map_parses_values() {
+        let mut m: HashMap<String, Value> = HashMap::new();
+        m.insert("latency".to_string(), Value::from(150u64));
+        m.insert("loss".to_string(), Value::from(0.125f64));
+
+        let cp = ChannelParameters::from(m);
+        assert_eq!(cp.latency, Duration::from_millis(150));
+        assert!((cp.loss - 0.125).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn channel_parameters_missing_keys_defaults() {
+        let m: HashMap<String, Value> = HashMap::new();
+        let cp = ChannelParameters::from(m);
+        assert_eq!(cp.latency, Duration::from_millis(0));
+        assert_eq!(cp.loss, 0.0);
+    }
+}
