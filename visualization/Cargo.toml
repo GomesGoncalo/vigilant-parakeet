@@ -22,3 +22,9 @@ wasm-bindgen = { version = "*", features = ["serde-serialize"] }
 serde_json = "*"
 js-sys = "*"
 serde-wasm-bindgen = "*"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

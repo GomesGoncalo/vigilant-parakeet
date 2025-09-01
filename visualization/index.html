@@ -3,7 +3,211 @@
 <head>
     <meta charset="utf-8" />
     <title>Network Viz</title>
-    <script src="https://cdn.plot.ly/plotly-2.16.1.min.js"></script>
+    <!-- Instruct Trunk to build the specific Rust binary artifact named 'visualization' -->
+    <link data-trunk rel="rust" data-bin="visualization" />
+        <script src="https://unpkg.com/cytoscape@3.24.0/dist/cytoscape.min.js"></script>
+        <!-- inlined cy_interop.js to avoid dev-server path returning index HTML -->
+        <script>
+        // Minimal Cytoscape interop for VP (inlined)
+        // Exposes window.__vp_render_graph(nodes, edges)
+        console.log('[VP-CY] cy_interop (inlined) loaded');
+        (function(){
+            function ensureCy() {
+                if (window.__vp_cy_instance) {
+                    try { console.debug('[VP-CY] reusing cy instance'); } catch (e) {}
+                    return window.__vp_cy_instance;
+                }
+                const container = document.getElementById('graph');
+                if (!container) return null;
+                let root = document.getElementById('__vp_cy_root');
+                if (!root) {
+                    root = document.createElement('div');
+                    root.id = '__vp_cy_root';
+                    Object.assign(root.style, { position: 'absolute', inset: '0px', width: '100%', height: '100%', pointerEvents: 'auto', zIndex: 99999, background: 'transparent' });
+                    const cs = getComputedStyle(container);
+                    if (!cs || cs.position === 'static' || !cs.position) container.style.position = 'relative';
+                    container.appendChild(root);
+                }
+                const cy = cytoscape({
+                    container: root,
+                    elements: [],
+                    style: [
+                        { selector: 'node', style: { 'label': 'data(label)', 'text-valign': 'center', 'text-halign': 'center', 'background-color': 'data(color)', 'width': 'data(size)', 'height': 'data(size)', 'font-size': 10 } },
+                        { selector: 'edge', style: { 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'line-color': 'data(color)', 'width': 'data(width)', 'opacity': 0.95 } }
+                    ],
+                    layout: { name: 'preset' },
+                });
+                try { console.debug('[VP-CY] created cytoscape instance'); } catch (e) {}
+                try {
+                    window.__vp_user_positions = window.__vp_user_positions || {};
+                    try { cy.on('free', 'node', (ev) => { try { const n = ev.target; window.__vp_user_positions[n.id()] = n.position(); } catch (e) {} }); } catch (e) {}
+                } catch (e) {}
+                window.__vp_cy_instance = cy;
+                try { window.__vp_cy_drag_attached = false; } catch (e) {}
+                return cy;
+            }
+
+            window.__vp_render_graph = function(nodes, edges) {
+                try {
+                    const cy = ensureCy();
+                    if (!cy) return;
+                    try { window.__vp_last_nodes = Array.isArray(nodes) ? nodes.slice() : []; window.__vp_last_edges = Array.isArray(edges) ? edges.slice() : []; } catch (e) {}
+
+                    const nodeList = Array.isArray(nodes) ? nodes : [];
+                    const edgeList = Array.isArray(edges) ? edges : [];
+                    const seenNodeIds = new Set();
+                    const seenEdgeIds = new Set();
+
+                    for (const n of nodeList) {
+                        const id = n && (n.id || n.label);
+                        if (!id) continue;
+                        seenNodeIds.add(String(id));
+                        const x = (typeof n.x === 'number') ? n.x*100 : 0;
+                        const y = (typeof n.y === 'number') ? -n.y*100 : 0;
+                        const color = n && n.type && typeof n.type === 'string' && n.type.toLowerCase() === 'rsu' ? 'rgba(200,30,30,0.95)' : 'rgba(30,100,200,0.95)';
+                        const size = Math.max(8, Number(n.size) || 12);
+                        const existing = cy.getElementById(String(id));
+                        const userPos = window.__vp_user_positions && window.__vp_user_positions[String(id)];
+                        if (existing && existing.length > 0) {
+                            existing.data(Object.assign({}, existing.data(), { label: n.label, color: color, size: size }));
+                            try { console.debug('[VP-CY] node updated (kept position)', String(id), !!(window.__vp_user_positions && window.__vp_user_positions[String(id)])); } catch (e) {}
+                        } else {
+                            const pos = userPos ? userPos : { x: x, y: y };
+                            try { cy.add({ group: 'nodes', data: { id: String(id), label: n.label, color: color, size: size }, position: pos }); try { console.debug('[VP-CY] node added', String(id), 'posFrom', userPos ? 'user' : 'payload', pos); } catch (e) {} } catch (e) { console.debug('[VP-CY] add node failed', id, e); }
+                        }
+                    }
+
+                    const getVal = (obj, keys) => {
+                        if (!obj) return undefined;
+                        for (const k of keys) {
+                            try { if (typeof obj.get === 'function') { const v = obj.get(k); if (typeof v !== 'undefined' && v !== null) return v; } } catch (e) {}
+                            try { if (Object.prototype.hasOwnProperty.call(obj, k)) return obj[k]; } catch (e) {}
+                        }
+                        return undefined;
+                    };
+
+                    // Precompute totals and find max so we can scale relative to the heaviest current route
+                    const edgeTotals = [];
+                    for (const rawE of edgeList) {
+                        let e = rawE;
+                        try {
+                            if (e && typeof e.entries === 'function') {
+                                const tmp = {};
+                                for (const kv of e.entries()) { try { tmp[String(kv[0])] = kv[1]; } catch (ee) {} }
+                                e = tmp;
+                            }
+                        } catch (ee) {}
+                        const up = Number(getVal(e, ['up_bps', 'up'])) || 0;
+                        const down = Number(getVal(e, ['down_bps', 'down'])) || 0;
+                        edgeTotals.push(Math.max(0, up) + Math.max(0, down));
+                    }
+                    const maxTotal = edgeTotals.length ? Math.max(...edgeTotals) : 0;
+
+                    for (let ei = 0; ei < edgeList.length; ei++) {
+                        const rawE = edgeList[ei];
+                        let e = rawE;
+                        try {
+                            if (e && typeof e.entries === 'function') {
+                                const tmp = {};
+                                for (const kv of e.entries()) { try { tmp[String(kv[0])] = kv[1]; } catch (ee) {} }
+                                e = tmp;
+                            }
+                        } catch (ee) {}
+
+                        const src = getVal(e, ['source', 'from', 'src']);
+                        const tgt = getVal(e, ['target', 'to', 'dst']);
+                        if (!src || !tgt) { console.debug('[VP-CY] skipping malformed edge', e); continue; }
+                        const edgeId = getVal(e, ['id']) || (String(src) + '->' + String(tgt));
+                        seenEdgeIds.add(String(edgeId));
+                        const up = Number(getVal(e, ['up_bps', 'up'])) || 0;
+                        const down = Number(getVal(e, ['down_bps', 'down'])) || 0;
+                        let bw;
+                        try {
+                            // Only accept an explicit provided width if the page explicitly allows it.
+                            const useProvided = !!window.__vp_use_provided_width;
+                            const provided = useProvided ? (getVal(e, ['width', 'w']) || (e && e.width)) : undefined;
+                            const maybeNum = (typeof provided === 'number') ? provided : (typeof provided === 'string' && provided && provided.match(/^-?\d+(?:\.\d+)?$/) ? Number(provided) : NaN);
+                            if (!Number.isNaN(maybeNum)) {
+                                bw = Math.max(1, Math.min(20, Math.round(maybeNum)));
+                            } else {
+                                const total = edgeTotals[ei] || 0;
+                                if (total <= 0 || maxTotal <= 0) {
+                                    bw = 1;
+                                } else {
+                                    // scale linearly relative to the maximum total in this payload
+                                    const frac = Math.max(0, Math.min(1, total / maxTotal));
+                                    const min_w = 1.0;
+                                    const max_w = 20.0;
+                                    bw = Math.max(1, Math.min(20, Math.round(min_w + (frac * (max_w - min_w)))));
+                                }
+                            }
+                        } catch (e) { bw = 1; }
+                        // Optional debug logging per-edge to diagnose saturation
+                        try {
+                            if (window.__vp_edge_debug) {
+                                try { window.__vp_edge_debug_out = window.__vp_edge_debug_out || []; } catch (e) {}
+                                const total = edgeTotals[ei] || 0;
+                                const frac = maxTotal > 0 ? Math.max(0, Math.min(1, total / maxTotal)) : 0;
+                                try { console.debug('[VP-CY] edge-debug', edgeId, { total: total, maxTotal: maxTotal, frac: frac, bw: bw }); } catch (e) {}
+                                try { window.__vp_edge_debug_out.push({ id: edgeId, total: total, maxTotal: maxTotal, frac: frac, bw: bw }); } catch (e) {}
+                            }
+                        } catch (ee) {}
+                        let arrowScale = 1.0;
+                        try {
+                            // Map bw [1..20] -> arrow scale range. Increase range so arrowheads are visually distinct.
+                            const frac = (Math.max(1, bw) - 1) / (20 - 1);
+                            // Wider arrow-scale range: small routes ~0.9x, heavy routes ~1.5x
+                            const minA = 0.9, maxA = 1.5;
+                            arrowScale = Math.max(minA, Math.min(maxA, minA + frac * (maxA - minA)));
+                        } catch (e) { arrowScale = 1.0; }
+                        // Compute visual width (allow runtime tuning via window.__vp_edge_visual_scale)
+                        let visualWidth = bw;
+                        try {
+                            if (typeof window.__vp_edge_visual_scale !== 'number') window.__vp_edge_visual_scale = 2.0;
+                            const scale = Math.max(0.1, Number(window.__vp_edge_visual_scale) || 1.0);
+                            visualWidth = Math.max(1, Math.round(bw * scale));
+                        } catch (e) { visualWidth = bw; }
+                        const colorVal = getVal(e, ['color']) || (up > down ? 'rgba(200,30,30,0.9)' : (down > up ? 'rgba(30,100,200,0.9)' : 'rgba(120,120,120,0.6)'));
+                        const color = String(colorVal);
+                        const existingE = cy.getElementById(String(edgeId));
+                        try {
+                            if (!cy.getElementById(String(src)).length) {
+                                const userPosSrc = window.__vp_user_positions && window.__vp_user_positions[String(src)];
+                                const posSrc = userPosSrc ? userPosSrc : { x: 0, y: 0 };
+                                try { cy.add({ group: 'nodes', data: { id: String(src), label: String(src), color: 'rgba(120,120,120,0.9)', size: 12 }, position: posSrc }); } catch (e) { console.debug('[VP-CY] add placeholder src failed', src, e); }
+                                try { seenNodeIds.add(String(src)); } catch (e) {}
+                            }
+                            if (!cy.getElementById(String(tgt)).length) {
+                                const userPosTgt = window.__vp_user_positions && window.__vp_user_positions[String(tgt)];
+                                const posTgt = userPosTgt ? userPosTgt : { x: 0, y: 0 };
+                                try { cy.add({ group: 'nodes', data: { id: String(tgt), label: String(tgt), color: 'rgba(120,120,120,0.9)', size: 12 }, position: posTgt }); } catch (e) { console.debug('[VP-CY] add placeholder tgt failed', tgt, e); }
+                                try { seenNodeIds.add(String(tgt)); } catch (e) {}
+                            }
+                        } catch (e) {}
+                        if (existingE && existingE.length > 0) {
+                            try { existingE.data(Object.assign({}, existingE.data(), { width: bw, arrow_scale: arrowScale, color: color, source: String(src), target: String(tgt), __vp_total: (Math.max(0, up) + Math.max(0, down)), __vp_bw: bw, __vp_visual: visualWidth })); } catch (e) {}
+                            try { existingE.style('width', visualWidth); } catch (e) {}
+                            try { existingE.style('arrow-scale', arrowScale); } catch (e) {}
+                        } else {
+                            try { cy.add({ group: 'edges', data: { id: String(edgeId), source: String(src), target: String(tgt), width: bw, arrow_scale: arrowScale, color: color } });
+                                const newE = cy.getElementById(String(edgeId));
+                                try { if (newE && newE.length) newE.data({ __vp_total: (Math.max(0, up) + Math.max(0, down)), __vp_bw: bw, __vp_visual: visualWidth }); } catch (e) {}
+                                try { if (newE && newE.length) newE.style('width', visualWidth); } catch (e) {}
+                                try { if (newE && newE.length) newE.style('arrow-scale', arrowScale); } catch (e) {}
+                            } catch (e) { console.debug('[VP-CY] add edge failed', edgeId, e); }
+                        }
+                    }
+
+                    try {
+                        cy.nodes().forEach(n => { if (!seenNodeIds.has(n.id())) { try { console.debug('[VP-CY] node would be removed but kept to preserve position', n.id()); } catch (e) {} } });
+                        cy.edges().forEach(ed => { if (!seenEdgeIds.has(ed.id())) { try { cy.remove(ed); } catch (e) {} } });
+                    } catch (e) {}
+
+                    if (!window.__vp_initial_fit) { try { cy.fit(); } catch (e) {} window.__vp_initial_fit = true; }
+                } catch (err) { console.error('[VP-CY]', err); }
+            };
+        })();
+        </script>
     <style>
         html, body, #graph {
             height: 100%;
@@ -26,8 +230,23 @@
     // node_info: map node -> { node_type: "Rsu"|"Obu", upstream: { node_name: <string>, hops, mac } }
     window.update_graph = function(nodes, channels, node_info, stats) {
         try {
+            // NOTE: do not destroy the Cytoscape instance on transient empty payloads.
+            // Treat an explicit null as a request to remove the overlay; ignore undefined/empty arrays
+            // to preserve user-drag positions and instance state across transient updates.
+            if (nodes === null) {
+                // explicit teardown
+                try {
+                    if (window.__vp_cy_instance) {
+                        try { window.__vp_cy_instance.destroy(); } catch(e) {}
+                        window.__vp_cy_instance = null;
+                    }
+                    const root = document.getElementById('__vp_cy_root');
+                    if (root && root.parentNode) root.parentNode.removeChild(root);
+                } catch (e) {}
+                return;
+            }
             if (!nodes || nodes.length === 0) {
-                Plotly.purge('graph');
+                try { console.debug('[VP-CY] empty nodes payload; preserving existing graph state'); } catch (e) {}
                 return;
             }
 
@@ -171,21 +390,53 @@
             const readPartBytes = (part) => {
                 if (!part) return { tx: 0, rx: 0 };
                 try {
-                    // Map-like (wasm may produce Map instances)
+                    // Map-like (wasm Map)
                     if (typeof part.get === 'function') {
-                        const tx = Number(part.get('transmitted_bytes') || 0);
-                        const rx = Number(part.get('received_bytes') || 0);
+                        const tryGet = (keys) => {
+                            for (const k of keys) {
+                                try { const v = part.get(k); if (typeof v !== 'undefined' && v !== null) return v; } catch (e) {}
+                            }
+                            return undefined;
+                        };
+                        const tx = Number(tryGet(['tx','tx_bytes','tx_bytes_total','tx_bytes_sent','txBytes','tx_bytes_sent'])) || 0;
+                        const rx = Number(tryGet(['rx','rx_bytes','rx_bytes_total','rx_bytes_recv','rxBytes','rx_bytes_recv'])) || 0;
                         return { tx, rx };
                     }
-                } catch (e) {}
-                try {
-                    // plain object
+
+                    // Plain object: look for common numeric fields, else try to sum nested interfaces
                     if (typeof part === 'object') {
-                        const tx = Number(part.transmitted_bytes || 0);
-                        const rx = Number(part.received_bytes || 0);
-                        return { tx, rx };
+                        const pickObj = (obj, keys) => {
+                            for (const k of keys) {
+                                if (Object.prototype.hasOwnProperty.call(obj, k)) {
+                                    const v = obj[k];
+                                    if (typeof v === 'number') return v;
+                                    if (typeof v === 'string' && v.match(/^\d+(\.\d+)?$/)) return Number(v);
+                                }
+                            }
+                            return undefined;
+                        };
+                        const candidatesTx = ['tx','tx_bytes','tx_bytes_total','tx_bytes_sent','txBytes'];
+                        const candidatesRx = ['rx','rx_bytes','rx_bytes_total','rx_bytes_recv','rxBytes'];
+                        let tx = pickObj(part, candidatesTx);
+                        let rx = pickObj(part, candidatesRx);
+                        if (typeof tx !== 'undefined' || typeof rx !== 'undefined') {
+                            return { tx: Number(tx || 0), rx: Number(rx || 0) };
+                        }
+
+                        // If object has nested interface-like entries, sum their tx/rx
+                        let sumTx = 0, sumRx = 0, found = false;
+                        for (const k of Object.keys(part)) {
+                            try {
+                                const v = part[k];
+                                if (v && typeof v === 'object') {
+                                    const p = readPartBytes(v);
+                                    if (p && (p.tx || p.rx)) { sumTx += Number(p.tx || 0); sumRx += Number(p.rx || 0); found = true; }
+                                }
+                            } catch (e) {}
+                        }
+                        if (found) return { tx: sumTx, rx: sumRx };
                     }
-                } catch (e) {}
+                } catch (e) { try { console.debug('readPartBytes err', e, part); } catch (ee) {} }
                 return { tx: 0, rx: 0 };
             };
             // friendly bits/sec formatter (input is bytes/sec)
@@ -259,86 +510,52 @@
             // update last timestamp
             window.__vp_last_stats_ts = now;
 
-            // curved per-edge traces (use Bezier approximation) and midpoint hover markers
-            const midXUp = [];
-            const midYUp = [];
-            const midTextUp = [];
-            const midMarkerSizeUp = [];
-            const midXDown = [];
-            const midYDown = [];
-            const midTextDown = [];
-            const midMarkerSizeDown = [];
-
-            const mapSize = (b) => Math.min(30, Math.max(4, 2 + Math.log10(b + 1) * 6));
-
-            // helper: quadratic Bezier sample (P0, Pc, P1)
-            const bezierPoints = (x0, y0, x1, y1, offset, samples=30) => {
-                // compute perpendicular offset at midpoint
-                const mx = (x0 + x1) / 2;
-                const my = (y0 + y1) / 2;
-                const dx = x1 - x0;
-                const dy = y1 - y0;
-                const dist = Math.hypot(dx, dy) || 1.0;
-                // normalized perpendicular
-                const nx = -dy / dist;
-                const ny = dx / dist;
-                const cx = mx + nx * offset;
-                const cy = my + ny * offset;
-                const xs = [];
-                const ys = [];
-                for (let i = 0; i <= samples; i++) {
-                    const t = i / samples;
-                    const omt = (1 - t);
-                    const bx = omt * omt * x0 + 2 * omt * t * cx + t * t * x1;
-                    const by = omt * omt * y0 + 2 * omt * t * cy + t * t * y1;
-                    xs.push(bx);
-                    ys.push(by);
+            // Build lightweight payload for Cytoscape instead of Plotly traces
+            const nodes_arr = [];
+            const edges_arr = [];
+            try {
+                // nodes (smaller defaults)
+                window.__vp_seen_nodes = window.__vp_seen_nodes || {};
+                Object.keys(positions).forEach(id => {
+                    try {
+                        const isRsu = rsus.indexOf(id) !== -1;
+                        // smaller default sizes: RSU slightly bigger than OBU
+                        const size = isRsu ? 18 : 12;
+                        const type = din[id] && din[id].node_type ? din[id].node_type : null;
+                        // DO NOT mark seen nodes here; let the renderer decide first-seen positioning
+                        nodes_arr.push({ id: id, label: id, type: type, size: size, x: positions[id].x, y: positions[id].y });
+                    } catch (e) {}
+                });
+                // edges derived from edgeTraces
+                const mapSize = (b) => Math.min(30, Math.max(4, 2 + Math.log10(b + 1) * 6));
+                for (const et of edgeTraces) {
+                    try {
+                        const from = et.from; const to = et.to;
+                        const up = (deltas[from] && deltas[from].tx_bps) ? deltas[from].tx_bps : 0;
+                        const down = (deltas[from] && deltas[from].rx_bps) ? deltas[from].rx_bps : 0;
+                        // compute width using same log-scale contract as Rust: total = up+down
+                        let bw = 1;
+                        try {
+                            const total = Math.max(0, up) + Math.max(0, down);
+                            if (total <= 0) {
+                                bw = 1;
+                            } else {
+                                const scale_log = 6.0;
+                                const lv = Math.log10(total);
+                                const frac = Math.max(0, Math.min(1, lv / scale_log));
+                                const min_w = 1.0;
+                                const max_w = 20.0;
+                                bw = Math.max(1, Math.min(20, Math.round(min_w + frac * (max_w - min_w))));
+                            }
+                        } catch (e) { bw = 1; }
+                        const color = up > down ? 'rgba(200,30,30,0.9)' : (down > up ? 'rgba(30,100,200,0.9)' : 'rgba(120,120,120,1)');
+                        edges_arr.push({ source: from, target: to, up_bps: up, down_bps: down, width: bw, color: color });
+                    } catch (e) {}
                 }
-                return { xs, ys };
-            };
+            } catch (e) { console.debug('[VP-CY] build cytoscape payload err', e); }
 
-            for (const e of edgeTraces) {
-                const from = e.from;
-                const up_bps = (deltas[from] && deltas[from].tx_bps) ? deltas[from].tx_bps : 0;
-                const down_bps = (deltas[from] && deltas[from].rx_bps) ? deltas[from].rx_bps : 0;
-
-                // baseline straight faint line (for context)
-                data.push({ x: [e.x0, e.x1], y: [e.y0, e.y1], mode: 'lines', line: { color: '#333', width: 1, dash: 'dot' }, hoverinfo: 'none', showlegend: false, type: 'scatter' });
-
-                // choose offset magnitude proportional to distance and bps (small constant if zero)
-                const dist = Math.hypot(e.x1 - e.x0, e.y1 - e.y0) || 1.0;
-                // reduced curvature: smaller base and multiplier, lower cap
-                const offsetScale = (v) => Math.min(0.25, 0.02 + Math.log10((v || 1) + 1) * 0.015);
-
-                if (up_bps > 0) {
-                    const offset = dist * offsetScale(up_bps);
-                    const { xs, ys } = bezierPoints(e.x0, e.y0, e.x1, e.y1, offset);
-                    data.push({ x: xs, y: ys, mode: 'lines', hoverinfo: 'text', text: Array(xs.length).fill(`${from} → ${e.to}\nup: ${bitsToHuman(up_bps)}`), line: { color: 'rgba(200,30,30,0.9)', width: Math.max(2, mapSize(up_bps) / 3) }, showlegend: false, type: 'scatter' });
-                    // midpoint marker for easy hover/select
-                    midXUp.push((e.x0 + e.x1) / 2);
-                    midYUp.push((e.y0 + e.y1) / 2);
-                    midTextUp.push(`${from} → ${e.to}\nup: ${bitsToHuman(up_bps)}`);
-                    midMarkerSizeUp.push(mapSize(up_bps));
-                }
-
-                if (down_bps > 0) {
-                    const offset = -dist * offsetScale(down_bps);
-                    const { xs, ys } = bezierPoints(e.x0, e.y0, e.x1, e.y1, offset);
-                    data.push({ x: xs, y: ys, mode: 'lines', hoverinfo: 'text', text: Array(xs.length).fill(`${e.to} → ${from}\ndown: ${bitsToHuman(down_bps)}`), line: { color: 'rgba(30,100,200,0.9)', width: Math.max(2, mapSize(down_bps) / 3) }, showlegend: false, type: 'scatter' });
-                    midXDown.push((e.x0 + e.x1) / 2);
-                    midYDown.push((e.y0 + e.y1) / 2);
-                    midTextDown.push(`${from} → ${e.to}\ndown: ${bitsToHuman(down_bps)}`);
-                    midMarkerSizeDown.push(mapSize(down_bps));
-                }
-            }
-
-            // Add midpoint scatter traces for up and down to provide hover text
-            if (midXUp.length > 0) {
-                data.push({ x: midXUp, y: midYUp, mode: 'markers', type: 'scatter', marker: { size: midMarkerSizeUp, color: 'rgba(200,30,30,0.8)' }, text: midTextUp, hoverinfo: 'text', showlegend: false });
-            }
-            if (midXDown.length > 0) {
-                data.push({ x: midXDown, y: midYDown, mode: 'markers', type: 'scatter', marker: { size: midMarkerSizeDown, color: 'rgba(30,100,200,0.8)' }, text: midTextDown, hoverinfo: 'text', showlegend: false });
-            }
+            // Send to cytoscape renderer
+            try { if (typeof window.__vp_render_graph === 'function') window.__vp_render_graph(nodes_arr, edges_arr); } catch (e) { console.error('[VP-CY] call __vp_render_graph failed', e); }
 
             // RSU trace (square markers)
             if (rsuX.length > 0) {
@@ -388,14 +605,151 @@
                 dragmode: false,
             };
 
-            // Plotly config: disable scroll zoom and hide mode bar (remove zoom controls)
-            const cfg = { responsive: true, scrollZoom: false, displayModeBar: false };
-
-            Plotly.newPlot('graph', data, layout, cfg);
+            // Remember nodes and channels for the parameter UI and refresh list
+            try { window.__vp_nodes = Array.isArray(nodes) ? nodes.slice() : (nodes ? Object.keys(nodes) : []); } catch (e) { window.__vp_nodes = nodes || []; }
+            try {
+                let raw = [];
+                if (Array.isArray(channels)) {
+                    raw = channels.slice();
+                } else if (channels && typeof channels.forEach === 'function') {
+                    const tmp = [];
+                    channels.forEach(c => tmp.push(c));
+                    raw = tmp;
+                } else if (channels && typeof channels === 'object') {
+                    try { raw = Object.keys(channels).map(k => channels[k]); } catch (e2) { raw = []; }
+                }
+                // normalize endpoints using the runtime helper if available
+                // expose raw for debugging
+                try { window.__vp_raw_channels = raw.slice(); } catch (e) {}
+                // Normalize raw entries into explicit directed channel objects.
+                // For Map-like entries that appear to be undirected (keys are endpoint node names),
+                // expand into both directions so the UI shows both A→B and B→A.
+                const tempNorm = [];
+                raw.forEach(c => {
+                    try {
+                        const ep = (typeof resolveChannelEndpoints === 'function') ? (resolveChannelEndpoints(c) || {}) : { from: (c && c.from), to: (c && c.to) };
+                        const f = ep.from; const t = ep.to;
+                        if (typeof f !== 'undefined' && f !== null && typeof t !== 'undefined' && t !== null) {
+                            tempNorm.push({ from: f, to: t, __raw: c });
+                            // If the raw entry is Map-like and its keys appear to be the endpoint names,
+                            // also add the reverse direction to represent both channels.
+                            try {
+                                if (typeof c.keys === 'function') {
+                                    const klist = [];
+                                    for (const k of c.keys()) klist.push(k);
+                                    if (klist.length >= 2) {
+                                        const a = klist[0]; const b = klist[1];
+                                        // if reverse isn't the same as forward, add reverse
+                                        if (!(String(a) === String(f) && String(b) === String(t))) {
+                                            tempNorm.push({ from: t, to: f, __raw: c });
+                                        }
+                                    }
+                                }
+                            } catch (e) {}
+                        } else {
+                            // fallback: if only one endpoint or unknown shape, attempt to glean keys
+                            try {
+                                if (typeof c.keys === 'function') {
+                                    const klist = [];
+                                    for (const k of c.keys()) klist.push(k);
+                                    if (klist.length === 1) tempNorm.push({ from: klist[0], to: klist[0], __raw: c });
+                                }
+                            } catch (e) {}
+                        }
+                    } catch (e) { /* ignore malformed raw entries */ }
+                });
+                const norm = tempNorm.filter(x => (typeof x.from !== 'undefined' && x.from !== null) && (typeof x.to !== 'undefined' && x.to !== null));
+                // Debug: show raw channel info for diagnostics
+                try { console.debug('channels raw count', raw.length, 'sample', raw.slice(0,5)); } catch (e) {}
+                // Expose edge traces for debugging
+                try { window.__vp_edgeTraces = Array.isArray(edgeTraces) ? edgeTraces.slice() : (edgeTraces || null); } catch (e) {}
+                // If there were no explicit channels provided, try to derive them from the plotted edge traces
+                if ((!norm || norm.length === 0) && Array.isArray(edgeTraces) && edgeTraces.length > 0) {
+                    const m = new Map();
+                    edgeTraces.forEach(e => {
+                        try {
+                            const f = e.from; const t = e.to;
+                            if (typeof f === 'undefined' && typeof t === 'undefined') return;
+                            const k = `${f}→${t}`;
+                            if (!m.has(k)) m.set(k, { from: f, to: t, __raw: e });
+                        } catch (e2) { /* ignore */ }
+                    });
+                    const derived = Array.from(m.values());
+                    // sort deterministically
+                    derived.sort((a,b) => (String(a.from||'')).localeCompare(String(b.from||'')) || (String(a.to||'')).localeCompare(String(b.to||'')));
+                    window.__vp_channels = derived;
+                    try { window.__vp_norm_channels = derived.slice(); } catch (e) {}
+                        try { console.debug('channels derived from edgeTraces', derived.length, derived.slice(0,6)); } catch (e) {}
+                } else {
+                    // dedupe and sort normalized channels for deterministic display
+                    const uniq = [];
+                    const seen = new Set();
+                    norm.forEach(c => {
+                        try {
+                            const k = `${c.from}→${c.to}`;
+                            if (!seen.has(k)) { seen.add(k); uniq.push(c); }
+                        } catch (e) { /* ignore */ }
+                    });
+                    uniq.sort((a,b) => (String(a.from||'')).localeCompare(String(b.from||'')) || (String(a.to||'')).localeCompare(String(b.to||'')));
+                    window.__vp_channels = uniq;
+                    try { window.__vp_norm_channels = uniq.slice(); } catch (e) {}
+                    try { console.debug('channels normalized/deduped', uniq.length, uniq.slice(0,6)); } catch (e) {}
+                }
+                // If we don't have the full directed mesh of channels for known nodes, synthesize it so the UI
+                // allows editing any from->to pair. This is useful when the simulator only provides upstream edges
+                // but the UI must allow setting parameters for both directions.
+                try {
+                    const nodesForMesh = Array.isArray(window.__vp_nodes) ? window.__vp_nodes.slice() : [];
+                    if (nodesForMesh.length > 1) {
+                        const expected = nodesForMesh.length * (nodesForMesh.length - 1);
+                        if (!window.__vp_channels || window.__vp_channels.length < expected) {
+                            const m = new Map();
+                            (window.__vp_channels || []).forEach(c => {
+                                try { const k = `${c.from}→${c.to}`; if (!m.has(k)) m.set(k, { from: c.from, to: c.to, __raw: c.__raw }); } catch (e) {}
+                            });
+                            for (const a of nodesForMesh) {
+                                for (const b of nodesForMesh) {
+                                    if (a === b) continue;
+                                    const k = `${a}→${b}`;
+                                    if (!m.has(k)) m.set(k, { from: a, to: b, __raw: null });
+                                }
+                            }
+                            const all = Array.from(m.values());
+                            all.sort((A,B) => (String(A.from||'')).localeCompare(String(B.from||'')) || (String(A.to||'')).localeCompare(String(B.to||'')));
+                            window.__vp_channels = all;
+                            try { window.__vp_norm_channels = all.slice(); } catch (e) {}
+                            try { console.debug('channels expanded to full mesh', window.__vp_channels.length, window.__vp_channels.slice(0,12)); } catch (e) {}
+                        }
+                    }
+                } catch (e) { /* ignore */ }
+            } catch (e) { window.__vp_channels = []; }
         } catch (err) {
             console.error('update_graph error', err);
         }
     };
+
+    // Debug helper: dump current edges' color data and computed inline styles
+    window.__vp_dump_edges = function() {
+        try {
+            const cy = window.__vp_cy_instance;
+            if (!cy) return console.warn('[VP-CY] no cy instance');
+            const out = cy.edges().map(e => ({ id: e.id(), source: e.data('source'), target: e.data('target'), dataColor: e.data('color'), lineColorStyle: e.style('line-color'), arrowColorStyle: e.style('target-arrow-color'), lineOpacity: e.style('line-opacity') }));
+            console.table(out);
+            return out;
+        } catch (e) { console.error('[VP-CY] dump edges failed', e); }
+    };
+
+    // Debug helper: list edge widths from data and computed style to verify thickness mapping
+    window.__vp_dump_edge_widths = function() {
+        try {
+            const cy = window.__vp_cy_instance;
+            if (!cy) return console.warn('[VP-CY] no cy instance');
+            const out = cy.edges().map(e => ({ id: e.id(), source: e.data('source'), target: e.data('target'), total: e.data('__vp_total'), dataWidth: e.data('width'), bw: e.data('__vp_bw'), visualWidth: e.data('__vp_visual'), styleWidth: e.style('width'), arrowSize: e.style('arrow-scale') }));
+            console.table(out);
+            return out;
+        } catch (e) { console.error('[VP-CY] dump edge widths failed', e); }
+    };
+
     </script>
 </body>
 </html>

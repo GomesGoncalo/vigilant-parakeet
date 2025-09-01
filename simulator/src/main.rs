@@ -244,7 +244,11 @@ async fn main() -> Result<()> {
             .and(warp::body::json())
             .and_then(move |src, dst, post| channel_post_fn(src, dst, post, channelsc.clone()));
 
-        let cors = warp::cors().allow_any_origin();
+        // Permit requests from the visualization frontend (CORS) including POST and Content-Type header
+        let cors = warp::cors()
+            .allow_any_origin()
+            .allow_methods(vec!["GET", "POST", "OPTIONS"])
+            .allow_headers(vec!["content-type"]);
 
         // Build a /node_info endpoint returning per-node metadata: { node: { node_type: "Obu"|"Rsu", upstream: Option<{hops, mac}> } }
         let sim_nodes = simulator.get_nodes();
@@ -259,7 +263,7 @@ async fn main() -> Result<()> {
                     .map(|(name, (dev, _tun, _node))| (dev.mac_address(), name.clone()))
                     .collect();
 
-                #[derive(serde::Serialize)]
+                #[derive(serde::Serialize, Clone)]
                 struct UpstreamInfo {
                     hops: u32,
                     mac: String,
@@ -270,9 +274,12 @@ async fn main() -> Result<()> {
                 struct NodeInfo {
                     node_type: String,
                     upstream: Option<UpstreamInfo>,
+                    downstream: Option<Vec<UpstreamInfo>>,
                 }
 
                 let mut out: HashMap<String, NodeInfo> = HashMap::new();
+                // first pass: compute upstream info per node and stash in a temp map so we can invert for downstream
+                let mut upstream_map: HashMap<String, UpstreamInfo> = HashMap::new();
                 for (name, (dev, _tun, node)) in sim_nodes.iter() {
                     // try downcast to obu to get a cached route
                     let node_type = if node.as_any().is::<node_lib::control::obu::Obu>() {
@@ -282,7 +289,6 @@ async fn main() -> Result<()> {
                     } else {
                         "Unknown".to_string()
                     };
-
                     let upstream_route = node
                         .as_any()
                         .downcast_ref::<node_lib::control::obu::Obu>()
@@ -293,13 +299,36 @@ async fn main() -> Result<()> {
                             node_name: mac_map.get(&r.mac).cloned(),
                         });
 
+                    if let Some(ref u) = upstream_route {
+                        upstream_map.insert(name.clone(), u.clone());
+                    }
+
                     out.insert(
                         name.clone(),
                         NodeInfo {
                             node_type,
                             upstream: upstream_route,
+                            downstream: None,
                         },
                     );
+                }
+
+                // second pass: invert upstream_map to produce downstream vectors per node name
+                let mut downstream_map: HashMap<String, Vec<UpstreamInfo>> = HashMap::new();
+                for (child_name, upinfo) in upstream_map.iter() {
+                    if let Some(parent_name) = &upinfo.node_name {
+                        let mut di = upinfo.clone();
+                        // set the node_name field to the child's name so downstream entry points to that child
+                        di.node_name = Some(child_name.clone());
+                        downstream_map.entry(parent_name.clone()).or_default().push(di);
+                    }
+                }
+
+                // attach downstreams to out
+                for (node_name, nd) in downstream_map.into_iter() {
+                    if let Some(entry) = out.get_mut(&node_name) {
+                        entry.downstream = Some(nd);
+                    }
                 }
                 warp::reply::json(&out)
             });

@@ -18,6 +18,10 @@ use serde_wasm_bindgen;
 use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap as StdHashMap;
+use serde_json::Value as JsonValue;
+mod graph;
+mod graph_helpers;
+use graph::Graph;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
 struct UpstreamInfo {
@@ -30,6 +34,7 @@ struct UpstreamInfo {
 struct NodeInfo {
     node_type: String,
     upstream: Option<UpstreamInfo>,
+    downstream: Option<Vec<UpstreamInfo>>,
 }
 
 #[derive(Clone, PartialEq, Properties)]
@@ -147,8 +152,11 @@ fn OutterForm(props: &Props) -> Html {
 fn app() -> Html {
     let nodes = use_state(Vec::default);
     let channels = use_state(HashMap::default);
-    // node_info: node -> { node_type: String, upstream: Option<{hops, mac}> }
-    let node_info = use_state(|| StdHashMap::<String, NodeInfo>::default());
+    // node_info is stored as opaque JSON so the library code can treat it
+    // uniformly when used as a dependency in tests.
+    let node_info = use_state(|| StdHashMap::<String, JsonValue>::default());
+    // stats: node -> (device_stats, tun_stats) as JSON value
+    let stats = use_state(|| StdHashMap::<String, JsonValue>::default());
     {
         let nodes = nodes.clone();
         use_effect_with((), move |_| {
@@ -218,7 +226,7 @@ fn app() -> Html {
                         continue;
                     };
 
-                    if let Ok(map) = request.json::<StdHashMap<String, NodeInfo>>().await {
+                    if let Ok(map) = request.json::<StdHashMap<String, JsonValue>>().await {
                         if *node_info != map {
                             node_info.set(map);
                         }
@@ -231,31 +239,28 @@ fn app() -> Html {
         });
     }
 
-    // Watch nodes, channels and node_info state and call the JS graph updater when any changes.
+    // Watch nodes, channels and node_info state and re-render the Graph component via Yew (props-driven)
+
+    // Poll /stats endpoint (device + tun stats)
     {
-        let nodes_watch = nodes.clone();
-        let channels_watch = channels.clone();
-        let node_info_watch = node_info.clone();
-        use_effect_with(((*nodes_watch).clone(), (*channels_watch).clone(), (*node_info_watch).clone()), move |(n,c,u)| {
-            let n = n.clone();
-            let c = c.clone();
-            let u = u.clone();
+        let stats = stats.clone();
+        use_effect_with((), move |_| {
+            let stats = stats.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                if let Some(win) = web_sys::window() {
-                    let func = js_sys::Reflect::get(&win, &JsValue::from_str("update_graph"));
-                    if let Ok(func) = func {
-                        if func.is_function() {
-                            let func: js_sys::Function = func.dyn_into().unwrap();
-                            let n = serde_wasm_bindgen::to_value(&n).unwrap_or(JsValue::NULL);
-                            let c = serde_wasm_bindgen::to_value(&c).unwrap_or(JsValue::NULL);
-                            let u = serde_wasm_bindgen::to_value(&u).unwrap_or(JsValue::NULL);
-                            let args = js_sys::Array::new();
-                            args.push(&n);
-                            args.push(&c);
-                            args.push(&u);
-                            let _ = func.apply(&win.into(), &args.into());
+                loop {
+                    let Ok(request) = Request::get("http://127.0.0.1:3030/stats").send().await
+                    else {
+                        gloo_timers::future::sleep(std::time::Duration::from_secs(1)).await;
+                        continue;
+                    };
+
+                    if let Ok(map) = request.json::<StdHashMap<String, JsonValue>>().await {
+                        if *stats != map {
+                            stats.set(map);
                         }
                     }
+
+                    gloo_timers::future::sleep(std::time::Duration::from_secs(1)).await;
                 }
             });
             || ()
@@ -264,10 +269,7 @@ fn app() -> Html {
 
     html! {
         <>
-            <OutterForm nodes={nodes.to_vec()} channels={(*channels).clone()}/>
-            <div id={"graph"}></div>
-            <Throughput nodes={nodes.to_vec()}/>
-            
+            <Graph nodes={(*nodes).clone()} channels={(*channels).clone()} node_info={(*node_info).clone()} stats={(*stats).clone()} />
         </>
     }
 }
