@@ -71,7 +71,7 @@ fn bench_device_async_send(_c: &mut Criterion) {
             let res = rt.block_on(async { device.send(black_box(&buf[..])).await });
             match res {
                 Ok(_n) => {}
-                    Err(e) => panic!("device send error: {e}"),
+                Err(e) => panic!("device send error: {e}"),
             }
         })
     });

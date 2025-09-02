@@ -801,10 +801,10 @@ mod tests {
     async fn device_stats_increment_on_send_recv() {
         use crate::stats::Stats;
 
-    let (r, w) = make_pipe();
-    // wrap r and w into AsyncFd and Device-like struct manually
-    let _async_r = tokio::io::unix::AsyncFd::new(r).expect("asyncfd r");
-    let _async_w = tokio::io::unix::AsyncFd::new(w).expect("asyncfd w");
+        let (r, w) = make_pipe();
+        // wrap r and w into AsyncFd and Device-like struct manually
+        let _async_r = tokio::io::unix::AsyncFd::new(r).expect("asyncfd r");
+        let _async_w = tokio::io::unix::AsyncFd::new(w).expect("asyncfd w");
 
         // we can't construct the full Device without a real interface, but we can
         // check Stats default and manual increment behavior

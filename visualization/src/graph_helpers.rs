@@ -69,22 +69,45 @@ pub fn build_node_json(
     let mut m = serde_json::Map::new();
     m.insert("id".to_string(), JsonValue::String(name.to_string()));
     m.insert("label".to_string(), JsonValue::String(name.to_string()));
-    m.insert("x".to_string(), JsonValue::Number(serde_json::Number::from_f64(x).unwrap()));
-    m.insert("y".to_string(), JsonValue::Number(serde_json::Number::from_f64(y).unwrap()));
+    m.insert(
+        "x".to_string(),
+        JsonValue::Number(serde_json::Number::from_f64(x).unwrap()),
+    );
+    m.insert(
+        "y".to_string(),
+        JsonValue::Number(serde_json::Number::from_f64(y).unwrap()),
+    );
     // also include a nested `position` object to make JS normalization robust
     let mut pos = serde_json::Map::new();
-    pos.insert("x".to_string(), JsonValue::Number(serde_json::Number::from_f64(x).unwrap()));
-    pos.insert("y".to_string(), JsonValue::Number(serde_json::Number::from_f64(y).unwrap()));
+    pos.insert(
+        "x".to_string(),
+        JsonValue::Number(serde_json::Number::from_f64(x).unwrap()),
+    );
+    pos.insert(
+        "y".to_string(),
+        JsonValue::Number(serde_json::Number::from_f64(y).unwrap()),
+    );
     m.insert("position".to_string(), JsonValue::Object(pos));
     let mut size = 9usize;
     if let Some(info) = node_info.get(name) {
         if let Some(nt) = info.get("node_type").and_then(|v| v.as_str()) {
             m.insert("type".to_string(), JsonValue::String(nt.to_string()));
-            if nt.eq_ignore_ascii_case("rsu") { size = 14 } else { size = 10 }
+            if nt.eq_ignore_ascii_case("rsu") {
+                size = 14
+            } else {
+                size = 10
+            }
         }
     }
-    m.insert("size".to_string(), JsonValue::Number(serde_json::Number::from(size)));
-    let color = if size == 14 { "rgba(200,30,30,0.95)" } else { "rgba(30,100,200,0.95)" };
+    m.insert(
+        "size".to_string(),
+        JsonValue::Number(serde_json::Number::from(size)),
+    );
+    let color = if size == 14 {
+        "rgba(200,30,30,0.95)"
+    } else {
+        "rgba(30,100,200,0.95)"
+    };
     m.insert("color".to_string(), JsonValue::String(color.to_string()));
     JsonValue::Object(m)
 }
@@ -100,15 +123,30 @@ pub fn build_edge_json(
     let mut m = serde_json::Map::new();
     m.insert("source".to_string(), JsonValue::String(from.to_string()));
     m.insert("target".to_string(), JsonValue::String(to.to_string()));
-    m.insert("up_bps".to_string(), JsonValue::Number(serde_json::Number::from_f64(up_bps).unwrap()));
-    m.insert("down_bps".to_string(), JsonValue::Number(serde_json::Number::from_f64(down_bps).unwrap()));
+    m.insert(
+        "up_bps".to_string(),
+        JsonValue::Number(serde_json::Number::from_f64(up_bps).unwrap()),
+    );
+    m.insert(
+        "down_bps".to_string(),
+        JsonValue::Number(serde_json::Number::from_f64(down_bps).unwrap()),
+    );
     let width = compute_edge_width(up_bps, down_bps) as i64;
-    m.insert("width".to_string(), JsonValue::Number(serde_json::Number::from(width)));
-    m.insert("color".to_string(), JsonValue::String("rgba(120,120,120,1)".to_string()));
+    m.insert(
+        "width".to_string(),
+        JsonValue::Number(serde_json::Number::from(width)),
+    );
+    m.insert(
+        "color".to_string(),
+        JsonValue::String("rgba(120,120,120,1)".to_string()),
+    );
     let rk = determine_route_kind(from, to, node_info);
     m.insert("route_kind".to_string(), JsonValue::String(rk));
     // include an id to help JS upsert/lookup (falls back to src->tgt if absent)
-    m.insert("id".to_string(), JsonValue::String(format!("{}->{}", from, to)));
+    m.insert(
+        "id".to_string(),
+        JsonValue::String(format!("{}->{}", from, to)),
+    );
     JsonValue::Object(m)
 }
 
@@ -124,8 +162,8 @@ mod tests {
         assert!(w0 >= 1 && w0 <= 3);
         // moderate traffic increases or stays within bounds
         assert!(compute_edge_width(100.0, 0.0) >= 1);
-    // very large traffic should still be capped
-    assert!(compute_edge_width(1e6, 1e6) <= 20);
+        // very large traffic should still be capped
+        assert!(compute_edge_width(1e6, 1e6) <= 20);
     }
 
     #[test]
@@ -229,18 +267,24 @@ mod tests {
         let e = build_edge_json("A", "B", 100.0, 0.0, &ni);
         assert_eq!(e.get("source").and_then(|v| v.as_str()).unwrap(), "A");
         assert_eq!(e.get("target").and_then(|v| v.as_str()).unwrap(), "B");
-    assert!(e.get("width").and_then(|v| v.as_i64()).unwrap() >= 1);
-    // with the simple node_info above there is no explicit upstream/downstream relation
-    assert_eq!(e.get("route_kind").and_then(|v| v.as_str()).unwrap(), "neutral");
+        assert!(e.get("width").and_then(|v| v.as_i64()).unwrap() >= 1);
+        // with the simple node_info above there is no explicit upstream/downstream relation
+        assert_eq!(
+            e.get("route_kind").and_then(|v| v.as_str()).unwrap(),
+            "neutral"
+        );
     }
 
     #[test]
     fn compute_edge_width_bounds() {
         // negative inputs should be treated as zero
-        assert_eq!(compute_edge_width(-10.0, -5.0), compute_edge_width(0.0, 0.0));
+        assert_eq!(
+            compute_edge_width(-10.0, -5.0),
+            compute_edge_width(0.0, 0.0)
+        );
         // extremely large traffic is capped
-    let w_large = compute_edge_width(1e12, 1e12);
-    assert!(w_large <= 20);
+        let w_large = compute_edge_width(1e12, 1e12);
+        assert!(w_large <= 20);
         // tiny positive values still produce at least width 1
         assert!(compute_edge_width(1e-9, 0.0) >= 1);
     }
@@ -259,14 +303,23 @@ mod tests {
     fn build_edge_json_precedence_and_cap() {
         // from has upstream->to, to has downstream listing -> downstream should win
         let mut ni = BTreeMap::new();
-        ni.insert("A".to_string(), json!({ "node_type": "Obu", "upstream": { "node_name": "B" } }));
-        ni.insert("B".to_string(), json!({ "node_type": "Rsu", "downstream": [ { "node_name": "A" } ] }));
+        ni.insert(
+            "A".to_string(),
+            json!({ "node_type": "Obu", "upstream": { "node_name": "B" } }),
+        );
+        ni.insert(
+            "B".to_string(),
+            json!({ "node_type": "Rsu", "downstream": [ { "node_name": "A" } ] }),
+        );
         let e = build_edge_json("A", "B", 1000.0, 0.0, &ni);
-        assert_eq!(e.get("route_kind").and_then(|v| v.as_str()).unwrap(), "downstream");
+        assert_eq!(
+            e.get("route_kind").and_then(|v| v.as_str()).unwrap(),
+            "downstream"
+        );
 
-    // width is capped at 20 even for huge bps
+        // width is capped at 20 even for huge bps
         let e2 = build_edge_json("A", "B", 1e12, 1e12, &ni);
-    assert!(e2.get("width").and_then(|v| v.as_i64()).unwrap() <= 20);
+        assert!(e2.get("width").and_then(|v| v.as_i64()).unwrap() <= 20);
     }
 }
 
@@ -274,9 +327,9 @@ mod tests {
 #[cfg(all(test, target_arch = "wasm32"))]
 mod wasm_tests {
     use super::*;
-    use wasm_bindgen_test::*;
     use serde_json::json;
     use std::collections::BTreeMap;
+    use wasm_bindgen_test::*;
 
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
@@ -291,8 +344,14 @@ mod wasm_tests {
     #[wasm_bindgen_test]
     fn wasm_route_kind() {
         let mut ni = BTreeMap::new();
-        ni.insert("A".to_string(), json!({ "node_type": "Obu", "upstream": null, "downstream": null }));
-        ni.insert("B".to_string(), json!({ "node_type": "Rsu", "upstream": null, "downstream": [ { "node_name": "A" } ] }));
+        ni.insert(
+            "A".to_string(),
+            json!({ "node_type": "Obu", "upstream": null, "downstream": null }),
+        );
+        ni.insert(
+            "B".to_string(),
+            json!({ "node_type": "Rsu", "upstream": null, "downstream": [ { "node_name": "A" } ] }),
+        );
         let rk = determine_route_kind("A", "B", &ni);
         assert_eq!(rk, "downstream");
     }
@@ -309,10 +368,19 @@ mod wasm_tests {
     #[wasm_bindgen_test]
     fn wasm_build_edge_json_precedence() {
         let mut ni = BTreeMap::new();
-        ni.insert("A".to_string(), json!({ "node_type": "Obu", "upstream": { "node_name": "B" } }));
-        ni.insert("B".to_string(), json!({ "node_type": "Rsu", "downstream": [ { "node_name": "A" } ] }));
+        ni.insert(
+            "A".to_string(),
+            json!({ "node_type": "Obu", "upstream": { "node_name": "B" } }),
+        );
+        ni.insert(
+            "B".to_string(),
+            json!({ "node_type": "Rsu", "downstream": [ { "node_name": "A" } ] }),
+        );
         let e = build_edge_json("A", "B", 200.0, 0.0, &ni);
-        assert_eq!(e.get("route_kind").and_then(|v| v.as_str()).unwrap(), "downstream");
+        assert_eq!(
+            e.get("route_kind").and_then(|v| v.as_str()).unwrap(),
+            "downstream"
+        );
     }
 
     #[wasm_bindgen_test]

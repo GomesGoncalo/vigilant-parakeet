@@ -194,7 +194,11 @@ impl Routing {
                 )
             })
             .map(|(mac, (min_us, sum_us, n, hops_val))| {
-                let avg_us = if n > 0 { sum_us / (n as u128) } else { u128::MAX };
+                let avg_us = if n > 0 {
+                    sum_us / (n as u128)
+                } else {
+                    u128::MAX
+                };
                 let score = if min_us == u128::MAX || avg_us == u128::MAX {
                     u128::MAX
                 } else {

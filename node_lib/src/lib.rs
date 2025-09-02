@@ -3,6 +3,7 @@ pub use args::Args;
 pub mod control;
 mod data;
 pub mod messages;
+pub mod metrics;
 
 use anyhow::{Context, Result};
 use args::NodeType;

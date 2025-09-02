@@ -132,6 +132,189 @@ mod tests {
 }
 
 #[cfg(test)]
+mod cache_tests {
+    use super::Routing;
+    use crate::{
+        args::{NodeParameters, NodeType},
+        Args,
+    };
+    use mac_address::MacAddress;
+
+    #[test]
+    fn select_and_cache_upstream_sets_cache() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 2,
+                hello_periodicity: None,
+            },
+        };
+
+        let boot = std::time::Instant::now();
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        // Create a heartbeat to populate routes
+        let hb_source: MacAddress = [7u8; 6].into();
+        let pkt_from: MacAddress = [8u8; 6].into();
+        let our_mac: MacAddress = [9u8; 6].into();
+        let hb = crate::messages::control::heartbeat::Heartbeat::new(
+            std::time::Duration::from_millis(1),
+            1u32,
+            hb_source,
+        );
+        let hb_msg = crate::messages::message::Message::new(
+            pkt_from,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb.clone()),
+            ),
+        );
+        // Insert heartbeat via routing handle
+        let _ = routing
+            .handle_heartbeat(&hb_msg, our_mac)
+            .expect("handled hb");
+
+        // Now select and cache the upstream for hb_source
+        let selected = routing.select_and_cache_upstream(hb_source);
+        assert!(selected.is_some());
+
+        // get_route_to(None) should now return the cached upstream route
+        let cached = routing.get_route_to(None);
+        assert!(cached.is_some());
+        assert_eq!(cached.unwrap().mac, selected.unwrap().mac);
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::Routing;
+    use crate::messages::control::heartbeat::{Heartbeat, HeartbeatReply};
+    use crate::messages::{control::Control, message::Message, packet_type::PacketType};
+    use crate::{
+        args::{NodeParameters, NodeType},
+        Args,
+    };
+    use mac_address::MacAddress;
+
+    // Regression test for the case where a HeartbeatReply arrives from the
+    // recorded next hop (pkt.from() == next_upstream). Previously the code
+    // treated that as a loop and bailed; that's incorrect. We should only
+    // bail if the recorded next_upstream equals the HeartbeatReply's
+    // reported sender (message.sender()). This test asserts we do not bail
+    // when pkt.from() == next_upstream but message.sender() != next_upstream.
+    #[test]
+    fn heartbeat_reply_from_next_hop_does_not_bail() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 2,
+                hello_periodicity: None,
+            },
+        };
+
+        let boot = std::time::Instant::now();
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        // Heartbeat originates from A, observed via B (pkt.from)
+        let hb_source: MacAddress = [1u8; 6].into(); // A
+        let pkt_from: MacAddress = [2u8; 6].into(); // B (next hop)
+        let our_mac: MacAddress = [9u8; 6].into();
+
+        let hb = Heartbeat::new(std::time::Duration::from_millis(1), 1u32, hb_source);
+        let hb_msg = Message::new(
+            pkt_from,
+            [255u8; 6].into(),
+            PacketType::Control(Control::Heartbeat(hb.clone())),
+        );
+
+        // Insert heartbeat to establish next_upstream for hb_source = pkt_from
+        let _ = routing
+            .handle_heartbeat(&hb_msg, our_mac)
+            .expect("handled hb");
+
+        // Now construct a HeartbeatReply where the HeartbeatReply::sender() is A
+        // but the packet is from B (pkt.from == next_upstream). This should be
+        // accepted and not cause bail.
+        let reply_sender: MacAddress = hb_source; // A
+        let hbr = HeartbeatReply::from_sender(&hb, reply_sender);
+        let reply_from: MacAddress = pkt_from; // B
+        let reply_msg = Message::new(
+            reply_from,
+            [255u8; 6].into(),
+            PacketType::Control(Control::HeartbeatReply(hbr.clone())),
+        );
+
+        // When the reply arrives from the next hop (pkt.from == next_upstream)
+        // we should NOT forward it back (to avoid an immediate bounce). The
+        // function returns Ok(None) in this case.
+        let res = routing
+            .handle_heartbeat_reply(&reply_msg, our_mac)
+            .expect("handled reply");
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn heartbeat_reply_from_sender_triggers_bail() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 2,
+                hello_periodicity: None,
+            },
+        };
+
+        let boot = std::time::Instant::now();
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        // Heartbeat originates from A, observed via B (pkt.from)
+        let hb_source: MacAddress = [10u8; 6].into(); // A
+        let pkt_from: MacAddress = [20u8; 6].into(); // B (next hop)
+        let our_mac: MacAddress = [9u8; 6].into();
+
+        let hb = Heartbeat::new(std::time::Duration::from_millis(1), 2u32, hb_source);
+        let hb_msg = Message::new(
+            pkt_from,
+            [255u8; 6].into(),
+            PacketType::Control(Control::Heartbeat(hb.clone())),
+        );
+
+        // Insert heartbeat to establish next_upstream for hb_source = pkt_from
+        let _ = routing
+            .handle_heartbeat(&hb_msg, our_mac)
+            .expect("handled hb");
+
+        // Now construct a HeartbeatReply where the HeartbeatReply::sender() is
+        // equal to our recorded next_upstream (i.e., message.sender == next_upstream)
+        let reply_sender: MacAddress = pkt_from; // B == next_upstream
+        let hbr = HeartbeatReply::from_sender(&hb, reply_sender);
+        let reply_from: MacAddress = [30u8; 6].into(); // some other node forwarded it
+        let reply_msg = Message::new(
+            reply_from,
+            [255u8; 6].into(),
+            PacketType::Control(Control::HeartbeatReply(hbr.clone())),
+        );
+
+        // This should bail with an error indicating a loop was detected.
+        let res = routing.handle_heartbeat_reply(&reply_msg, our_mac);
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(format!("{}", err).contains("loop detected"));
+    }
+}
+
+#[cfg(test)]
 mod more_tests {
     use super::Routing;
     use crate::args::{NodeParameters, NodeType};
@@ -200,6 +383,14 @@ impl Routing {
     /// Return the cached upstream MAC if present.
     pub fn get_cached_upstream(&self) -> Option<MacAddress> {
         self.cached_upstream.load().as_ref().map(|m| **m)
+    }
+
+    /// Clear the cached upstream (useful when topology changes) and increment metric.
+    pub fn clear_cached_upstream(&self) {
+        tracing::trace!("clearing cached_upstream");
+        self.cached_upstream.store(None);
+        #[cfg(feature = "stats")]
+        crate::metrics::inc_cache_clear();
     }
 
     pub fn handle_heartbeat(
@@ -296,6 +487,8 @@ impl Routing {
                         was_through = %old_route,
                         "route changed on heartbeat",
                     );
+                    // Invalidate cached upstream when route changes
+                    self.clear_cached_upstream();
                 }
             }
         }
@@ -322,6 +515,8 @@ impl Routing {
                             was_through = %old_route_from,
                             "route changed on heartbeat",
                         );
+                        // Invalidate cached upstream when route changes
+                        self.clear_cached_upstream();
                     }
                 }
             }
@@ -370,7 +565,38 @@ impl Routing {
             bail!("no recollection of the next hop for this route");
         };
 
-        if *next_upstream == pkt.from()? {
+        // Note: avoid forwarding the HeartbeatReply back to the node it came
+        // from. If `pkt.from()` equals our recorded `next_upstream`, sending a
+        // reply to `next_upstream` would immediately bounce the packet back and
+        // can create a forwarding loop. We'll still record downstream
+        // observations below, but skip forwarding in that case.
+
+        // Decide action and emit a trace-level log so we can inspect decisions
+        // in live runs. Action values:
+        //  - "bail" : next_upstream == message.sender() (genuine loop)
+        //  - "skip_forward" : pkt.from == next_upstream (would bounce)
+        //  - "forward" : safe to forward toward next_upstream
+        let pkt_from = pkt.from()?;
+        let sender = message.sender();
+        let action = if *next_upstream == sender {
+            "bail"
+        } else if pkt_from == *next_upstream {
+            "skip_forward"
+        } else {
+            "forward"
+        };
+
+        tracing::trace!(
+            pkt_from = %pkt_from,
+            message_sender = %sender,
+            next_upstream = %next_upstream,
+            action = %action,
+            "heartbeat_reply decision"
+        );
+
+        if action == "bail" {
+            #[cfg(feature = "stats")]
+            crate::metrics::inc_loop_detected();
             bail!("loop detected");
         }
 
@@ -414,6 +640,13 @@ impl Routing {
             }
         };
 
+        // If the reply arrived from the node we'd forward to, don't forward
+        // it back: that would produce an immediate bounce. Drop forwarding
+        // (but keep the recorded downstream information above).
+        if pkt.from()? == *next_upstream {
+            return Ok(None);
+        }
+
         let sender = message.sender();
         let reply = Ok(Some(vec![ReplyType::Wire(
             (&Message::new(
@@ -445,6 +678,8 @@ impl Routing {
                         was_through = %old_route,
                         "route changed on heartbeat reply",
                     );
+                    // Invalidate cached upstream when route changes
+                    self.clear_cached_upstream();
                 }
             }
         }
@@ -471,6 +706,8 @@ impl Routing {
                             was_through = %old_route_from,
                             "route changed on heartbeat reply",
                         );
+                        // Invalidate cached upstream when route changes
+                        self.clear_cached_upstream();
                     }
                 }
             }
@@ -498,24 +735,11 @@ impl Routing {
             .collect();
         upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
 
-        let cached = self.cached_upstream.load();
-        if let Some(cached_upstream) = cached.as_ref() {
-            if let Some((_, _, upstream_route, hops)) = upstream_routes
-                .iter()
-                .find(|(_, rsu_mac, _, _)| **rsu_mac == **cached_upstream)
-            {
-                return Some(Route {
-                    hops: **hops,
-                    mac: **upstream_route,
-                    latency: None,
-                });
-            }
-        }
-
-        std::mem::drop(cached);
+        // NOTE: This function is intentionally pure for the `Some(mac)` case:
+        // it computes a best-route without mutating the cached upstream. Callers
+        // who want to select-and-cache must use `select_and_cache_upstream`.
         if let Some((_, _, upstream_route, hops)) = upstream_routes.first() {
             let upstream_route = **upstream_route;
-            self.cached_upstream.store(Some(upstream_route.into()));
             return Some(Route {
                 hops: **hops,
                 mac: upstream_route,
@@ -586,14 +810,18 @@ impl Routing {
                             }
                             entry.1 += micros; // sum
                             entry.2 += 1; // count
-                            // hops is already stored in entry.3
+                                          // hops is already stored in entry.3
                         }
                         hm
                     },
                 )
             })
             .map(|(mac, (min_us, sum_us, n, hops_val))| {
-                let avg_us = if n > 0 { sum_us / (n as u128) } else { u128::MAX };
+                let avg_us = if n > 0 {
+                    sum_us / (n as u128)
+                } else {
+                    u128::MAX
+                };
                 let score = if min_us == u128::MAX || avg_us == u128::MAX {
                     u128::MAX
                 } else {
@@ -610,5 +838,17 @@ impl Routing {
                 mac: *mac,
                 latency: Some(Duration::from_micros((*latency_us) as u64)),
             })
+    }
+
+    /// Compute the best route to `mac` and store it in the cached upstream.
+    /// This is the write API callers should use when they want selection to
+    /// also update the cached upstream. This separates the pure selection
+    /// logic (above) from the side-effect of caching.
+    pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
+        let route = self.get_route_to(Some(mac))?;
+        self.cached_upstream.store(Some(route.mac.into()));
+        #[cfg(feature = "stats")]
+        crate::metrics::inc_cache_select();
+        Some(route)
     }
 }

@@ -1,9 +1,9 @@
-use anyhow::{bail, Result};
 use anyhow::Context;
+use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
 use common::device::Device;
-use common::tun::Tun;
 use common::network_interface::NetworkInterface;
+use common::tun::Tun;
 use config::Config;
 #[cfg(feature = "webview")]
 use itertools::Itertools;
@@ -16,9 +16,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::signal;
- // Context is unused in current builds; remove the import.
- #[cfg(not(feature = "test_helpers"))]
- use tokio_tun::Tun as TokioTun;
+// Context is unused in current builds; remove the import.
+#[cfg(not(feature = "test_helpers"))]
+use tokio_tun::Tun as TokioTun;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 #[cfg(feature = "webview")]
 use warp::Filter;
@@ -27,8 +27,8 @@ mod sim_args;
 use sim_args::SimArgs;
 
 mod simulator;
-use simulator::Simulator;
 use crate::simulator::Channel;
+use simulator::Simulator;
 
 #[cfg(feature = "webview")]
 async fn channel_post_fn(
@@ -320,7 +320,10 @@ async fn main() -> Result<()> {
                         let mut di = upinfo.clone();
                         // set the node_name field to the child's name so downstream entry points to that child
                         di.node_name = Some(child_name.clone());
-                        downstream_map.entry(parent_name.clone()).or_default().push(di);
+                        downstream_map
+                            .entry(parent_name.clone())
+                            .or_default()
+                            .push(di);
                     }
                 }
 

@@ -49,7 +49,7 @@ impl Obu {
 
     /// Return the cached upstream MAC if present.
     pub fn cached_upstream_mac(&self) -> Option<mac_address::MacAddress> {
-    self.routing.read().unwrap().get_cached_upstream()
+        self.routing.read().unwrap().get_cached_upstream()
     }
 
     /// Return the cached upstream Route if present (hops, mac, latency).
@@ -364,8 +364,8 @@ mod obu_tests {
             .handle_heartbeat(&hb_msg, our_mac)
             .expect("handled hb");
 
-        // Ensure get_route_to(Some) selects upstream and sets cached upstream
-        let _ = routing.read().unwrap().get_route_to(Some(hb_source));
+        // Ensure selection and caching of upstream
+        let _ = routing.read().unwrap().select_and_cache_upstream(hb_source);
 
         // Now send an upstream data packet and expect a Wire reply to the cached upstream
         let from: MacAddress = [3u8; 6].into();
@@ -504,8 +504,8 @@ mod obu_tests {
             .handle_heartbeat(&hb_msg, our_mac)
             .expect("handled hb");
 
-        // Ensure route options are populated
-        let _ = routing.read().unwrap().get_route_to(Some(hb_source));
+        // Ensure route options are populated and cache selected
+        let _ = routing.read().unwrap().select_and_cache_upstream(hb_source);
 
         // Prepare a downstream payload addressed to someone other than our device
         let src = [3u8; 6];

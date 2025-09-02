@@ -33,7 +33,10 @@
                     elements: [],
                     style: [
                         { selector: 'node', style: { 'label': 'data(label)', 'text-valign': 'center', 'text-halign': 'center', 'background-color': 'data(color)', 'width': 'data(size)', 'height': 'data(size)', 'font-size': 10 } },
-                        { selector: 'edge', style: { 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'line-color': 'data(color)', 'width': 'data(width)', 'opacity': 0.95 } }
+                        { selector: 'edge', style: { 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'line-color': 'data(color)', 'width': 'data(width)', 'opacity': 0.95 } },
+                        // upstream-highlight class forces orange for immediate-upstream edges (placed after 'edge' to take precedence)
+                        { selector: 'edge.upstream', style: { 'line-color': '#ff7f0e', 'target-arrow-color': '#ff7f0e', 'opacity': 1 } },
+                        { selector: 'edge.downstream', style: { 'line-color': '#1f77b4', 'target-arrow-color': '#1f77b4', 'opacity': 1 } }
                     ],
                     layout: { name: 'preset' },
                 });
@@ -168,7 +171,65 @@
                             visualWidth = Math.max(1, Math.round(bw * scale));
                         } catch (e) { visualWidth = bw; }
                         const colorVal = getVal(e, ['color']) || (up > down ? 'rgba(200,30,30,0.9)' : (down > up ? 'rgba(30,100,200,0.9)' : 'rgba(120,120,120,0.6)'));
-                        const color = String(colorVal);
+                        let color = String(colorVal);
+                        try {
+                            const rk = getVal(e, ['route_kind', 'routeKind', 'kind']);
+                            if (rk && String(rk).toLowerCase() === 'upstream') {
+                                color = '#ff7f0e';
+                            }
+                        } catch (e) {}
+                        try {
+                            // Prefer explicit runtime-provided node_info if available
+                            const maybeNodeInfo = window.__vp_node_info || window.__vp_last_node_info || null;
+                            const srcStr = String(src);
+                            const tgtStr = String(tgt);
+                            let isImmediateUp = false;
+                            try {
+                                if (maybeNodeInfo && typeof maybeNodeInfo === 'object') {
+                                    // support Map-like and plain object shapes
+                                    const v = (typeof maybeNodeInfo.get === 'function') ? maybeNodeInfo.get(srcStr) : maybeNodeInfo[srcStr];
+                                    if (v) {
+                                        // get upstream map or object
+                                        let upv = undefined;
+                                        if (typeof v.get === 'function') {
+                                            upv = v.get('upstream');
+                                        } else if (v.upstream) {
+                                            upv = v.upstream;
+                                        }
+                                        if (upv) {
+                                            let un = undefined;
+                                            if (typeof upv.get === 'function') {
+                                                un = upv.get('node_name') || upv.get('nodeName') || upv.get('node');
+                                            } else if (upv.node_name || upv.nodeName || upv.node) {
+                                                un = upv.node_name || upv.nodeName || upv.node;
+                                            }
+                                            if (typeof un !== 'undefined' && String(un) === tgtStr) isImmediateUp = true;
+                                        }
+                                    }
+                                }
+                            } catch (e) {}
+                            // Fallback: inspect last_nodes snapshot (wasm sometimes stores Maps)
+                            if (!isImmediateUp && Array.isArray(window.__vp_last_nodes)) {
+                                for (const n of window.__vp_last_nodes) {
+                                    try {
+                                        // support Map-like nodes
+                                        const nid = (n && typeof n.get === 'function') ? (n.get('id') || n.get('label')) : (n && (n.id || n.label));
+                                        if (!nid) continue;
+                                        if (String(nid) !== srcStr) continue;
+                                        // get upstream from node entry
+                                        let up = undefined;
+                                        if (n && typeof n.get === 'function') {
+                                            const upmap = n.get('upstream');
+                                            if (upmap) up = (typeof upmap.get === 'function') ? (upmap.get('node_name') || upmap.get('nodeName') || upmap.get('node')) : (upmap && (upmap.node_name || upmap.nodeName || upmap.node));
+                                        } else {
+                                            up = (n && n.upstream && (n.upstream.node_name || n.upstream.nodeName || n.upstream.node)) || undefined;
+                                        }
+                                        if (typeof up !== 'undefined' && String(up) === tgtStr) { isImmediateUp = true; break; }
+                                    } catch (e) {}
+                                }
+                            }
+                            if (isImmediateUp) color = '#ff7f0e';
+                        } catch (e) {}
                         const existingE = cy.getElementById(String(edgeId));
                         try {
                             if (!cy.getElementById(String(src)).length) {
@@ -188,12 +249,39 @@
                             try { existingE.data(Object.assign({}, existingE.data(), { width: bw, arrow_scale: arrowScale, color: color, source: String(src), target: String(tgt), __vp_total: (Math.max(0, up) + Math.max(0, down)), __vp_bw: bw, __vp_visual: visualWidth })); } catch (e) {}
                             try { existingE.style('width', visualWidth); } catch (e) {}
                             try { existingE.style('arrow-scale', arrowScale); } catch (e) {}
+                            try { existingE.style('line-color', color); } catch (e) {}
+                            try { existingE.style('target-arrow-color', color); } catch (e) {}
+                            try {
+                                // toggle upstream/downstream classes for stylesheet override
+                                const rk_val = getVal(e, ['route_kind','routeKind','kind']);
+                                const isUp = (rk_val && String(rk_val).toLowerCase() === 'upstream') || isImmediateUp;
+                                const isDown = (rk_val && String(rk_val).toLowerCase() === 'downstream') || false; // downstream detection via node_info not currently used
+                                if (isUp) { try { console.debug('[VP-CY] marking upstream edge', String(edgeId)); } catch (ee) {} existingE.addClass('upstream'); } else existingE.removeClass('upstream');
+                                if (isDown) { try { console.debug('[VP-CY] marking downstream edge', String(edgeId)); } catch (ee) {} existingE.addClass('downstream'); } else existingE.removeClass('downstream');
+                                // Fallback: if coloring was applied but class toggle missed, detect by color and add appropriate class
+                                try {
+                                    const col = String(color || '').toLowerCase();
+                                    // orange (#ff7f0e) or rgb(255,127,14)
+                                    if (!existingE.hasClass('upstream') && (col.includes('ff7f0e') || col.includes('255,127,14'))) { try { console.debug('[VP-CY] fallback-mark upstream by color', String(edgeId), col); } catch (ee) {} existingE.addClass('upstream'); }
+                                    // blue (#1f77b4) or rgb(31,119,180)
+                                    if (!existingE.hasClass('downstream') && (col.includes('1f77b4') || col.includes('31,119,180') || col.includes('30,119,180'))) { try { console.debug('[VP-CY] fallback-mark downstream by color', String(edgeId), col); } catch (ee) {} existingE.addClass('downstream'); }
+                                } catch (ee) {}
+                            } catch (ee) {}
                         } else {
                             try { cy.add({ group: 'edges', data: { id: String(edgeId), source: String(src), target: String(tgt), width: bw, arrow_scale: arrowScale, color: color } });
                                 const newE = cy.getElementById(String(edgeId));
                                 try { if (newE && newE.length) newE.data({ __vp_total: (Math.max(0, up) + Math.max(0, down)), __vp_bw: bw, __vp_visual: visualWidth }); } catch (e) {}
                                 try { if (newE && newE.length) newE.style('width', visualWidth); } catch (e) {}
                                 try { if (newE && newE.length) newE.style('arrow-scale', arrowScale); } catch (e) {}
+                                try { if (newE && newE.length) newE.style('line-color', color); } catch (e) {}
+                                try { if (newE && newE.length) newE.style('target-arrow-color', color); } catch (e) {}
+                                try {
+                                    const rk_val = getVal(e, ['route_kind','routeKind','kind']);
+                                    const isUp = (rk_val && String(rk_val).toLowerCase() === 'upstream') || isImmediateUp;
+                                    const isDown = (rk_val && String(rk_val).toLowerCase() === 'downstream') || false;
+                                    if (newE && newE.length) { if (isUp) { try { console.debug('[VP-CY] adding upstream edge', String(edgeId)); } catch (ee) {} newE.addClass('upstream'); } else newE.removeClass('upstream'); }
+                                    if (newE && newE.length) { if (isDown) { try { console.debug('[VP-CY] adding downstream edge', String(edgeId)); } catch (ee) {} newE.addClass('downstream'); } else newE.removeClass('downstream'); }
+                                } catch (ee) {}
                             } catch (e) { console.debug('[VP-CY] add edge failed', edgeId, e); }
                         }
                     }
@@ -202,6 +290,29 @@
                         cy.nodes().forEach(n => { if (!seenNodeIds.has(n.id())) { try { console.debug('[VP-CY] node would be removed but kept to preserve position', n.id()); } catch (e) {} } });
                         cy.edges().forEach(ed => { if (!seenEdgeIds.has(ed.id())) { try { cy.remove(ed); } catch (e) {} } });
                     } catch (e) {}
+
+                    // Final-pass: ensure upstream/downstream classes reflect current edge colors
+                    try {
+                        setTimeout(() => {
+                            try {
+                                cy.edges().forEach(ed => {
+                                    try {
+                                        const col = String(ed.data('color') || '').toLowerCase();
+                                        if (col.includes('ff7f0e') || col.includes('255,127,14') || col.includes('255,127,14')) {
+                                            if (!ed.hasClass('upstream')) { try { ed.addClass('upstream'); console.debug('[VP-CY] final-pass add upstream', ed.id()); } catch (ee) {} }
+                                        } else {
+                                            if (ed.hasClass('upstream')) { try { ed.removeClass('upstream'); } catch (ee) {} }
+                                        }
+                                        if (col.includes('1f77b4') || col.includes('31,119,180') || col.includes('30,119,180')) {
+                                            if (!ed.hasClass('downstream')) { try { ed.addClass('downstream'); console.debug('[VP-CY] final-pass add downstream', ed.id()); } catch (ee) {} }
+                                        } else {
+                                            if (ed.hasClass('downstream')) { try { ed.removeClass('downstream'); } catch (ee) {} }
+                                        }
+                                    } catch (ee) {}
+                                });
+                            } catch (ee) { try { console.debug('[VP-CY] final-pass failed', ee); } catch (e) {} }
+                        }, 0);
+                    } catch (ee) {}
 
                     if (!window.__vp_initial_fit) { try { cy.fit(); } catch (e) {} window.__vp_initial_fit = true; }
                 } catch (err) { console.error('[VP-CY]', err); }
@@ -548,7 +659,17 @@
                                 bw = Math.max(1, Math.min(20, Math.round(min_w + frac * (max_w - min_w))));
                             }
                         } catch (e) { bw = 1; }
-                        const color = up > down ? 'rgba(200,30,30,0.9)' : (down > up ? 'rgba(30,100,200,0.9)' : 'rgba(120,120,120,1)');
+                        // If this edge corresponds to the immediate upstream for `from`, highlight it orange
+                        let color;
+                        try {
+                            const isImmediateUp = (din && din[from] && din[from].upstream && String(din[from].upstream.node_name) === String(to));
+                            if (isImmediateUp) {
+                                // Use the same orange used for RSU markers for visual consistency
+                                color = '#ff7f0e';
+                            } else {
+                                color = up > down ? 'rgba(200,30,30,0.9)' : (down > up ? 'rgba(30,100,200,0.9)' : 'rgba(120,120,120,1)');
+                            }
+                        } catch (e) { color = up > down ? 'rgba(200,30,30,0.9)' : (down > up ? 'rgba(30,100,200,0.9)' : 'rgba(120,120,120,1)'); }
                         edges_arr.push({ source: from, target: to, up_bps: up, down_bps: down, width: bw, color: color });
                     } catch (e) {}
                 }
@@ -724,7 +845,7 @@
                 } catch (e) { /* ignore */ }
             } catch (e) { window.__vp_channels = []; }
         } catch (err) {
-            console.error('update_graph error', err);
+                                // Fallback: if coloring was applied but class toggle missed, detect by color and add appropriate class
         }
     };
 
@@ -732,6 +853,20 @@
     window.__vp_dump_edges = function() {
         try {
             const cy = window.__vp_cy_instance;
+                                // Ensure the visual style and class persist even if something re-styles later
+                                try {
+                                    setTimeout(() => {
+                                        try {
+                                            const col = String(color || '').toLowerCase();
+                                            if (existingE && existingE.length) {
+                                                try { existingE.style('line-color', color); } catch (e) {}
+                                                try { existingE.style('target-arrow-color', color); } catch (e) {}
+                                                if (!existingE.hasClass('upstream') && (col.includes('ff7f0e') || col.includes('255,127,14'))) { try { existingE.addClass('upstream'); } catch (e) {} }
+                                                if (!existingE.hasClass('downstream') && (col.includes('1f77b4') || col.includes('31,119,180') || col.includes('30,119,180'))) { try { existingE.addClass('downstream'); } catch (e) {} }
+                                            }
+                                        } catch (e) { try { console.debug('[VP-CY] reapply inline style failed', String(edgeId), e); } catch (ee) {} }
+                                    }, 0);
+                                } catch (ee) {}
             if (!cy) return console.warn('[VP-CY] no cy instance');
             const out = cy.edges().map(e => ({ id: e.id(), source: e.data('source'), target: e.data('target'), dataColor: e.data('color'), lineColorStyle: e.style('line-color'), arrowColorStyle: e.style('target-arrow-color'), lineOpacity: e.style('line-opacity') }));
             console.table(out);
