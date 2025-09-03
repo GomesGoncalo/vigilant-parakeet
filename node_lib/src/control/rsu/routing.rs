@@ -14,8 +14,8 @@ use mac_address::MacAddress;
 use std::{
     collections::{hash_map::Entry, HashMap},
     fmt::Debug,
-    time::{Duration, Instant},
 };
+use tokio::time::{Duration, Instant};
 use tracing::Level;
 
 #[derive(Debug)]

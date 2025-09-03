@@ -2,9 +2,10 @@
 name = "node_lib"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
-tokio = {version = "*", features = ["full"]}
+tokio = {version = "*", features = ["full", "test-util"]}
 tokio-tun = "*"
 anyhow = "*"
 socket2 = {version = "*", features = ["all"]}

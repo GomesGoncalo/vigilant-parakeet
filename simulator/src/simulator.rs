@@ -16,13 +16,13 @@ use node_lib::Node;
 use std::collections::VecDeque;
 use std::str::FromStr;
 use std::sync::Mutex;
-use std::time::Instant;
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
     time::Duration,
 };
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::time::Instant;
 // uninit_array is not used here
 
 pub struct NamespaceWrapper(Option<NetNs>);

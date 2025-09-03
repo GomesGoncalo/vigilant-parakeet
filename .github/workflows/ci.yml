@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace --locked
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+  pages-build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      - name: Run coverage (common + node_lib)
+        id: covrun
+        env:
+          RUSTFLAGS: "-C debuginfo=2"
+        run: |
+          cargo tarpaulin -p common -p node_lib --out Lcov --features test_helpers --timeout 120 --output-dir ./target/tarpaulin
+          if [ ! -f ./target/tarpaulin/lcov.info ]; then echo "lcov.info not found"; exit 1; fi
+          TOTAL_LF=$(grep -h ^LF: ./target/tarpaulin/lcov.info | awk -F: '{s+=$2} END {print s+0}')
+          TOTAL_LH=$(grep -h ^LH: ./target/tarpaulin/lcov.info | awk -F: '{s+=$2} END {print s+0}')
+          PCT=0.0
+          if [ "$TOTAL_LF" -gt 0 ]; then PCT=$(awk "BEGIN { printf \"%.1f\", ($TOTAL_LH/$TOTAL_LF)*100 }"); fi
+          echo "pct=$PCT" >> $GITHUB_OUTPUT
+      - name: Generate coverage JSON for Shields.io
+        run: |
+          mkdir -p public/badges
+          cat > public/badges/coverage.json <<EOF
+          {"schemaVersion":1,"label":"coverage","message":"${{ steps.covrun.outputs.pct }}%","color":"blue"}
+          EOF
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy-pages:
+    needs: pages-build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

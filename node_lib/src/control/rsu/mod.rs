@@ -466,7 +466,8 @@ mod rsu_tests {
             src,
         );
         let reply_sender: MacAddress = [2u8; 6].into();
-        let hbr = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb, reply_sender);
+        let hbr =
+            crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb, reply_sender);
         let msg = Message::new(
             [3u8; 6].into(),
             [255u8; 6].into(),
@@ -508,7 +509,11 @@ mod rsu_tests {
         inner.extend_from_slice(&from_client.bytes());
         inner.extend_from_slice(&[0u8; 8]);
         let tu = ToUpstream::new(from_client, &inner);
-        let msg = Message::new(from_client, dest_client, PacketType::Data(Data::Upstream(tu)));
+        let msg = Message::new(
+            from_client,
+            dest_client,
+            PacketType::Data(Data::Upstream(tu)),
+        );
 
         let res = handle_msg_for_test(routing, device_mac, cache, &msg).expect("ok");
         assert!(res.is_some());

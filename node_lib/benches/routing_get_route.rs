@@ -3,7 +3,7 @@ use mac_address::MacAddress;
 use node_lib::control::obu::routing::Routing as ObuRouting;
 use node_lib::control::rsu::routing::Routing as RsuRouting;
 use node_lib::Args;
-use std::time::Instant;
+use tokio::time::Instant;
 
 fn bench_obu_get_route(_c: &mut Criterion) {
     let args = Args {

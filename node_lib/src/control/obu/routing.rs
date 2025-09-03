@@ -12,10 +12,8 @@ use anyhow::{bail, Result};
 use arc_swap::ArcSwapOption;
 use indexmap::IndexMap;
 use mac_address::MacAddress;
-use std::{
-    collections::{hash_map::Entry, HashMap},
-    time::{Duration, Instant},
-};
+use std::collections::{hash_map::Entry, HashMap};
+use tokio::time::{Duration, Instant};
 use tracing::Level;
 
 #[derive(Debug)]
@@ -38,7 +36,7 @@ mod tests {
     };
     // ReplyType is not used in these test helpers; remove unused import.
     use mac_address::MacAddress;
-    use std::time::{Duration, Instant};
+    use tokio::time::{Duration, Instant};
 
     #[test]
     fn handle_heartbeat_creates_route_and_returns_replies() {
@@ -139,6 +137,7 @@ mod cache_tests {
         Args,
     };
     use mac_address::MacAddress;
+    use tokio::time::{Duration, Instant};
 
     #[test]
     fn select_and_cache_upstream_sets_cache() {
@@ -154,7 +153,7 @@ mod cache_tests {
             },
         };
 
-        let boot = std::time::Instant::now();
+        let boot = Instant::now() - Duration::from_secs(1);
         let mut routing = Routing::new(&args, &boot).expect("routing built");
 
         // Create a heartbeat to populate routes
@@ -199,6 +198,7 @@ mod regression_tests {
         Args,
     };
     use mac_address::MacAddress;
+    use tokio::time::Instant;
 
     // Regression test for the case where a HeartbeatReply arrives from the
     // recorded next hop (pkt.from() == next_upstream). Previously the code
@@ -220,7 +220,7 @@ mod regression_tests {
             },
         };
 
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let mut routing = Routing::new(&args, &boot).expect("routing built");
 
         // Heartbeat originates from A, observed via B (pkt.from)
@@ -275,7 +275,7 @@ mod regression_tests {
             },
         };
 
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let mut routing = Routing::new(&args, &boot).expect("routing built");
 
         // Heartbeat originates from A, observed via B (pkt.from)
@@ -320,6 +320,7 @@ mod more_tests {
     use crate::args::{NodeParameters, NodeType};
     use crate::Args;
     use mac_address::MacAddress;
+    use tokio::time::{Duration, Instant};
 
     #[test]
     fn get_route_to_none_when_empty() {
@@ -335,7 +336,7 @@ mod more_tests {
             },
         };
 
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let routing = Routing::new(&args, &boot).expect("routing built");
 
         let unknown: MacAddress = [1u8; 6].into();
@@ -359,7 +360,7 @@ mod more_tests {
             },
         };
 
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let mut routing = Routing::new(&args, &boot).expect("routing built");
 
         let hb_source: MacAddress = [5u8; 6].into();
@@ -398,7 +399,7 @@ mod more_tests {
             },
         };
 
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let mut routing = Routing::new(&args, &boot).expect("routing built");
 
         let hb_source: MacAddress = [1u8, 1, 1, 1, 1, 1].into();
@@ -454,7 +455,7 @@ mod more_tests {
             },
         };
 
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let mut routing = Routing::new(&args, &boot).expect("routing built");
 
         let hb_source: MacAddress = [9u8, 8, 7, 6, 5, 4].into();
@@ -511,7 +512,7 @@ mod more_tests {
             },
         };
 
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let routing = Routing::new(&args, &boot).expect("routing built");
         let mac: MacAddress = [1u8; 6].into();
         assert!(routing.select_and_cache_upstream(mac).is_none());
@@ -532,7 +533,7 @@ mod more_tests {
             },
         };
 
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let mut routing = Routing::new(&args, &boot).expect("routing built");
         let hb_source: MacAddress = [7u8; 6].into();
         let pkt_from: MacAddress = [8u8; 6].into();
@@ -555,6 +556,315 @@ mod more_tests {
         assert!(routing.get_cached_upstream().is_some());
         routing.clear_cached_upstream();
         assert!(routing.get_cached_upstream().is_none());
+    }
+
+    #[test]
+    fn hysteresis_keeps_cached_when_hops_equal() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 8,
+                hello_periodicity: None,
+            },
+        };
+
+        let boot = Instant::now();
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        let rsu: MacAddress = [1u8; 6].into();
+        let via_b: MacAddress = [2u8; 6].into();
+        let via_c: MacAddress = [3u8; 6].into();
+        let our_mac: MacAddress = [9u8; 6].into();
+
+        // Heartbeat from RSU via B with 2 hops
+        let hb1 = crate::messages::control::heartbeat::Heartbeat::new(
+            std::time::Duration::from_millis(1),
+            1u32,
+            rsu,
+        );
+        let msg1 = crate::messages::message::Message::new(
+            via_b,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb1.clone()),
+            ),
+        );
+        // Insert, then cache selection chooses B
+        let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
+        let sel1 = routing.select_and_cache_upstream(rsu).expect("selected");
+        assert_eq!(sel1.mac, via_b);
+
+        // Another Heartbeat from RSU via C with same hops (2)
+        let hb2 = crate::messages::control::heartbeat::Heartbeat::new(
+            std::time::Duration::from_millis(2),
+            2u32,
+            rsu,
+        );
+        let msg2 = crate::messages::message::Message::new(
+            via_c,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb2.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
+
+        // get_route_to(Some) should prefer keeping cached (B) since hops are equal
+        let route = routing.get_route_to(Some(rsu)).expect("route");
+        assert_eq!(route.mac, via_b, "should keep cached when hops equal");
+    }
+
+    #[test]
+    fn hysteresis_switches_when_one_fewer_hop() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 8,
+                hello_periodicity: None,
+            },
+        };
+
+        let boot = Instant::now();
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        let rsu: MacAddress = [10u8; 6].into();
+        let via_b: MacAddress = [20u8; 6].into();
+        let via_c: MacAddress = [30u8; 6].into();
+        let our_mac: MacAddress = [99u8; 6].into();
+
+        // First candidate with 2 hops via B (craft borrowed heartbeat bytes)
+        let mut hb1_bytes = Vec::new();
+        hb1_bytes.extend_from_slice(&0u128.to_be_bytes()); // duration 16B
+        hb1_bytes.extend_from_slice(&1u32.to_be_bytes()); // id
+        hb1_bytes.extend_from_slice(&2u32.to_be_bytes()); // hops = 2
+        hb1_bytes.extend_from_slice(&rsu.bytes()); // source
+        let hb1 = crate::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..])
+            .expect("hb1 bytes to heartbeat");
+        let msg1 = crate::messages::message::Message::new(
+            via_b,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb1.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
+        let sel1 = routing.select_and_cache_upstream(rsu).expect("selected");
+        assert_eq!(sel1.mac, via_b);
+
+        // Better candidate with 1 hop via C (craft borrowed heartbeat bytes)
+        let mut hb2_bytes = Vec::new();
+        hb2_bytes.extend_from_slice(&0u128.to_be_bytes()); // duration 16B
+        hb2_bytes.extend_from_slice(&2u32.to_be_bytes()); // id
+        hb2_bytes.extend_from_slice(&1u32.to_be_bytes()); // hops = 1
+        hb2_bytes.extend_from_slice(&rsu.bytes()); // source
+        let hb2 = crate::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..])
+            .expect("hb2 bytes to heartbeat");
+        let msg2 = crate::messages::message::Message::new(
+            via_c,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb2.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
+
+        // Now get_route_to(Some) should switch to C due to one fewer hop
+        let route = routing.get_route_to(Some(rsu)).expect("route");
+        assert_eq!(route.mac, via_c, "should switch when one fewer hop");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hysteresis_latency_improvement_below_10_percent_keeps_cached() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 8,
+                hello_periodicity: None,
+            },
+        };
+        // Use paused time so we can deterministically advance time
+        tokio::time::pause();
+        let boot = Instant::now();
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        let rsu: MacAddress = [11u8; 6].into();
+        let via_b: MacAddress = [21u8; 6].into();
+        let via_c: MacAddress = [31u8; 6].into();
+        let our_mac: MacAddress = [101u8; 6].into();
+
+        // HB via B (id 1), then cache B
+        let mut hb1_bytes = Vec::new();
+        hb1_bytes.extend_from_slice(&0u128.to_be_bytes());
+        hb1_bytes.extend_from_slice(&1u32.to_be_bytes());
+        hb1_bytes.extend_from_slice(&2u32.to_be_bytes()); // higher hops for cached
+        hb1_bytes.extend_from_slice(&rsu.bytes());
+        let hb1 =
+            crate::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..]).expect("hb1");
+        let msg1 = crate::messages::message::Message::new(
+            via_b,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb1.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
+        routing.select_and_cache_upstream(rsu).expect("cached B");
+
+        // Advance 25ms between HB and HBR for B
+        tokio::time::advance(Duration::from_millis(25)).await;
+        let hbr1 = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb1, rsu);
+        let reply1 = crate::messages::message::Message::new(
+            via_b,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::HeartbeatReply(hbr1.clone()),
+            ),
+        );
+        let _ = routing
+            .handle_heartbeat_reply(&reply1, our_mac)
+            .unwrap_or(None);
+
+        // HB via C (id 2) with the SAME number of hops as B to test latency-only hysteresis
+        let mut hb2_bytes = Vec::new();
+        hb2_bytes.extend_from_slice(&0u128.to_be_bytes());
+        hb2_bytes.extend_from_slice(&2u32.to_be_bytes());
+        hb2_bytes.extend_from_slice(&2u32.to_be_bytes()); // same hops as cached
+        hb2_bytes.extend_from_slice(&rsu.bytes());
+        let hb2 =
+            crate::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..]).expect("hb2");
+        let msg2 = crate::messages::message::Message::new(
+            via_c,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb2.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
+        // Advance 23ms for C (less than 10% better than 25ms)
+        tokio::time::advance(Duration::from_millis(23)).await;
+        let hbr2 = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb2, rsu);
+        let reply2 = crate::messages::message::Message::new(
+            via_c,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::HeartbeatReply(hbr2.clone()),
+            ),
+        );
+        let _ = routing
+            .handle_heartbeat_reply(&reply2, our_mac)
+            .unwrap_or(None);
+
+        // Now selection should keep cached B since improvement < 10%
+        let route = routing.get_route_to(Some(rsu)).expect("route");
+        assert_eq!(route.mac, via_b, "should keep cached when <10% better");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore]
+    async fn hysteresis_latency_improvement_above_10_percent_switches() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 8,
+                hello_periodicity: None,
+            },
+        };
+        // Use paused time so we can deterministically advance time
+        tokio::time::pause();
+        let boot = Instant::now() - Duration::from_secs(1);
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        let rsu: MacAddress = [12u8; 6].into();
+        let via_b: MacAddress = [22u8; 6].into();
+        let via_c: MacAddress = [32u8; 6].into();
+        let our_mac: MacAddress = [102u8; 6].into();
+
+        // HB via B (id 1), then cache B
+        let mut hb1_bytes = Vec::new();
+        hb1_bytes.extend_from_slice(&0u128.to_be_bytes());
+        hb1_bytes.extend_from_slice(&1u32.to_be_bytes());
+        hb1_bytes.extend_from_slice(&0u32.to_be_bytes());
+        hb1_bytes.extend_from_slice(&rsu.bytes());
+        let hb1 =
+            crate::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..]).expect("hb1");
+        let msg1 = crate::messages::message::Message::new(
+            via_b,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb1.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
+        routing.select_and_cache_upstream(rsu).expect("cached B");
+
+        // Advance 40ms for B
+        tokio::time::advance(Duration::from_millis(40)).await;
+        let hbr1 = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb1, rsu);
+        let reply1 = crate::messages::message::Message::new(
+            via_b,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::HeartbeatReply(hbr1.clone()),
+            ),
+        );
+        let _ = routing
+            .handle_heartbeat_reply(&reply1, our_mac)
+            .unwrap_or(None);
+
+        // HB via C (id 2)
+        let mut hb2_bytes = Vec::new();
+        hb2_bytes.extend_from_slice(&0u128.to_be_bytes());
+        hb2_bytes.extend_from_slice(&2u32.to_be_bytes());
+        hb2_bytes.extend_from_slice(&0u32.to_be_bytes());
+        hb2_bytes.extend_from_slice(&rsu.bytes());
+        let hb2 =
+            crate::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..]).expect("hb2");
+        let msg2 = crate::messages::message::Message::new(
+            via_c,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb2.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
+
+        // Advance 20ms for C (>= 10% better than 40ms)
+        tokio::time::advance(Duration::from_millis(20)).await;
+        let hbr2 = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb2, rsu);
+        let reply2 = crate::messages::message::Message::new(
+            via_c,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::HeartbeatReply(hbr2.clone()),
+            ),
+        );
+        let _ = routing
+            .handle_heartbeat_reply(&reply2, our_mac)
+            .unwrap_or(None);
+
+        // Trigger selection and caching now that both latencies are recorded
+        let _ = routing.select_and_cache_upstream(rsu);
+        // Verify both direct selection and cached reflect the better path
+        let route = routing.get_route_to(Some(rsu)).expect("route");
+        assert_eq!(route.mac, via_c, "should switch when >=10% better");
+        let cached = routing.get_route_to(None).expect("cached route");
+        assert_eq!(cached.mac, via_c, "cached should reflect the switch");
     }
 }
 
@@ -705,8 +1015,7 @@ impl Routing {
                         was_through = %old_route,
                         "route changed on heartbeat",
                     );
-                    // Invalidate cached upstream when route changes
-                    self.clear_cached_upstream();
+                    // Do not clear cached upstream; hysteresis in get_route_to will decide switching.
                 }
             }
         }
@@ -733,8 +1042,7 @@ impl Routing {
                             was_through = %old_route_from,
                             "route changed on heartbeat",
                         );
-                        // Invalidate cached upstream when route changes
-                        self.clear_cached_upstream();
+                        // Do not clear cached upstream; hysteresis in get_route_to will decide switching.
                     }
                 }
             }
@@ -918,8 +1226,7 @@ impl Routing {
                         was_through = %old_route,
                         "route changed on heartbeat reply",
                     );
-                    // Invalidate cached upstream when route changes
-                    self.clear_cached_upstream();
+                    // Do not clear cached upstream; hysteresis in get_route_to will decide switching.
                 }
             }
         }
@@ -946,8 +1253,7 @@ impl Routing {
                             was_through = %old_route_from,
                             "route changed on heartbeat reply",
                         );
-                        // Invalidate cached upstream when route changes
-                        self.clear_cached_upstream();
+                        // Do not clear cached upstream; hysteresis in get_route_to will decide switching.
                     }
                 }
             }
@@ -957,13 +1263,19 @@ impl Routing {
     }
 
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
-        let Some(mac) = mac else {
+        let Some(target_mac) = mac else {
             return self.cached_upstream.load().as_ref().map(|mac| Route {
                 hops: 1,
                 mac: **mac,
                 latency: None,
             });
         };
+        // Optionally incorporate hysteresis against the currently cached upstream.
+        // We will compute the usual "best" candidate, but if it differs from the
+        // cached upstream we only switch when it's better by a margin (>=10% lower
+        // latency score) or uses at least one fewer hop. Otherwise, we keep the
+        // current next hop to avoid flapping.
+        let cached = self.get_cached_upstream();
         let mut upstream_routes: Vec<_> = self
             .routes
             .iter()
@@ -971,17 +1283,19 @@ impl Routing {
                 seqs.iter()
                     .map(move |(seq, (_, mac, hops, _, _))| (seq, rsu_mac, mac, hops))
             })
-            .filter(|(_, rsu_mac, _, _)| rsu_mac == &&mac)
+            .filter(|(_, rsu_mac, _, _)| rsu_mac == &&target_mac)
             .collect();
         upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
 
+        // Prepare references to per-seq downstream observations, grouped by RSU
         let route_options: IndexMap<_, _> = self
             .routes
             .iter()
             .flat_map(|(rsus, im)| {
-                im.iter().map(move |(seq, (dur, mac, hops, _, rout))| {
-                    (seq, (dur, mac, hops, rout, rsus))
-                })
+                im.iter()
+                    .map(move |(seq, (dur, mac, hops, _r, downstream))| {
+                        (seq, (dur, mac, hops, downstream, rsus))
+                    })
             })
             .collect();
 
@@ -990,15 +1304,17 @@ impl Routing {
         let latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> = route_options
             .iter()
             .rev()
-            .flat_map(|(seq, (_, _, _, m, _))| {
-                let _seq = *seq;
-                m.iter().map(move |(_mac, route)| (_seq, _mac, route))
+            .filter_map(|(_seq, (_dur, _mac, _hops, downstream, rsu_mac))| {
+                if *rsu_mac == &target_mac {
+                    downstream.get(&target_mac)
+                } else {
+                    None
+                }
             })
-            .filter(|(_, smac, _)| &&mac == smac)
-            .flat_map(|(seq, mac, route)| route.iter().map(move |r| (seq, mac, r)))
+            .flat_map(|route_vec| route_vec.iter())
             .fold(
                 HashMap::default(),
-                |mut hm: HashMap<MacAddress, (u128, u128, u32, u32)>, (_seq, _mac, route)| {
+                |mut hm: HashMap<MacAddress, (u128, u128, u32, u32)>, route| {
                     let hop_val = route.hops;
                     if let Some(lat) = route.latency.map(|x| x.as_micros()) {
                         let entry =
@@ -1018,40 +1334,146 @@ impl Routing {
         if !latency_candidates.is_empty() {
             // Select by (score = min + avg), then by hops
             let mut scored: Vec<_> = latency_candidates
-                .into_iter()
+                .iter()
                 .map(|(mac, (min_us, sum_us, n, hops_val))| {
-                    let avg_us = if n > 0 {
-                        sum_us / (n as u128)
+                    let avg_us = if *n > 0 {
+                        *sum_us / (*n as u128)
                     } else {
                         u128::MAX
                     };
-                    let score = if min_us == u128::MAX || avg_us == u128::MAX {
+                    let score = if *min_us == u128::MAX || avg_us == u128::MAX {
                         u128::MAX
                     } else {
-                        min_us + avg_us
+                        *min_us + avg_us
                     };
-                    (score, hops_val, mac, avg_us)
+                    (score, *hops_val, *mac, avg_us)
                 })
                 .collect();
             scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-            let (_score, hops, mac_sel, avg_us) = scored[0];
+            let (best_score, best_hops, best_mac, best_avg) = scored[0];
+
+            // If cached is set but isn't in latency candidates (no latency observed yet),
+            // keep cached unless best has at least one fewer hop.
+            if let Some(cached_mac) = cached {
+                if !latency_candidates.contains_key(&cached_mac) {
+                    if let Some((_, _, _, cached_hops_ref)) = upstream_routes
+                        .iter()
+                        .find(|(_, _, mac_ref, _)| **mac_ref == cached_mac)
+                    {
+                        let cached_hops = **cached_hops_ref;
+                        if best_mac != cached_mac {
+                            let fewer_hops = best_hops + 1 <= cached_hops;
+                            if !fewer_hops {
+                                return Some(Route {
+                                    hops: cached_hops,
+                                    mac: cached_mac,
+                                    latency: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If we have a cached upstream that is also a candidate for this RSU,
+            // apply hysteresis: stick to cached unless the new one is clearly better.
+            if let Some(cached_mac) = cached {
+                if let Some((cached_min, cached_sum, cached_n, cached_hops)) =
+                    latency_candidates.get(&cached_mac).copied()
+                {
+                    let cached_avg = if cached_n > 0 {
+                        cached_sum / (cached_n as u128)
+                    } else {
+                        u128::MAX
+                    };
+                    let cached_score = if cached_min == u128::MAX || cached_avg == u128::MAX {
+                        u128::MAX
+                    } else {
+                        cached_min + cached_avg
+                    };
+
+                    // If best is the cached, just return it.
+                    if best_mac == cached_mac {
+                        return Some(Route {
+                            hops: best_hops,
+                            mac: best_mac,
+                            latency: if best_avg == u128::MAX {
+                                None
+                            } else {
+                                Some(Duration::from_micros(best_avg as u64))
+                            },
+                        });
+                    }
+
+                    // Switching conditions:
+                    // - strictly fewer hops by at least 1
+                    // - or latency score better by >=10%
+                    let fewer_hops = best_hops + 1 <= cached_hops;
+                    let latency_better_enough =
+                        if cached_score == u128::MAX && best_score != u128::MAX {
+                            true // prefer finite measurement over unknown
+                        } else if cached_score == u128::MAX || best_score == u128::MAX {
+                            false
+                        } else {
+                            // new_score <= cached_score * 0.9 (10% or more better)
+                            best_score.saturating_mul(10) < cached_score.saturating_mul(9)
+                        };
+
+                    if !(fewer_hops || latency_better_enough) {
+                        // Keep cached
+                        return Some(Route {
+                            hops: cached_hops,
+                            mac: cached_mac,
+                            latency: if cached_avg == u128::MAX {
+                                None
+                            } else {
+                                Some(Duration::from_micros(cached_avg as u64))
+                            },
+                        });
+                    }
+                }
+            }
+
+            // Default: return the best candidate
             return Some(Route {
-                hops,
-                mac: mac_sel,
-                latency: if avg_us == u128::MAX {
+                hops: best_hops,
+                mac: best_mac,
+                latency: if best_avg == u128::MAX {
                     None
                 } else {
-                    Some(Duration::from_micros(avg_us as u64))
+                    Some(Duration::from_micros(best_avg as u64))
                 },
             });
         }
 
         // Fallback: no latency observed yet, prefer fewer hops (original behavior)
-        if let Some((_, _, upstream_route, hops)) = upstream_routes.first() {
-            let upstream_route = **upstream_route;
+        if let Some((_, _, best_mac_ref, best_hops_ref)) = upstream_routes.first() {
+            let best_mac = **best_mac_ref;
+            let best_hops = **best_hops_ref;
+
+            // Apply hysteresis with hops-only info when we don't have latency.
+            if let Some(cached_mac) = cached {
+                if let Some((_, _, _, cached_hops_ref)) = upstream_routes
+                    .iter()
+                    .find(|(_, _, mac_ref, _)| **mac_ref == cached_mac)
+                {
+                    let cached_hops = **cached_hops_ref;
+                    if best_mac != cached_mac {
+                        let fewer_hops = best_hops + 1 <= cached_hops; // switch only if at least one fewer hop
+                        if !fewer_hops {
+                            return Some(Route {
+                                hops: cached_hops,
+                                mac: cached_mac,
+                                latency: None,
+                            });
+                        }
+                    }
+                }
+            }
+
             return Some(Route {
-                hops: **hops,
-                mac: upstream_route,
+                hops: best_hops,
+                mac: best_mac,
                 latency: None,
             });
         }

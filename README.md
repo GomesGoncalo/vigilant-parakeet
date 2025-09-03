@@ -1,5 +1,18 @@
 # vigilant-parakeet
 
+<!-- Badges -->
+<p>
+  <a href="https://www.rust-lang.org/"><img alt="Made with Rust" src="https://img.shields.io/badge/Made%20with-Rust-dea584.svg"></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Linux-blue.svg">
+  <a href="https://tokio.rs/"><img alt="Runtime: Tokio" src="https://img.shields.io/badge/runtime-Tokio-6a5acd.svg"></a>
+  <a href="./Cargo.toml"><img alt="Cargo workspace" src="https://img.shields.io/badge/Cargo-workspace-orange.svg"></a>
+  <a href="https://github.com/GomesGoncalo/vigilant-parakeet/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/GomesGoncalo/vigilant-parakeet/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://GomesGoncalo.github.io/vigilant-parakeet/"><img alt="Coverage" src="https://img.shields.io/endpoint?url=https://GomesGoncalo.github.io/vigilant-parakeet/badges/coverage.json"></a>
+  <a href="#license"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green.svg"></a>
+</p>
+
+<!-- The Codecov badge will show coverage once CODECOV_TOKEN is configured in repo secrets. -->
+
 Simulate and visualize vehicular network nodes (OBU/RSU) and their routing.
 
 <!-- toc -->
@@ -260,8 +273,7 @@ Please run `cargo fmt` and `cargo clippy` before submitting.
 
 ## License
 
-No license file is included in this repository. If you intend to accept public
-contributions, add a `LICENSE` file (for example, MIT or Apache-2.0).
+This project is licensed under the MIT License. See [LICENSE](./LICENSE) for details.
 
 ---
 

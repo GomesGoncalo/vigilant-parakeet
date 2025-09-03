@@ -17,10 +17,8 @@ use common::tun::Tun;
 use common::{device::Device, network_interface::NetworkInterface};
 use mac_address::MacAddress;
 use routing::Routing;
-use std::{
-    sync::{Arc, RwLock},
-    time::Instant,
-};
+use std::sync::{Arc, RwLock};
+use tokio::time::Instant;
 
 pub struct Obu {
     args: Args,
@@ -33,9 +31,10 @@ pub struct Obu {
 impl Obu {
     pub fn new(args: Args, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
         let boot = Instant::now();
+        let routing = Arc::new(RwLock::new(Routing::new(&args, &boot)?));
         let obu = Arc::new(Self {
-            routing: Arc::new(RwLock::new(Routing::new(&args, &boot)?)),
             args,
+            routing,
             tun: tun.clone(),
             device,
             session: Session::new(tun).into(),
@@ -63,8 +62,9 @@ impl Obu {
         let tun = obu.tun.clone();
         tokio::task::spawn(async move {
             loop {
-                let obu = obu.clone();
+                let obu_c = obu.clone();
                 let messages = node::wire_traffic(&device, |pkt, size| {
+                    let obu = obu_c.clone();
                     async move {
                         match Message::try_from(&pkt[..size]) {
                             Ok(msg) => {
@@ -103,7 +103,6 @@ impl Obu {
                         let Some(upstream) = routing.read().unwrap().get_route_to(None) else {
                             return Ok(None);
                         };
-
                         let outgoing = vec![ReplyType::Wire(
                             (&Message::new(
                                 devicec.mac_address(),
@@ -155,7 +154,6 @@ impl Obu {
                 if destination == self.device.mac_address() {
                     return Ok(Some(vec![ReplyType::Tap(vec![buf.data().to_vec()])]));
                 }
-
                 let target = destination;
                 let routing = self.routing.read().unwrap();
                 Ok(Some({
@@ -192,7 +190,7 @@ impl Obu {
 // constructing a full `Obu` (which requires tun and device runtime setup).
 #[cfg(test)]
 pub(crate) fn handle_msg_for_test(
-    routing: std::sync::Arc<std::sync::RwLock<Routing>>,
+    routing: Arc<RwLock<Routing>>,
     device_mac: mac_address::MacAddress,
     msg: &crate::messages::message::Message<'_>,
 ) -> anyhow::Result<Option<Vec<ReplyType>>> {
@@ -265,6 +263,7 @@ mod obu_tests {
     };
     use crate::Args;
     use mac_address::MacAddress;
+    use tokio::time::Instant;
 
     #[test]
     fn upstream_with_no_cached_upstream_returns_none() {
@@ -279,7 +278,7 @@ mod obu_tests {
                 hello_periodicity: None,
             },
         };
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             super::routing::Routing::new(&args, &boot).expect("routing"),
         ));
@@ -307,7 +306,7 @@ mod obu_tests {
                 hello_periodicity: None,
             },
         };
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             super::routing::Routing::new(&args, &boot).expect("routing"),
         ));
@@ -347,7 +346,7 @@ mod obu_tests {
                 hello_periodicity: None,
             },
         };
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             super::routing::Routing::new(&args, &boot).expect("routing"),
         ));
@@ -399,7 +398,7 @@ mod obu_tests {
                 hello_periodicity: None,
             },
         };
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             super::routing::Routing::new(&args, &boot).expect("routing"),
         ));
@@ -436,7 +435,7 @@ mod obu_tests {
                 hello_periodicity: None,
             },
         };
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             super::routing::Routing::new(&args, &boot).expect("routing"),
         ));
@@ -488,7 +487,7 @@ mod obu_tests {
                 hello_periodicity: None,
             },
         };
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             super::routing::Routing::new(&args, &boot).expect("routing"),
         ));
@@ -542,7 +541,7 @@ mod obu_tests {
                 hello_periodicity: None,
             },
         };
-        let boot = std::time::Instant::now();
+        let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             super::routing::Routing::new(&args, &boot).expect("routing"),
         ));

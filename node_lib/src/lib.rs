@@ -5,9 +5,9 @@ mod data;
 pub mod messages;
 pub mod metrics;
 
-use anyhow::Result;
 #[cfg(not(any(test, feature = "test_helpers")))]
 use anyhow::Context;
+use anyhow::Result;
 use args::NodeType;
 use common::device::Device;
 use common::tun::Tun;
