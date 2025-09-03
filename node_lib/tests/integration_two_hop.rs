@@ -88,11 +88,10 @@ impl Hub {
                                 }
                             }
                         }
-                        for j in 0..hub_fds.len() {
+                        for (j, out_fd) in hub_fds.iter().copied().enumerate() {
                             if j == i {
                                 continue;
                             }
-                            let out_fd = hub_fds[j];
                             let delay = Duration::from_millis(delays[i][j]);
                             let data = buf.clone();
                             tokio::spawn(async move {

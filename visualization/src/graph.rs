@@ -67,7 +67,7 @@ pub fn graph(props: &GraphProps) -> Html {
     let stats = props.stats.clone();
 
     // persistent previous snapshot for delta computation (bytes-like sums)
-    let last_snapshot = use_state(|| std::collections::BTreeMap::<String, f64>::new());
+    let last_snapshot = use_state(std::collections::BTreeMap::<String, f64>::new);
     let last_time = use_state(|| 0f64);
 
     // effect: compute positions and call Plotly
@@ -640,8 +640,7 @@ pub fn graph(props: &GraphProps) -> Html {
                 )));
             }
 
-            // Build a minimal layout and attach data_traces
-            let data = JsonValue::Array(data_traces);
+            // Build a minimal layout and attach data_traces (used downstream in JS rendering)
             let mut layout_map = serde_json::Map::new();
             layout_map.insert("annotations".to_string(), JsonValue::Array(annotations));
             layout_map.insert(
@@ -766,13 +765,11 @@ pub fn graph(props: &GraphProps) -> Html {
                 }
 
                 // debug: serialize nodes/edges to console so the browser shows exact payload
-                {
-                    let _ = console::log_1(&JsValue::from_str(&format!(
-                        "[VP-GRAPH] nodes={} edges={}",
-                        nodes_arr.len(),
-                        edges_arr.len()
-                    )));
-                }
+                console::log_1(&JsValue::from_str(&format!(
+                    "[VP-GRAPH] nodes={} edges={}",
+                    nodes_arr.len(),
+                    edges_arr.len()
+                )));
 
                 // call window.__vp_render_graph(nodes, edges)
                 // expose node_info to the page so the JS renderer can inspect upstream/downstream

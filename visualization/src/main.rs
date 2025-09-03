@@ -1,8 +1,7 @@
-mod select;
-mod throughput;
+// select and throughput live as separate files only in some branches; remove module decls here.
 use common::channel_parameters::ChannelParameters;
 use gloo_net::http::Request;
-use select::Select;
+// Select component temporarily disabled; module not present in this branch.
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -15,7 +14,7 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 mod graph;
 mod graph_helpers;
-use graph::Graph;
+use crate::graph::Graph;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
 struct UpstreamInfo {
@@ -39,18 +38,8 @@ struct Props {
 
 #[function_component]
 fn OutterForm(props: &Props) -> Html {
-    let remaining = use_state(|| None::<Vec<String>>);
     let from = use_state(|| None::<String>);
     let to = use_state(|| None::<String>);
-    let remainingc = remaining.clone();
-    let nodesc = props.nodes.clone();
-    let fromc = from.clone();
-    let on_change: Callback<String> = Callback::from(move |node: String| {
-        remainingc.set(Some(
-            nodesc.iter().filter(|x| **x != node).cloned().collect(),
-        ));
-        fromc.set(Some(node))
-    });
     let fromc = from.clone();
     let toc = to.clone();
     let emit = Callback::from(move |(latency, loss)| {
@@ -71,6 +60,7 @@ fn OutterForm(props: &Props) -> Html {
 
     let channels = props.channels.clone();
     let fromc = from.clone();
+    // keep a handle to `to` for closures below
     let toc = to.clone();
     let emitc = emit.clone();
     let emit_latency = Callback::from(move |input_event: Event| {
@@ -115,21 +105,9 @@ fn OutterForm(props: &Props) -> Html {
         }
     });
 
-    let toc = to.clone();
-    let on_change_to: Callback<String> = Callback::from(move |node: String| toc.set(Some(node)));
-    let nodes = &props.nodes;
     html!(<>
-        <Select options={nodes.clone()} onchange={on_change} />
-        {
-            match &*remaining {
-                None => html! {  },
-                Some(remaining) => html! {
-                    <>
-                    <Select options={remaining.to_vec()} onchange={on_change_to} />
-                    </>
-                },
-            }
-        }
+        // <Select options={nodes.clone()} onchange={on_change} />
+    // selection UI hidden in this branch
         {
             match (&*from, &*to) {
                 (Some(from), Some(to)) => html! { <>
@@ -148,9 +126,9 @@ fn app() -> Html {
     let channels = use_state(HashMap::default);
     // node_info is stored as opaque JSON so the library code can treat it
     // uniformly when used as a dependency in tests.
-    let node_info = use_state(|| StdHashMap::<String, JsonValue>::default());
+    let node_info = use_state(StdHashMap::<String, JsonValue>::default);
     // stats: node -> (device_stats, tun_stats) as JSON value
-    let stats = use_state(|| StdHashMap::<String, JsonValue>::default());
+    let stats = use_state(StdHashMap::<String, JsonValue>::default);
     {
         let nodes = nodes.clone();
         use_effect_with((), move |_| {

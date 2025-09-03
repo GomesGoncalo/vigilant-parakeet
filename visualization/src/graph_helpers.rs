@@ -18,11 +18,11 @@ pub fn compute_edge_width(up: f64, down: f64) -> usize {
     // Adjust `scale_log` if you want a different saturation point.
     let scale_log = 6.0f64; // log10(1_000_000) => traffic around 1e6 will map to max width
     let lv = total.log10();
-    let frac = (lv / scale_log).max(0.0).min(1.0);
+    let frac = (lv / scale_log).clamp(0.0, 1.0);
     let min_w = 1.0f64;
     let max_w = 20.0f64;
     let w = min_w + (frac * (max_w - min_w)).round();
-    (w as usize).max(1).min(20)
+    (w as usize).clamp(1, 20)
 }
 
 /// Determine route kind for an edge from `from` to `to` using node_info shape.
@@ -159,7 +159,7 @@ mod tests {
     fn edge_width_scaling() {
         // zero traffic should produce a small positive width
         let w0 = compute_edge_width(0.0, 0.0);
-        assert!(w0 >= 1 && w0 <= 3);
+    assert!((1..=3).contains(&w0));
         // moderate traffic increases or stays within bounds
         assert!(compute_edge_width(100.0, 0.0) >= 1);
         // very large traffic should still be capped

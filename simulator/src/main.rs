@@ -1,7 +1,10 @@
+#[cfg(feature = "webview")]
+use crate::simulator::Channel;
 use anyhow::Context;
 use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
 use common::device::Device;
+#[cfg(feature = "webview")]
 use common::network_interface::NetworkInterface;
 use common::tun::Tun;
 use config::Config;
@@ -27,7 +30,6 @@ mod sim_args;
 use sim_args::SimArgs;
 
 mod simulator;
-use crate::simulator::Channel;
 use simulator::Simulator;
 
 #[cfg(feature = "webview")]

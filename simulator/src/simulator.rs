@@ -162,6 +162,8 @@ pub struct Simulator {
     _namespaces: Vec<NamespaceWrapper>,
     channels: HashMap<String, HashMap<String, Arc<Channel>>>,
     /// Keep created nodes so external code (e.g. webview) may query node state.
+    #[allow(dead_code)]
+    #[allow(clippy::type_complexity)]
     nodes: HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Node>)>,
 }
 
@@ -323,6 +325,7 @@ impl Simulator {
     }
 
     /// Return a clone of the created nodes (name -> (dev, tun, node)).
+    #[allow(dead_code, clippy::type_complexity)]
     pub fn get_nodes(&self) -> HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Node>)> {
         self.nodes.clone()
     }

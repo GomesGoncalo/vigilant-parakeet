@@ -1320,10 +1320,10 @@ impl Routing {
                         let entry =
                             hm.entry(route.mac)
                                 .or_insert((u128::MAX, 0u128, 0u32, hop_val));
-                        if entry.0 > lat as u128 {
-                            entry.0 = lat as u128; // min
+                        if entry.0 > lat {
+                            entry.0 = lat; // min
                         }
-                        entry.1 += lat as u128; // sum
+                        entry.1 += lat; // sum
                         entry.2 += 1; // count
                         entry.3 = hop_val; // keep latest hops (they should be consistent per mac)
                     }
@@ -1362,7 +1362,7 @@ impl Routing {
                     {
                         let cached_hops = **cached_hops_ref;
                         if best_mac != cached_mac {
-                            let fewer_hops = best_hops + 1 <= cached_hops;
+                            let fewer_hops = best_hops < cached_hops;
                             if !fewer_hops {
                                 return Some(Route {
                                     hops: cached_hops,
@@ -1408,7 +1408,7 @@ impl Routing {
                     // Switching conditions:
                     // - strictly fewer hops by at least 1
                     // - or latency score better by >=10%
-                    let fewer_hops = best_hops + 1 <= cached_hops;
+                    let fewer_hops = best_hops < cached_hops;
                     let latency_better_enough =
                         if cached_score == u128::MAX && best_score != u128::MAX {
                             true // prefer finite measurement over unknown
@@ -1459,7 +1459,7 @@ impl Routing {
                 {
                     let cached_hops = **cached_hops_ref;
                     if best_mac != cached_mac {
-                        let fewer_hops = best_hops + 1 <= cached_hops; // switch only if at least one fewer hop
+                        let fewer_hops = best_hops < cached_hops; // switch only if at least one fewer hop
                         if !fewer_hops {
                             return Some(Route {
                                 hops: cached_hops,
