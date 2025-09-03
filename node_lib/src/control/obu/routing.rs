@@ -475,12 +475,12 @@ impl Routing {
                     through = %new_route,
                     "route created on heartbeat",
                 );
-                    // Newly discovered route: attempt to select and cache this
-                    // upstream immediately so runtime components (OBU session)
-                    // can start using the cached upstream without waiting for
-                    // a HeartbeatReply cycle.
-                    let sel = self.select_and_cache_upstream(message.source());
-                    tracing::debug!(selection = ?sel.as_ref().map(|r| r.mac), "heartbeat: select_and_cache_upstream");
+                // Newly discovered route: attempt to select and cache this
+                // upstream immediately so runtime components (OBU session)
+                // can start using the cached upstream without waiting for
+                // a HeartbeatReply cycle.
+                let sel = self.select_and_cache_upstream(message.source());
+                tracing::debug!(selection = ?sel.as_ref().map(|r| r.mac), "heartbeat: select_and_cache_upstream");
             }
             (_, None) => (),
             (Some(old_route), Some(new_route)) => {
@@ -570,8 +570,7 @@ impl Routing {
         // structures. We'll perform downstream updates in a short mutable
         // scope below.
         let next_upstream_copy = {
-            let Some((_, next_upstream, _, _, _)) = source_entries.get(&message.id())
-            else {
+            let Some((_, next_upstream, _, _, _)) = source_entries.get(&message.id()) else {
                 bail!("no recollection of the next hop for this route");
             };
             *next_upstream
@@ -590,9 +589,9 @@ impl Routing {
         //  - "forward" : safe to forward toward next_upstream
         let pkt_from = pkt.from()?;
         let sender = message.sender();
-    let action = if next_upstream_copy == sender {
+        let action = if next_upstream_copy == sender {
             "bail"
-    } else if pkt_from == next_upstream_copy {
+        } else if pkt_from == next_upstream_copy {
             "skip_forward"
         } else {
             "forward"
@@ -666,8 +665,8 @@ impl Routing {
         // source now that we've recorded downstream observations. Do this
         // before the early-return below so replies that would be skipped for
         // forwarding still cause caching.
-    let selected = self.select_and_cache_upstream(message.source());
-    tracing::debug!(selection = ?selected.as_ref().map(|r| r.mac), "after heartbeat_reply: select_and_cache_upstream");
+        let selected = self.select_and_cache_upstream(message.source());
+        tracing::debug!(selection = ?selected.as_ref().map(|r| r.mac), "after heartbeat_reply: select_and_cache_upstream");
 
         // If the reply arrived from the node we'd forward to, don't forward
         // it back: that would produce an immediate bounce. Drop forwarding
@@ -742,7 +741,7 @@ impl Routing {
             }
         }
 
-    reply
+        reply
     }
 
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
@@ -764,18 +763,6 @@ impl Routing {
             .collect();
         upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
 
-        // NOTE: This function is intentionally pure for the `Some(mac)` case:
-        // it computes a best-route without mutating the cached upstream. Callers
-        // who want to select-and-cache must use `select_and_cache_upstream`.
-        if let Some((_, _, upstream_route, hops)) = upstream_routes.first() {
-            let upstream_route = **upstream_route;
-            return Some(Route {
-                hops: **hops,
-                mac: upstream_route,
-                latency: None,
-            });
-        }
-
         let route_options: IndexMap<_, _> = self
             .routes
             .iter()
@@ -786,87 +773,77 @@ impl Routing {
             })
             .collect();
 
-        let route_options = route_options
+        // Compute deterministic integer-based metrics for latency in microseconds across ALL hops.
+        // Prefer lower latency first; break ties by fewer hops.
+        let latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> = route_options
             .iter()
             .rev()
             .flat_map(|(seq, (_, _, _, m, _))| {
-                let seq = *seq;
-                m.iter().map(move |(mac, route)| (seq, mac, route))
+                let _seq = *seq;
+                m.iter().map(move |(_mac, route)| (_seq, _mac, route))
             })
             .filter(|(_, smac, _)| &&mac == smac)
             .flat_map(|(seq, mac, route)| route.iter().map(move |r| (seq, mac, r)))
             .fold(
-                IndexMap::default(),
-                |mut hm: IndexMap<u32, (usize, u32, Vec<_>, Vec<_>)>, (seq, _, route)| {
-                    hm.entry(route.hops)
-                        .and_modify(|(e, _, next, latency)| {
-                            next.push(route.mac);
-                            latency.push(route.latency.map(|x| x.as_micros()));
-                            *e += 1;
-                        })
-                        .or_insert((
-                            1,
-                            *seq,
-                            vec![route.mac],
-                            vec![route.latency.map(|x| x.as_micros())],
-                        ));
+                HashMap::default(),
+                |mut hm: HashMap<MacAddress, (u128, u128, u32, u32)>, (_seq, _mac, route)| {
+                    let hop_val = route.hops;
+                    if let Some(lat) = route.latency.map(|x| x.as_micros()) {
+                        let entry =
+                            hm.entry(route.mac)
+                                .or_insert((u128::MAX, 0u128, 0u32, hop_val));
+                        if entry.0 > lat as u128 {
+                            entry.0 = lat as u128; // min
+                        }
+                        entry.1 += lat as u128; // sum
+                        entry.2 += 1; // count
+                        entry.3 = hop_val; // keep latest hops (they should be consistent per mac)
+                    }
                     hm
                 },
             );
 
-        let (min_hops, _) = route_options.first()?;
-
-        // Compute deterministic integer-based metrics for latency in microseconds.
-        // For each candidate MAC, compute:
-        //  - min_latency_us: minimum observed latency in microseconds
-        //  - avg_latency_us: average observed latency in microseconds
-        // We then select the candidate with the smallest (min_latency_us + avg_latency_us) value
-        // (sum) as an integer tie-breaker. This avoids floating point rounding and is deterministic.
-        let route_options: IndexMap<_, _> = route_options
-            .iter()
-            .filter(|(h, _)| h == &min_hops)
-            .flat_map(|(hops, (_count, _min_seq, next, latency))| {
-                let hop_val = *hops as u32;
-                latency.iter().zip(next).fold(
-                    HashMap::default(),
-                    |mut hm: HashMap<MacAddress, (u128, u128, u32, u32)>, (val, mac)| {
-                        // val is Option<micros> (reference)
-                        if let Some(v) = *val {
-                            let micros = v as u128;
-                            let entry = hm.entry(*mac).or_insert((u128::MAX, 0u128, 0u32, hop_val));
-                            if entry.0 > micros {
-                                entry.0 = micros; // min
-                            }
-                            entry.1 += micros; // sum
-                            entry.2 += 1; // count
-                                          // hops is already stored in entry.3
-                        }
-                        hm
-                    },
-                )
-            })
-            .map(|(mac, (min_us, sum_us, n, hops_val))| {
-                let avg_us = if n > 0 {
-                    sum_us / (n as u128)
+        if !latency_candidates.is_empty() {
+            // Select by (score = min + avg), then by hops
+            let mut scored: Vec<_> = latency_candidates
+                .into_iter()
+                .map(|(mac, (min_us, sum_us, n, hops_val))| {
+                    let avg_us = if n > 0 {
+                        sum_us / (n as u128)
+                    } else {
+                        u128::MAX
+                    };
+                    let score = if min_us == u128::MAX || avg_us == u128::MAX {
+                        u128::MAX
+                    } else {
+                        min_us + avg_us
+                    };
+                    (score, hops_val, mac, avg_us)
+                })
+                .collect();
+            scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+            let (_score, hops, mac_sel, avg_us) = scored[0].clone();
+            return Some(Route {
+                hops,
+                mac: mac_sel,
+                latency: if avg_us == u128::MAX {
+                    None
                 } else {
-                    u128::MAX
-                };
-                let score = if min_us == u128::MAX || avg_us == u128::MAX {
-                    u128::MAX
-                } else {
-                    min_us + avg_us
-                };
-                (score as usize, (mac, hops_val, avg_us))
-            })
-            .collect();
+                    Some(Duration::from_micros(avg_us as u64))
+                },
+            });
+        }
 
-        route_options
-            .first()
-            .map(|(_, (mac, hops, latency_us))| Route {
-                hops: *hops,
-                mac: *mac,
-                latency: Some(Duration::from_micros((*latency_us) as u64)),
-            })
+        // Fallback: no latency observed yet, prefer fewer hops (original behavior)
+        if let Some((_, _, upstream_route, hops)) = upstream_routes.first() {
+            let upstream_route = **upstream_route;
+            return Some(Route {
+                hops: **hops,
+                mac: upstream_route,
+                latency: None,
+            });
+        }
+        None
     }
 
     /// Compute the best route to `mac` and store it in the cached upstream.
@@ -875,8 +852,8 @@ impl Routing {
     /// logic (above) from the side-effect of caching.
     pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
         let route = self.get_route_to(Some(mac))?;
-    tracing::info!(upstream = %route.mac, source = %mac, "select_and_cache_upstream selected upstream for source");
-    self.cached_upstream.store(Some(route.mac.into()));
+        tracing::info!(upstream = %route.mac, source = %mac, "select_and_cache_upstream selected upstream for source");
+        self.cached_upstream.store(Some(route.mac.into()));
         #[cfg(feature = "stats")]
         crate::metrics::inc_cache_select();
         Some(route)

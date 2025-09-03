@@ -1,14 +1,14 @@
-use common::tun::test_tun::TokioTun;
-use common::tun::Tun;
 use common::device::Device;
 use common::device::DeviceIo;
+use common::tun::test_tun::TokioTun;
+use common::tun::Tun;
 use node_lib::args::{Args, NodeParameters, NodeType};
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
 use std::os::unix::io::FromRawFd;
 use std::sync::Arc;
-use tokio::io::unix::AsyncFd;
 use std::time::Duration;
+use tokio::io::unix::AsyncFd;
 
 /// Integration test: create an RSU and an OBU connected by a bidirectional
 /// socketpair and check that the OBU learns the RSU as its upstream.
@@ -42,11 +42,31 @@ async fn rsu_and_obu_topology_discovery() {
     let dev_b = Device::from_asyncfd_for_bench(mac_b, async_b);
 
     // Build Args for Rsu and Obu with hello periodicity so they exchange heartbeats
-    let node_params_rsu = NodeParameters { node_type: NodeType::Rsu, hello_history: 10, hello_periodicity: Some(100) };
-    let node_params_obu = NodeParameters { node_type: NodeType::Obu, hello_history: 10, hello_periodicity: None };
+    let node_params_rsu = NodeParameters {
+        node_type: NodeType::Rsu,
+        hello_history: 10,
+        hello_periodicity: Some(100),
+    };
+    let node_params_obu = NodeParameters {
+        node_type: NodeType::Obu,
+        hello_history: 10,
+        hello_periodicity: None,
+    };
 
-    let args_rsu = Args { bind: String::from("unused"), tap_name: None, ip: None, mtu: 1500, node_params: node_params_rsu };
-    let args_obu = Args { bind: String::from("unused"), tap_name: None, ip: None, mtu: 1500, node_params: node_params_obu };
+    let args_rsu = Args {
+        bind: String::from("unused"),
+        tap_name: None,
+        ip: None,
+        mtu: 1500,
+        node_params: node_params_rsu,
+    };
+    let args_obu = Args {
+        bind: String::from("unused"),
+        tap_name: None,
+        ip: None,
+        mtu: 1500,
+        node_params: node_params_obu,
+    };
 
     // Construct nodes (they spawn background tasks)
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_a), Arc::new(dev_a)).expect("rsu new");
@@ -57,8 +77,8 @@ async fn rsu_and_obu_topology_discovery() {
     let mut cached = None;
     for i in 0..50 {
         tokio::time::sleep(Duration::from_millis(100)).await;
-    cached = obu.cached_upstream_mac();
-    tracing::debug!(poll = i, cached_upstream = ?cached, "test poll progress");
+        cached = obu.cached_upstream_mac();
+        tracing::debug!(poll = i, cached_upstream = ?cached, "test poll progress");
         if cached.is_some() {
             break;
         }

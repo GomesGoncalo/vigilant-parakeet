@@ -238,7 +238,7 @@ mod tests {
     async fn tun_send_and_recv_roundtrip() {
         // create the in-test TokioTun pair (a <-> b)
         let (a, b) = TokioTun::new_pair();
-    let tun_a = Tun::new_shim(a);
+        let tun_a = Tun::new_shim(a);
 
         // spawn a task that receives from the peer side
         let handle = task::spawn(async move {
@@ -259,7 +259,7 @@ mod tests {
     #[tokio::test]
     async fn tun_send_vectored_and_name() {
         let (a, b) = TokioTun::new_pair();
-    let tun_a = Tun::new_shim(a);
+        let tun_a = Tun::new_shim(a);
 
         // prepare vectored buffers
         let part1 = b"hello ";
@@ -289,7 +289,7 @@ mod tests {
     #[tokio::test]
     async fn tun_recv_reads_data() {
         let (a, b) = TokioTun::new_pair();
-    let tun_a = Tun::new_shim(a);
+        let tun_a = Tun::new_shim(a);
 
         // spawn a task that sends data from the peer side
         let sender = task::spawn(async move {
@@ -310,7 +310,7 @@ mod tests {
         use std::io::IoSlice;
 
         let (a, b) = TokioTun::new_pair();
-    let tun_a = Tun::new_shim(a);
+        let tun_a = Tun::new_shim(a);
 
         let before = tun_a.stats();
         assert_eq!(before.transmitted_packets, 0);
