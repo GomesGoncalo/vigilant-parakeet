@@ -160,7 +160,17 @@ impl Tun {
     pub async fn send_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         let size = match &self.inner {
             #[cfg(not(target_family = "wasm"))]
-            TunInner::Real(t) => t.send_vectored(bufs).await?,
+            TunInner::Real(t) => {
+                // Fallback: tokio_tun::Tun may not support vectored sends on all versions.
+                // Flatten the IoSlices and use send_all.
+                let total: usize = bufs.iter().map(|s| s.len()).sum();
+                let mut v = Vec::with_capacity(total);
+                for s in bufs {
+                    v.extend_from_slice(s);
+                }
+                t.send_all(&v).await?;
+                total
+            }
             TunInner::Shim(s) => s.send_vectored(bufs).await?,
         };
         #[cfg(feature = "stats")]
