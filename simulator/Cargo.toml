@@ -7,7 +7,6 @@ edition = "2021"
 tokio-tun = "*"
 tokio = {version = "*", features = ["full"]}
 anyhow = "*"
-uninit = "*"
 tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter", "std"] }
 clap = { version = "*", features = ["derive"] }

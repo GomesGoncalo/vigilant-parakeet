@@ -25,17 +25,19 @@ impl Session {
 
     pub async fn process<Fut>(
         &self,
-        callable: impl FnOnce([u8; 1500], usize) -> Fut,
+        callable: impl FnOnce(Arc<[u8]>, usize) -> Fut,
     ) -> Result<Option<Vec<ReplyType>>>
     where
         Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,
     {
         match self {
             Self::NoSession(tun) => {
-                // allocate a zeroed buffer and read into it safely
-                let mut buf: [u8; 1500] = [0u8; 1500];
-                let n = tun.recv(&mut buf).await?;
-                callable(buf, n).await
+                // allocate a buffer, read into it, and pass as Arc for zero-copy
+                let mut v = vec![0u8; 1500];
+                let n = tun.recv(&mut v).await?;
+                v.truncate(n);
+                let arc: Arc<[u8]> = v.into_boxed_slice().into();
+                callable(arc, n).await
             }
             Self::ValidSession(_session) => {
                 // session handling not implemented yet

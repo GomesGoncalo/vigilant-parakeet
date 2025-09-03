@@ -1,6 +1,7 @@
 pub mod routing;
 
 use super::{client_cache::ClientCache, node::ReplyType};
+use crate::control::node::BufPart;
 use crate::{
     control::node,
     messages::{
@@ -52,15 +53,20 @@ impl Rsu {
         let device = rsu.device.clone();
         let tun = rsu.tun.clone();
 
-        tokio::task::spawn(async move {
+    tokio::task::spawn(async move {
             loop {
                 let rsu = rsu.clone();
                 let messages = node::wire_traffic(&device, |pkt, size| {
                     async move {
-                        match Message::try_from(&pkt[..size]) {
+            // pkt is Arc<[u8]> with length `size` already
+            match Message::try_from(&pkt[..]) {
                             Ok(msg) => {
                                 tracing::trace!(parsed = ?msg, "rsu wire_traffic parsed message");
-                                let response = rsu.handle_msg(&msg).await;
+                                // Prefer zero-copy reply assembly using the received backing
+                                let response = match rsu.handle_msg_with_backing(&msg, &pkt).await {
+                                    Ok(v) => Ok(v),
+                                    Err(_) => rsu.handle_msg(&msg).await,
+                                };
                                 let has_response = response.as_ref().map(|r| r.is_some()).unwrap_or(false);
                                 tracing::trace!(has_response = has_response, incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
                                 response
@@ -173,6 +179,110 @@ impl Rsu {
         }
     }
 
+    /// Zero-copy reply assembly for messages received from wire using `backing` Arc.
+    async fn handle_msg_with_backing(
+        &self,
+        msg: &Message<'_>,
+        backing: &Arc<[u8]>,
+    ) -> Result<Option<Vec<ReplyType>>> {
+        match msg.get_packet_type() {
+            PacketType::Data(Data::Upstream(buf)) => {
+                let data_slice = buf.data().as_ref();
+                let to: [u8; 6] = data_slice
+                    .get(0..6)
+                    .ok_or_else(|| anyhow!("error"))?
+                    .try_into()?;
+                let to: MacAddress = to.into();
+                let from: [u8; 6] = data_slice
+                    .get(6..12)
+                    .ok_or_else(|| anyhow!("error"))?
+                    .try_into()?;
+                let from: MacAddress = from.into();
+                let source_slice = buf.source().as_ref();
+
+                let source_arr: [u8; 6] = source_slice
+                    .get(0..6)
+                    .ok_or_else(|| anyhow!("error"))?
+                    .try_into()?;
+                let source_mac: MacAddress = source_arr.into();
+                self.cache.store_mac(from, source_mac);
+                let bcast_or_mcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
+                let mut target = self.cache.get(to);
+
+                // Helper to compute an ArcSlice BufPart from a sub-slice of `backing`.
+                let arc_part = |sub: &[u8]| -> BufPart {
+                    let base = backing.as_ptr() as usize;
+                    let ptr = sub.as_ptr() as usize;
+                    let len = sub.len();
+                    if ptr >= base && ptr + len <= base + backing.len() {
+                        BufPart::ArcSlice {
+                            data: backing.clone(),
+                            offset: ptr - base,
+                            len,
+                        }
+                    } else {
+                        BufPart::Owned(sub.to_vec())
+                    }
+                };
+
+                let mut messages: Vec<ReplyType> = Vec::new();
+                if bcast_or_mcast || target.is_some_and(|x| x == self.device.mac_address()) {
+                    messages.push(ReplyType::TapParts(vec![arc_part(data_slice)]));
+                    target = None;
+                }
+
+                let routing = self.routing.read().unwrap();
+        messages.extend(if bcast_or_mcast {
+                    routing
+                        .iter_next_hops()
+            .filter(|x| x != &&source_mac)
+                        .filter_map(|x| {
+                            let route = routing.get_route_to(Some(*x))?;
+                            Some((*x, route.mac))
+                        })
+                        .map(|(target_mac, next_hop)| {
+                            // Build downstream frame parts
+                            let mut parts: Vec<BufPart> = Vec::with_capacity(8);
+                            parts.push(BufPart::Owned(next_hop.bytes().to_vec()));
+                            parts.push(BufPart::Owned(self.device.mac_address().bytes().to_vec()));
+                            parts.push(BufPart::Owned(vec![0x30, 0x30]));
+                            parts.push(BufPart::Owned(vec![1u8])); // PacketType::Data
+                            parts.push(BufPart::Owned(vec![1u8])); // Data::Downstream
+                            parts.push(arc_part(source_slice)); // origin
+                            parts.push(BufPart::Owned(target_mac.bytes().to_vec())); // destination
+                            parts.push(arc_part(data_slice)); // payload from upstream
+                            ReplyType::WireParts(parts)
+                        })
+                        .collect_vec()
+                } else if let Some(target_mac) = target {
+                    let Some(next_hop) = routing.get_route_to(Some(target_mac)) else {
+                        return Ok(None);
+                    };
+                    vec![{
+                        let mut parts: Vec<BufPart> = Vec::with_capacity(8);
+                        parts.push(BufPart::Owned(next_hop.mac.bytes().to_vec()));
+                        parts.push(BufPart::Owned(self.device.mac_address().bytes().to_vec()));
+                        parts.push(BufPart::Owned(vec![0x30, 0x30]));
+                        parts.push(BufPart::Owned(vec![1u8]));
+                        parts.push(BufPart::Owned(vec![1u8]));
+                        parts.push(arc_part(source_slice));
+                        parts.push(BufPart::Owned(target_mac.bytes().to_vec()));
+                        parts.push(arc_part(data_slice));
+                        ReplyType::WireParts(parts)
+                    }]
+                } else {
+                    vec![]
+                });
+
+                Ok(Some(messages))
+            }
+            PacketType::Control(_) | PacketType::Data(Data::Downstream(_)) => {
+                // For other types, fall back to existing logic (small messages)
+                self.handle_msg(msg).await
+            }
+        }
+    }
+
     fn hello_task(&self) -> Result<()> {
         let Some(periodicity) = self.args.node_params.hello_periodicity else {
             bail!("cannot generate heartbeat");
@@ -215,8 +325,9 @@ impl Rsu {
                 let devicec = device.clone();
                 let cache = cache.clone();
                 let routing = routing.clone();
-                let messages = node::tap_traffic(&tun, |pkt, size| async move {
-                    let data: &[u8] = &pkt[..size];
+                let messages = node::tap_traffic(&tun, |pkt, _size| async move {
+                    let data_arc = pkt; // contains exactly the TAP frame bytes
+                    let data: &[u8] = &data_arc[..];
                     let to: [u8; 6] = data[0..6].try_into()?;
                     let to: MacAddress = to.into();
                     let target = cache.get(to);
@@ -230,18 +341,18 @@ impl Rsu {
                             bail!("no route");
                         };
 
-                        vec![ReplyType::Wire(
-                            (&Message::new(
-                                devicec.mac_address(),
-                                hop.mac,
-                                PacketType::Data(Data::Downstream(ToDownstream::new(
-                                    &source_mac,
-                                    target,
-                                    data,
-                                ))),
-                            ))
-                                .into(),
-                        )]
+                        // Build zero-copy parts for the downstream frame: headers owned, payload Arc-slice
+                        let mut parts = Vec::with_capacity(6);
+                        parts.push(BufPart::Owned(hop.mac.bytes().to_vec())); // L2 dest = next hop
+                        parts.push(BufPart::Owned(devicec.mac_address().bytes().to_vec())); // L2 src
+                        parts.push(BufPart::Owned(vec![0x30, 0x30])); // ethertype-like marker
+                        parts.push(BufPart::Owned(vec![1u8])); // PacketType::Data
+                        parts.push(BufPart::Owned(vec![1u8])); // Data::Downstream
+                        parts.push(BufPart::Owned(source_mac.to_vec())); // origin (6)
+                        parts.push(BufPart::Owned(target.bytes().to_vec())); // destination (6)
+                        // payload: all remaining bytes of the original TAP frame starting at 12
+                        parts.push(BufPart::ArcSlice { data: data_arc.clone(), offset: 0, len: data_arc.len() });
+                        vec![ReplyType::WireParts(parts)]
                     } else {
                         routing
                             .iter_next_hops()
@@ -253,16 +364,16 @@ impl Rsu {
                             .map(|(x, y)| (x, y.mac))
                             .unique_by(|(x, _)| *x)
                             .map(|(x, next_hop)| {
-                                let msg = Message::new(
-                                    devicec.mac_address(),
-                                    next_hop,
-                                    PacketType::Data(Data::Downstream(ToDownstream::new(
-                                        &source_mac,
-                                        *x,
-                                        data,
-                                    ))),
-                                );
-                                ReplyType::Wire((&msg).into())
+                                let mut parts = Vec::with_capacity(6);
+                                parts.push(BufPart::Owned(next_hop.bytes().to_vec()));
+                                parts.push(BufPart::Owned(devicec.mac_address().bytes().to_vec()));
+                                parts.push(BufPart::Owned(vec![0x30, 0x30]));
+                                parts.push(BufPart::Owned(vec![1u8])); // PacketType::Data
+                                parts.push(BufPart::Owned(vec![1u8])); // Data::Downstream
+                                parts.push(BufPart::Owned(source_mac.to_vec()));
+                                parts.push(BufPart::Owned((*x).bytes().to_vec()));
+                                parts.push(BufPart::ArcSlice { data: data_arc.clone(), offset: 0, len: data_arc.len() });
+                                ReplyType::WireParts(parts)
                             })
                             .collect_vec()
                     };
@@ -398,6 +509,10 @@ mod rsu_tests {
     };
     use crate::Args;
     use mac_address::MacAddress;
+    use std::os::unix::io::FromRawFd;
+    use std::sync::Arc;
+    use tokio::io::unix::AsyncFd;
+    use tokio::time::{sleep, Duration};
 
     #[test]
     fn upstream_broadcast_generates_tap() {
@@ -601,5 +716,341 @@ mod rsu_tests {
         } else {
             panic!("expected Wire reply");
         }
+    }
+
+    // --- New tests to cover RSU handle_msg_with_backing zero-copy paths ---
+    #[tokio::test]
+    async fn handle_msg_with_backing_broadcast_tap_parts() {
+        use common::device::{Device, DeviceIo};
+        use common::tun::{test_tun::TokioTun, Tun};
+
+        let args = Args {
+            bind: String::new(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters { node_type: NodeType::Rsu, hello_history: 2, hello_periodicity: Some(100) },
+        };
+        let routing = Arc::new(std::sync::RwLock::new(super::routing::Routing::new(&args).expect("routing")));
+        let cache = Arc::new(crate::control::client_cache::ClientCache::default());
+
+        let (a, _b) = TokioTun::new_pair();
+        let tun = Arc::new(Tun::new_shim(a));
+
+        // device backed by pipe
+        let mut fds = [0; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let writer_fd = fds[1];
+        // make writer non-blocking
+        unsafe {
+            let flags = libc::fcntl(writer_fd, libc::F_GETFL);
+            if flags >= 0 { let _ = libc::fcntl(writer_fd, libc::F_SETFL, flags | libc::O_NONBLOCK); }
+        }
+        let dev_mac: MacAddress = [9u8; 6].into();
+        let device = Arc::new(Device::from_asyncfd_for_bench(
+            dev_mac,
+            AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap(),
+        ));
+
+        // Construct RSU directly
+        let rsu = super::Rsu { args, routing, tun, device, cache };
+
+        // Build an upstream broadcast frame: dest ff:ff.., include from and payload in data
+        let from: MacAddress = [1u8; 6].into();
+        let dest = [255u8; 6];
+        let mut inner = Vec::new();
+        inner.extend_from_slice(&dest);
+        inner.extend_from_slice(&from.bytes());
+        inner.extend_from_slice(b"hello");
+        let tu = crate::messages::data::ToUpstream::new(from, &inner);
+        let msg_struct = crate::messages::message::Message::new(
+            from,
+            dest.into(),
+            PacketType::Data(Data::Upstream(tu)),
+        );
+        let wire: Vec<Vec<u8>> = (&msg_struct).into();
+        let raw: Vec<u8> = wire.iter().flat_map(|v| v.iter()).copied().collect();
+        let arc: Arc<[u8]> = raw.into_boxed_slice().into();
+        let parsed = crate::messages::message::Message::try_from(&arc[..]).expect("parse");
+
+        let out = rsu
+            .handle_msg_with_backing(&parsed, &arc)
+            .await
+            .expect("ok")
+            .expect("some");
+        assert!(!out.is_empty());
+        // First entry should be TapParts containing ArcSlice
+        let has_tap_parts = out.iter().any(|r| match r {
+            super::ReplyType::TapParts(parts) => parts.iter().any(|p| matches!(p, super::BufPart::ArcSlice { .. })),
+            _ => false,
+        });
+        assert!(has_tap_parts);
+
+        // close read end
+        unsafe { libc::close(fds[0]) };
+    }
+
+    #[tokio::test]
+    async fn handle_msg_with_backing_unicast_to_self_tap_parts() {
+        use common::device::{Device, DeviceIo};
+        use common::tun::{test_tun::TokioTun, Tun};
+
+        let args = Args {
+            bind: String::new(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters { node_type: NodeType::Rsu, hello_history: 2, hello_periodicity: Some(100) },
+        };
+        let routing = Arc::new(std::sync::RwLock::new(super::routing::Routing::new(&args).expect("routing")));
+        let cache = Arc::new(crate::control::client_cache::ClientCache::default());
+
+        let (a, _b) = TokioTun::new_pair();
+        let tun = Arc::new(Tun::new_shim(a));
+
+        let mut fds = [0; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let writer_fd = fds[1];
+        unsafe {
+            let flags = libc::fcntl(writer_fd, libc::F_GETFL);
+            if flags >= 0 { let _ = libc::fcntl(writer_fd, libc::F_SETFL, flags | libc::O_NONBLOCK); }
+        }
+        let dev_mac: MacAddress = [10u8; 6].into();
+        let device = Arc::new(Device::from_asyncfd_for_bench(
+            dev_mac,
+            AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap(),
+        ));
+
+        // Map a client MAC to RSU itself so unicast to that client yields TapParts
+        let client: MacAddress = [42u8; 6].into();
+        cache.store_mac(client, dev_mac);
+
+        let rsu = super::Rsu { args, routing, tun, device, cache };
+
+        // create an upstream unicast to client
+        let from: MacAddress = [1u8; 6].into();
+        let mut inner = Vec::new();
+        inner.extend_from_slice(&client.bytes());
+        inner.extend_from_slice(&from.bytes());
+        inner.extend_from_slice(b"payload");
+        let tu = crate::messages::data::ToUpstream::new(from, &inner);
+        let msg_struct = crate::messages::message::Message::new(
+            from,
+            client,
+            PacketType::Data(Data::Upstream(tu)),
+        );
+        let wire: Vec<Vec<u8>> = (&msg_struct).into();
+        let raw: Vec<u8> = wire.iter().flat_map(|v| v.iter()).copied().collect();
+        let arc: Arc<[u8]> = raw.into_boxed_slice().into();
+        let parsed = crate::messages::message::Message::try_from(&arc[..]).expect("parse");
+
+        let out = rsu
+            .handle_msg_with_backing(&parsed, &arc)
+            .await
+            .expect("ok")
+            .expect("some");
+        assert!(!out.is_empty());
+        assert!(matches!(&out[0], super::ReplyType::TapParts(_)));
+        // ensure payload part is ArcSlice
+        match &out[0] {
+            super::ReplyType::TapParts(parts) => {
+                assert!(parts.iter().any(|p| matches!(p, super::BufPart::ArcSlice { .. })));
+            }
+            _ => unreachable!(),
+        }
+
+        unsafe { libc::close(fds[0]) };
+    }
+
+    #[tokio::test]
+    async fn handle_msg_with_backing_unicast_forwards_wire_parts() {
+        use common::device::{Device, DeviceIo};
+        use common::tun::{test_tun::TokioTun, Tun};
+
+        let args = Args {
+            bind: String::new(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters { node_type: NodeType::Rsu, hello_history: 2, hello_periodicity: Some(100) },
+        };
+        let routing = Arc::new(std::sync::RwLock::new(super::routing::Routing::new(&args).expect("routing")));
+        let cache = Arc::new(crate::control::client_cache::ClientCache::default());
+
+        let (a, _b) = TokioTun::new_pair();
+        let tun = Arc::new(Tun::new_shim(a));
+
+        let mut fds = [0; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let writer_fd = fds[1];
+        unsafe {
+            let flags = libc::fcntl(writer_fd, libc::F_GETFL);
+            if flags >= 0 { let _ = libc::fcntl(writer_fd, libc::F_SETFL, flags | libc::O_NONBLOCK); }
+        }
+        let dev_mac: MacAddress = [11u8; 6].into();
+        let device = Arc::new(Device::from_asyncfd_for_bench(
+            dev_mac,
+            AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap(),
+        ));
+
+        // Seed routing with a next-hop for target_node
+        let target_node: MacAddress = [77u8; 6].into();
+        let next_hop: MacAddress = [88u8; 6].into();
+        {
+            let mut w = routing.write().unwrap();
+            let _ = w.send_heartbeat(dev_mac); // id 0
+        }
+        {
+            let hb0 = crate::messages::control::heartbeat::Heartbeat::new(
+                std::time::Duration::from_millis(0),
+                0u32,
+                dev_mac,
+            );
+            let hbr = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb0, target_node);
+            let reply = crate::messages::message::Message::new(
+                next_hop,
+                [255u8; 6].into(),
+                crate::messages::packet_type::PacketType::Control(
+                    crate::messages::control::Control::HeartbeatReply(hbr),
+                ),
+            );
+            let mut w = routing.write().unwrap();
+            let _ = w.handle_heartbeat_reply(&reply, dev_mac).expect("hb reply ok");
+        }
+
+        // Map client to target_node so cache.get(to) returns Some(target_node)
+        let client: MacAddress = [42u8; 6].into();
+        cache.store_mac(client, target_node);
+
+        let rsu = super::Rsu { args, routing, tun, device, cache };
+
+        // Build upstream unicast frame to client
+        let from: MacAddress = [1u8; 6].into();
+        let mut inner = Vec::new();
+        inner.extend_from_slice(&client.bytes());
+        inner.extend_from_slice(&from.bytes());
+        inner.extend_from_slice(b"xyz");
+        let tu = crate::messages::data::ToUpstream::new(from, &inner);
+        let msg_struct = crate::messages::message::Message::new(from, client, PacketType::Data(Data::Upstream(tu)));
+        let wire: Vec<Vec<u8>> = (&msg_struct).into();
+        let raw: Vec<u8> = wire.iter().flat_map(|v| v.iter()).copied().collect();
+        let arc: Arc<[u8]> = raw.into_boxed_slice().into();
+        let parsed = crate::messages::message::Message::try_from(&arc[..]).expect("parse");
+
+        let out = rsu
+            .handle_msg_with_backing(&parsed, &arc)
+            .await
+            .expect("ok")
+            .expect("some");
+        // Expect one or more WireParts replies
+        assert!(out.iter().any(|r| matches!(r, super::ReplyType::WireParts(_))));
+        // And at least two ArcSlices (origin and payload)
+        let arc_slice_count: usize = out
+            .iter()
+            .filter_map(|r| match r { super::ReplyType::WireParts(parts) => Some(parts), _ => None })
+            .flat_map(|parts| parts.iter())
+            .filter(|p| matches!(p, super::BufPart::ArcSlice { .. }))
+            .count();
+        assert!(arc_slice_count >= 2);
+    }
+
+    #[tokio::test]
+    async fn process_tap_traffic_unicast_produces_wireparts_and_writes_device() {
+        use common::device::{Device, DeviceIo};
+        use common::tun::{test_tun::TokioTun, Tun};
+
+        // Build RSU components
+        let args = Args {
+            bind: String::new(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: crate::args::NodeParameters { node_type: crate::args::NodeType::Rsu, hello_history: 2, hello_periodicity: Some(50) },
+        };
+
+        let routing = Arc::new(std::sync::RwLock::new(super::routing::Routing::new(&args).expect("routing")));
+        let cache = Arc::new(crate::control::client_cache::ClientCache::default());
+        let (a, b) = TokioTun::new_pair();
+        let tun = Arc::new(Tun::new_shim(a));
+
+        // device writes to writer; we'll read from reader
+        let mut fds = [0; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let reader_fd = fds[0];
+        let writer_fd = fds[1];
+        // non-blocking writer for AsyncFd; reader too for polling
+        unsafe {
+            let flags_w = libc::fcntl(writer_fd, libc::F_GETFL);
+            if flags_w >= 0 { let _ = libc::fcntl(writer_fd, libc::F_SETFL, flags_w | libc::O_NONBLOCK); }
+            let flags_r = libc::fcntl(reader_fd, libc::F_GETFL);
+            if flags_r >= 0 { let _ = libc::fcntl(reader_fd, libc::F_SETFL, flags_r | libc::O_NONBLOCK); }
+        }
+
+        let dev_mac: MacAddress = [9u8; 6].into();
+        let device = Arc::new(Device::from_asyncfd_for_bench(
+            dev_mac,
+            AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap(),
+        ));
+
+        let rsu = super::Rsu { args, routing: routing.clone(), tun: tun.clone(), device: device.clone(), cache: cache.clone() };
+        // Spawn the processing task
+        rsu.process_tap_traffic().expect("spawned");
+
+        // Seed routing and cache so unicast forwarding is possible
+        let target_node: MacAddress = [77u8; 6].into();
+        let next_hop: MacAddress = [88u8; 6].into();
+        // Send heartbeat from RSU to create sent-entry id 0
+        {
+            let mut w = routing.write().unwrap();
+            let _ = w.send_heartbeat(dev_mac);
+        }
+        // Register HeartbeatReply to map sender=target_node via next_hop
+        {
+            let hb0 = crate::messages::control::heartbeat::Heartbeat::new(Duration::from_millis(0), 0u32, dev_mac);
+            let hbr = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb0, target_node);
+            let reply = crate::messages::message::Message::new(
+                next_hop,
+                [255u8; 6].into(),
+                crate::messages::packet_type::PacketType::Control(
+                    crate::messages::control::Control::HeartbeatReply(hbr),
+                ),
+            );
+            let mut w = routing.write().unwrap();
+            let _ = w.handle_heartbeat_reply(&reply, dev_mac).expect("hb reply ok");
+        }
+
+        // Map a client dest to target_node
+        let dest_client: MacAddress = [10u8; 6].into();
+        cache.store_mac(dest_client, target_node);
+
+        // Build a TAP frame: dest(6) + src(6) + payload
+        let src_client = [1u8; 6];
+        let payload = b"payload";
+        let mut tap_frame = Vec::new();
+        tap_frame.extend_from_slice(&dest_client.bytes());
+        tap_frame.extend_from_slice(&src_client);
+        tap_frame.extend_from_slice(payload);
+
+        // Send into the RSU via peer side of the tun pair
+        b.send_all(&tap_frame).await.expect("peer send");
+
+        // Poll the reader fd for bytes written by device
+        let mut out = vec![0u8; 2048];
+        let mut total = 0;
+        for _ in 0..50 { // up to ~50 * 2ms = 100ms
+            let n = unsafe { libc::read(reader_fd, out.as_mut_ptr().cast(), out.len()) };
+            if n > 0 {
+                total = n as usize;
+                break;
+            }
+            sleep(Duration::from_millis(2)).await;
+        }
+        assert!(total > 0, "no bytes forwarded to device");
+
+        // Try to parse as a Message
+        let msg = crate::messages::message::Message::try_from(&out[..total]).expect("parse forwarded msg");
+        // Should be a downstream data frame to our next_hop
+        assert_eq!(msg.to().unwrap(), next_hop);
+        match msg.get_packet_type() { crate::messages::packet_type::PacketType::Data(_) => {}, _ => panic!("expected data") }
     }
 }

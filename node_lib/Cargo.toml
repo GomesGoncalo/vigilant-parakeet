@@ -7,10 +7,7 @@ edition = "2021"
 tokio = {version = "*", features = ["full"]}
 tokio-tun = "*"
 anyhow = "*"
-socket2 = {version = "*", features = ["all"]}
-uninit = "*"
 libc = "*"
-nix = {version = "*", features = ["socket", "net", "ioctl"]}
 tracing = "*"
 clap = { version = "*", features = ["derive"] }
 futures = "*"
@@ -18,7 +15,6 @@ mac_address = "*"
 indexmap = "*"
 tokio-timerfd = "*"
 itertools = "*"
-serde = { version = "*", features = ["derive"]}
 common = { path = "../common/" }
 arc-swap = { version = "*" }
 tracing-subscriber = { version = "*", features = ["env-filter"] }

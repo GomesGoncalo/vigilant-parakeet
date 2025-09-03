@@ -173,48 +173,46 @@ impl Routing {
         // For each candidate MAC, compute min and average latency in microseconds and
         // use (min + avg) as a deterministic integer score for selection. This avoids
         // floating point rounding differences and is easier to test.
-        let route_options: IndexMap<_, _> = route_options
-            .iter()
-            .filter(|(h, _)| h == &min_hops)
-            .flat_map(|(hops, (_count, _min_seq, next, latency))| {
-                let hops_val = *hops;
-                latency.iter().zip(next).fold(
-                    HashMap::default(),
-                    |mut hm: HashMap<MacAddress, (u128, u128, u32, u32)>, (val, mac)| {
-                        // here val: &u128
-                        let micros = *val;
-                        let entry = hm.entry(*mac).or_insert((u128::MAX, 0u128, 0u32, hops_val));
-                        if entry.0 > micros {
-                            entry.0 = micros;
-                        }
-                        entry.1 += micros;
-                        entry.2 += 1;
-                        hm
-                    },
-                )
-            })
+        // Aggregate by MAC within the minimum hop-count bucket, then score and sort.
+        let mut by_mac: HashMap<MacAddress, (u128, u128, u32, u32)> = HashMap::default();
+        for (hops, (_count, _min_seq, next, latency)) in route_options.iter().filter(|(h, _)| h == &min_hops) {
+            let hops_val = *hops;
+            for (micros, mac) in latency.iter().zip(next) {
+                let entry = by_mac.entry(*mac).or_insert((u128::MAX, 0u128, 0u32, hops_val));
+                if entry.0 > *micros {
+                    entry.0 = *micros; // min
+                }
+                entry.1 += *micros; // sum
+                entry.2 += 1; // count
+                entry.3 = hops_val; // hops for this bucket
+            }
+        }
+
+        if by_mac.is_empty() {
+            return None;
+        }
+
+        let mut scored: Vec<(u128, u32, MacAddress, u128)> = by_mac
+            .into_iter()
             .map(|(mac, (min_us, sum_us, n, hops_val))| {
-                let avg_us = if n > 0 {
-                    sum_us / (n as u128)
-                } else {
-                    u128::MAX
-                };
+                let avg_us = if n > 0 { sum_us / (n as u128) } else { u128::MAX };
                 let score = if min_us == u128::MAX || avg_us == u128::MAX {
                     u128::MAX
                 } else {
                     min_us + avg_us
                 };
-                (score as usize, (mac, hops_val, avg_us))
+                (score, hops_val, mac, avg_us)
             })
             .collect();
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
-        route_options
-            .first()
-            .map(|(_, (mac, hops, latency))| Route {
-                hops: *hops,
-                mac: *mac,
-                latency: Some(Duration::from_micros(*latency as u64)),
-            })
+        let (score, hops, mac, avg_us) = scored[0];
+        let latency = if score == u128::MAX || avg_us == u128::MAX {
+            None
+        } else {
+            Some(Duration::from_micros(avg_us as u64))
+        };
+        Some(Route { hops, mac, latency })
     }
 
     pub fn iter_next_hops(&self) -> impl Iterator<Item = &MacAddress> {
@@ -350,5 +348,55 @@ mod more_tests {
 
         let unknown: MacAddress = [9u8; 6].into();
         assert!(routing.get_route_to(Some(unknown)).is_none());
+    }
+
+    #[test]
+    fn get_route_to_prefers_lower_latency_at_same_hops() {
+        use crate::messages::control::heartbeat::{Heartbeat, HeartbeatReply};
+        use crate::messages::{control::Control, message::Message, packet_type::PacketType};
+        use std::time::Duration;
+
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: crate::args::NodeParameters {
+                node_type: crate::args::NodeType::Rsu,
+                hello_history: 4,
+                hello_periodicity: None,
+            },
+        };
+        let mut routing = Routing::new(&args).expect("routing");
+
+        // Send a heartbeat with id 0
+        let src: MacAddress = [9u8; 6].into();
+        let _hb_msg = routing.send_heartbeat(src);
+        // Craft two replies from different senders at same hops but different latency
+        let hb = Heartbeat::new(Duration::from_millis(0), 0u32, src);
+        let (fast_sender, slow_sender): (MacAddress, MacAddress) = ([1u8;6].into(), [2u8;6].into());
+
+        // First: fast path (handle immediately to get lower measured latency)
+        let hbr_fast = HeartbeatReply::from_sender(&hb, src);
+        let fast_msg = Message::new(
+            fast_sender,
+            [255u8; 6].into(),
+            PacketType::Control(Control::HeartbeatReply(hbr_fast.clone())),
+        );
+        let _ = routing.handle_heartbeat_reply(&fast_msg, [99u8; 6].into()).expect("ok");
+
+        // Second: slow path (sleep a tiny bit to ensure larger measured latency)
+        let hbr_slow = HeartbeatReply::from_sender(&hb, src);
+        let slow_msg = Message::new(
+            slow_sender,
+            [255u8; 6].into(),
+            PacketType::Control(Control::HeartbeatReply(hbr_slow.clone())),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let _ = routing.handle_heartbeat_reply(&slow_msg, [99u8; 6].into()).expect("ok");
+
+        let route = routing.get_route_to(Some(src)).expect("route");
+        // With same hops, lower latency should be preferred deterministically
+        assert_eq!(route.mac, fast_sender);
     }
 }

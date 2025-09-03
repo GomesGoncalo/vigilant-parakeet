@@ -25,7 +25,6 @@ stats = []
 
 [dev-dependencies]
 criterion = "0.5"
-node_lib = { path = "../node_lib" }
 
 [[bench]]
 name = "device_send_recv"

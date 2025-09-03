@@ -6,13 +6,11 @@ edition = "2021"
 [dependencies]
 gloo-net = "*"
 gloo-timers = { version = "*", features = ["futures"]}
-gloo-events = "*"
 serde = { version = "*", features = ["derive"] }
 wasm-bindgen-futures = "*"
 tracing = { version = "*", default-features = false }
 tracing-subscriber = { version = "*", features = ["time"] }
 tracing-web = { version = "*" }
-time = { version = "*", features = ["wasm-bindgen"] }
 common = { path = "../common/", features = ["stats"] }
 yew = { version = "*", features = [ "csr" ]}
 yew-plotly = "*"

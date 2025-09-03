@@ -88,3 +88,26 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[cfg(not(feature = "stats"))]
+mod tests_without_stats {
+    use super::*;
+
+    #[test]
+    fn counters_are_zero_and_inc_is_noop() {
+        // In non-stats mode, getters should always return 0 and inc_* should be no-ops.
+        assert_eq!(loop_detected_count(), 0);
+        assert_eq!(cache_select_count(), 0);
+        assert_eq!(cache_clear_count(), 0);
+
+        // Call incrementors; values should remain 0.
+        inc_loop_detected();
+        inc_cache_select();
+        inc_cache_clear();
+
+        assert_eq!(loop_detected_count(), 0);
+        assert_eq!(cache_select_count(), 0);
+        assert_eq!(cache_clear_count(), 0);
+    }
+}

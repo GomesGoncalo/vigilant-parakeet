@@ -346,6 +346,54 @@ mod more_tests {
     }
 
     #[test]
+    fn fallback_prefers_fewer_hops_when_no_latency() {
+        use crate::messages::control::heartbeat::Heartbeat;
+        use crate::messages::{control::Control, message::Message, packet_type::PacketType};
+
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters { node_type: NodeType::Obu, hello_history: 4, hello_periodicity: None },
+        };
+        let boot = std::time::Instant::now();
+        let mut routing = Routing::new(&args, &boot).expect("routing");
+
+        // Build two heartbeats from same RSU observed via different next_hops, with explicit hop counts.
+        let rsu: MacAddress = [9u8; 6].into();
+        let hop1: MacAddress = [1u8; 6].into();
+        let hop2: MacAddress = [2u8; 6].into();
+        let our: MacAddress = [7u8; 6].into();
+
+        // Helper to construct a Heartbeat with a specific hop count by crafting its payload.
+        fn heartbeat_with_hops(id: u32, source: MacAddress, hops: u32) -> Heartbeat<'static> {
+            let mut vec = Vec::new();
+            vec.extend_from_slice(&0u128.to_be_bytes()); // duration
+            vec.extend_from_slice(&id.to_be_bytes()); // id
+            vec.extend_from_slice(&hops.to_be_bytes()); // hops
+            vec.extend_from_slice(&source.bytes()); // source
+            let boxed: Box<[u8]> = vec.into_boxed_slice();
+            let static_slice: &'static [u8] = Box::leak(boxed);
+            Heartbeat::try_from(static_slice).expect("hb parse")
+        }
+
+        let hb1 = heartbeat_with_hops(100u32, rsu, 1);
+        let m1 = Message::new(hop1, [255u8; 6].into(), PacketType::Control(Control::Heartbeat(hb1)));
+        let _ = routing.handle_heartbeat(&m1, our).unwrap();
+
+        let hb2 = heartbeat_with_hops(101u32, rsu, 3);
+        let m2 = Message::new(hop2, [255u8; 6].into(), PacketType::Control(Control::Heartbeat(hb2)));
+        let _ = routing.handle_heartbeat(&m2, our).unwrap();
+
+        // No heartbeat replies => no latency recorded -> fallback by hops
+        // get_route_to(Some(rsu)) should select the hop with fewer hops (1)
+        let route = routing.get_route_to(Some(rsu)).expect("route");
+        assert_eq!(route.mac, hop1);
+        assert_eq!(route.hops, 1);
+    }
+
+    #[test]
     fn duplicate_heartbeat_returns_none() {
         let args = Args {
             bind: String::default(),
