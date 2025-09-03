@@ -177,12 +177,12 @@ impl Routing {
             .iter()
             .filter(|(h, _)| h == &min_hops)
             .flat_map(|(hops, (_count, _min_seq, next, latency))| {
-                let hops_val = *hops as u32;
+                let hops_val = *hops;
                 latency.iter().zip(next).fold(
                     HashMap::default(),
                     |mut hm: HashMap<MacAddress, (u128, u128, u32, u32)>, (val, mac)| {
                         // here val: &u128
-                        let micros = *val as u128;
+                        let micros = *val;
                         let entry = hm.entry(*mac).or_insert((u128::MAX, 0u128, 0u32, hops_val));
                         if entry.0 > micros {
                             entry.0 = micros;

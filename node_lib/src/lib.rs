@@ -91,3 +91,94 @@ pub fn init_test_tracing() {
             .try_init();
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use common::device::{Device, DeviceIo};
+    use common::tun::test_tun::TokioTun;
+    use std::os::unix::io::FromRawFd;
+    use tokio::io::unix::AsyncFd;
+
+    fn make_dev(mac: mac_address::MacAddress) -> Device {
+        let mut fds = [0; 2];
+        unsafe {
+            let r = libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr());
+            assert_eq!(r, 0, "socketpair failed");
+            let _ = libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
+        }
+        Device::from_asyncfd_for_bench(
+            mac,
+            AsyncFd::new(unsafe { DeviceIo::from_raw_fd(fds[0]) }).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn create_with_vdev_obu_and_rsu() {
+        let (a, b) = TokioTun::new_pair();
+        let tun_a = Arc::new(Tun::new_shim(a));
+        let tun_b = Arc::new(Tun::new_shim(b));
+        let mac_rsu: mac_address::MacAddress = [1, 2, 3, 4, 5, 6].into();
+        let mac_obu: mac_address::MacAddress = [10, 11, 12, 13, 14, 15].into();
+        let dev_rsu = Arc::new(make_dev(mac_rsu));
+        let dev_obu = Arc::new(make_dev(mac_obu));
+
+        let args_rsu = Args {
+            bind: String::from("unused"),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: args::NodeParameters {
+                node_type: NodeType::Rsu,
+                hello_history: 10,
+                hello_periodicity: Some(100),
+            },
+        };
+        let args_obu = Args {
+            bind: String::from("unused"),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: args::NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 10,
+                hello_periodicity: None,
+            },
+        };
+
+        let rsu = create_with_vdev(args_rsu, tun_a, dev_rsu).expect("rsu created");
+        let obu = create_with_vdev(args_obu, tun_b, dev_obu).expect("obu created");
+
+        // Downcast via Node::as_any to ensure trait object works
+        assert!(rsu.as_any().downcast_ref::<control::rsu::Rsu>().is_some());
+        assert!(obu.as_any().downcast_ref::<control::obu::Obu>().is_some());
+    }
+
+    #[test]
+    fn create_in_test_build_bails() {
+        // In test builds, create() should bail with an error; exercise that path.
+        let args = Args {
+            bind: String::from("unused"),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: args::NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 1,
+                hello_periodicity: None,
+            },
+        };
+        let res = crate::create(args);
+        assert!(res.is_err());
+        if let Err(err) = res {
+            assert!(err.to_string().contains("unavailable"));
+        }
+    }
+
+    #[test]
+    fn init_test_tracing_is_idempotent() {
+        // Safe to call repeatedly without panic
+        super::init_test_tracing();
+        super::init_test_tracing();
+    }
+}

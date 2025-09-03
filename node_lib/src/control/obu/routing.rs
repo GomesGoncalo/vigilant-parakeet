@@ -344,6 +344,218 @@ mod more_tests {
         // No cached upstream
         assert!(routing.get_route_to(None).is_none());
     }
+
+    #[test]
+    fn duplicate_heartbeat_returns_none() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 4,
+                hello_periodicity: None,
+            },
+        };
+
+        let boot = std::time::Instant::now();
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        let hb_source: MacAddress = [5u8; 6].into();
+        let pkt_from: MacAddress = [6u8; 6].into();
+        let our_mac: MacAddress = [7u8; 6].into();
+        let hb = crate::messages::control::heartbeat::Heartbeat::new(
+            std::time::Duration::from_millis(1),
+            123u32,
+            hb_source,
+        );
+        let hb_msg = crate::messages::message::Message::new(
+            pkt_from,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb.clone()),
+            ),
+        );
+
+        let first = routing.handle_heartbeat(&hb_msg, our_mac).expect("hb1");
+        assert!(first.is_some());
+        let second = routing.handle_heartbeat(&hb_msg, our_mac).expect("hb2");
+        assert!(second.is_none(), "duplicate id should be ignored");
+    }
+
+    #[test]
+    fn hello_history_eviction_keeps_latest() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 1, // force capacity 1
+                hello_periodicity: None,
+            },
+        };
+
+        let boot = std::time::Instant::now();
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        let hb_source: MacAddress = [1u8, 1, 1, 1, 1, 1].into();
+        let pkt_from: MacAddress = [2u8, 2, 2, 2, 2, 2].into();
+        let our_mac: MacAddress = [9u8; 6].into();
+
+        let hb1 = crate::messages::control::heartbeat::Heartbeat::new(
+            std::time::Duration::from_millis(1),
+            1u32,
+            hb_source,
+        );
+        let msg1 = crate::messages::message::Message::new(
+            pkt_from,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb1.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
+
+        let hb2 = crate::messages::control::heartbeat::Heartbeat::new(
+            std::time::Duration::from_millis(2),
+            2u32,
+            hb_source,
+        );
+        let msg2 = crate::messages::message::Message::new(
+            pkt_from,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb2.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
+
+        // Access internal map to assert capacity behavior
+        let entry = routing.routes.get(&hb_source).expect("has entry");
+        assert_eq!(entry.len(), 1, "should keep only one id due to capacity");
+        let (&only_id, _) = entry.last().expect("one element exists");
+        assert_eq!(only_id, 2u32);
+    }
+
+    #[test]
+    fn out_of_order_id_clears_prior_entries() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 4,
+                hello_periodicity: None,
+            },
+        };
+
+        let boot = std::time::Instant::now();
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        let hb_source: MacAddress = [9u8, 8, 7, 6, 5, 4].into();
+        let pkt_from: MacAddress = [1u8, 2, 3, 4, 5, 6].into();
+        let our_mac: MacAddress = [0u8; 6].into();
+
+        // Insert id 10 first
+        let hb10 = crate::messages::control::heartbeat::Heartbeat::new(
+            std::time::Duration::from_millis(10),
+            10u32,
+            hb_source,
+        );
+        let msg10 = crate::messages::message::Message::new(
+            pkt_from,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb10.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg10, our_mac).unwrap();
+
+        // Now insert smaller id 5, which should clear existing entries
+        let hb5 = crate::messages::control::heartbeat::Heartbeat::new(
+            std::time::Duration::from_millis(5),
+            5u32,
+            hb_source,
+        );
+        let msg5 = crate::messages::message::Message::new(
+            pkt_from,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb5.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg5, our_mac).unwrap();
+
+        let entry = routing.routes.get(&hb_source).expect("entry exists");
+        assert_eq!(entry.len(), 1);
+        let (&only_id, _) = entry.first().expect("one elem");
+        assert_eq!(only_id, 5u32);
+    }
+
+    #[test]
+    fn select_and_cache_upstream_none_when_no_routes() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 2,
+                hello_periodicity: None,
+            },
+        };
+
+        let boot = std::time::Instant::now();
+        let routing = Routing::new(&args, &boot).expect("routing built");
+        let mac: MacAddress = [1u8; 6].into();
+        assert!(routing.select_and_cache_upstream(mac).is_none());
+        assert!(routing.get_route_to(None).is_none());
+    }
+
+    #[test]
+    fn clear_cached_upstream_removes_cache() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 2,
+                hello_periodicity: None,
+            },
+        };
+
+        let boot = std::time::Instant::now();
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+        let hb_source: MacAddress = [7u8; 6].into();
+        let pkt_from: MacAddress = [8u8; 6].into();
+        let our_mac: MacAddress = [9u8; 6].into();
+
+        let hb = crate::messages::control::heartbeat::Heartbeat::new(
+            std::time::Duration::from_millis(1),
+            1u32,
+            hb_source,
+        );
+        let hb_msg = crate::messages::message::Message::new(
+            pkt_from,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&hb_msg, our_mac).unwrap();
+        assert!(routing.select_and_cache_upstream(hb_source).is_some());
+        assert!(routing.get_cached_upstream().is_some());
+        routing.clear_cached_upstream();
+        assert!(routing.get_cached_upstream().is_none());
+    }
 }
 
 #[derive(Debug)]
@@ -822,7 +1034,7 @@ impl Routing {
                 })
                 .collect();
             scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-            let (_score, hops, mac_sel, avg_us) = scored[0].clone();
+            let (_score, hops, mac_sel, avg_us) = scored[0];
             return Some(Route {
                 hops,
                 mac: mac_sel,

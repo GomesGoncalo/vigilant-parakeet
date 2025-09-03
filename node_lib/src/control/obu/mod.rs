@@ -75,7 +75,7 @@ impl Obu {
                             }
                             Err(e) => {
                                 tracing::trace!(error = ?e, raw = %crate::control::node::bytes_to_hex(&pkt[..size]), "obu wire_traffic failed to parse message");
-                                return Ok(None);
+                                Ok(None)
                             }
                         }
                     }
