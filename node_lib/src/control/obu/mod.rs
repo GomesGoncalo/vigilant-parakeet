@@ -68,14 +68,13 @@ impl Obu {
                     async move {
                         match Message::try_from(&pkt[..size]) {
                             Ok(msg) => {
-                                tracing::debug!(parsed = ?msg, "obu wire_traffic parsed message");
                                 let response = obu.handle_msg(&msg).await;
                                 let has_response = response.as_ref().map(|r| r.is_some()).unwrap_or(false);
-                                tracing::debug!(has_response = has_response, incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
+                                tracing::trace!(has_response = has_response, incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
                                 response
                             }
                             Err(e) => {
-                                tracing::warn!(error = ?e, raw = %crate::control::node::bytes_to_hex(&pkt[..size]), "obu wire_traffic failed to parse message");
+                                tracing::trace!(error = ?e, raw = %crate::control::node::bytes_to_hex(&pkt[..size]), "obu wire_traffic failed to parse message");
                                 return Ok(None);
                             }
                         }
@@ -116,7 +115,7 @@ impl Obu {
                             ))
                                 .into(),
                         )];
-                        tracing::debug!(?outgoing, "outgoing from tap");
+                        tracing::trace!(?outgoing, "outgoing from tap");
                         Ok(Some(outgoing))
                     })
                     .await;

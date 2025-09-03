@@ -1,6 +1,4 @@
 use common::channel_parameters::ChannelParameters;
-use js_sys::{Array, Object};
-use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use serde_wasm_bindgen::to_value;
 use std::collections::{BTreeMap, HashMap};

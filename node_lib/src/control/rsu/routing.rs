@@ -44,7 +44,7 @@ impl Routing {
         })
     }
 
-    pub fn send_heartbeat(&mut self, address: MacAddress) -> Message {
+    pub fn send_heartbeat(&mut self, address: MacAddress) -> Message<'_> {
         let message = Heartbeat::new(
             Instant::now().duration_since(self.boot),
             self.hb_seq,

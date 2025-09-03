@@ -1,4 +1,3 @@
-use anyhow::bail;
 use mac_address::MacAddress;
 use std::{borrow::Cow, time::Duration};
 

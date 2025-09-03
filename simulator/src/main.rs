@@ -280,7 +280,7 @@ async fn main() -> Result<()> {
                 let mut out: HashMap<String, NodeInfo> = HashMap::new();
                 // first pass: compute upstream info per node and stash in a temp map so we can invert for downstream
                 let mut upstream_map: HashMap<String, UpstreamInfo> = HashMap::new();
-                for (name, (dev, _tun, node)) in sim_nodes.iter() {
+                for (name, (_dev, _tun, node)) in sim_nodes.iter() {
                     // try downcast to obu to get a cached route
                     let node_type = if node.as_any().is::<node_lib::control::obu::Obu>() {
                         "Obu".to_string()

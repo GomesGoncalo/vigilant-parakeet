@@ -98,10 +98,8 @@ where
 {
     let mut buf = buffer();
     let n = dev.recv(&mut buf).await?;
-    // Log raw bytes read from the device as hex for debugging framing/parsing
-    tracing::debug!(n = n, raw = %bytes_to_hex(&buf[..n]), "raw device recv");
     // Also emit a debug so test output can capture the raw bytes when tracing
-    tracing::debug!(n = n, raw = %bytes_to_hex(&buf[..n]), "wire_traffic recv");
+    tracing::trace!(n = n, raw = %bytes_to_hex(&buf[..n]), "wire_traffic recv");
     callable(buf, n).await
 }
 
