@@ -475,6 +475,12 @@ impl Routing {
                     through = %new_route,
                     "route created on heartbeat",
                 );
+                    // Newly discovered route: attempt to select and cache this
+                    // upstream immediately so runtime components (OBU session)
+                    // can start using the cached upstream without waiting for
+                    // a HeartbeatReply cycle.
+                    let sel = self.select_and_cache_upstream(message.source());
+                    tracing::debug!(selection = ?sel.as_ref().map(|r| r.mac), "heartbeat: select_and_cache_upstream");
             }
             (_, None) => (),
             (Some(old_route), Some(new_route)) => {
@@ -559,10 +565,16 @@ impl Routing {
             bail!("we don't know how to reach that source");
         };
 
-        let Some((duration, next_upstream, _, _, downstream)) =
-            source_entries.get_mut(&message.id())
-        else {
-            bail!("no recollection of the next hop for this route");
+        // Read the recorded duration and next_upstream immutably so we can
+        // decide action without holding a mutable borrow of the routing
+        // structures. We'll perform downstream updates in a short mutable
+        // scope below.
+        let next_upstream_copy = {
+            let Some((_, next_upstream, _, _, _)) = source_entries.get(&message.id())
+            else {
+                bail!("no recollection of the next hop for this route");
+            };
+            *next_upstream
         };
 
         // Note: avoid forwarding the HeartbeatReply back to the node it came
@@ -578,18 +590,18 @@ impl Routing {
         //  - "forward" : safe to forward toward next_upstream
         let pkt_from = pkt.from()?;
         let sender = message.sender();
-        let action = if *next_upstream == sender {
+    let action = if next_upstream_copy == sender {
             "bail"
-        } else if pkt_from == *next_upstream {
+    } else if pkt_from == next_upstream_copy {
             "skip_forward"
         } else {
             "forward"
         };
 
-        tracing::trace!(
+        tracing::debug!(
             pkt_from = %pkt_from,
             message_sender = %sender,
-            next_upstream = %next_upstream,
+            next_upstream = %next_upstream_copy,
             action = %action,
             "heartbeat_reply decision"
         );
@@ -600,50 +612,67 @@ impl Routing {
             bail!("loop detected");
         }
 
-        let seen_at = Instant::now().duration_since(self.boot);
-        let latency = seen_at - *duration;
-        match downstream.entry(message.sender()) {
-            Entry::Occupied(mut entry) => {
-                let value = entry.get_mut();
+        // Update downstream observation lists inside a short mutable scope so
+        // we don't hold a mutable borrow across the subsequent `select_and_cache_upstream` call.
+        {
+            let Some((duration, _next_upstream, _, _, downstream)) =
+                source_entries.get_mut(&message.id())
+            else {
+                bail!("no recollection of the next hop for this route");
+            };
 
-                value.push(Target {
-                    hops: message.hops(),
-                    mac: pkt.from()?,
-                    latency: Some(latency),
-                });
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(vec![Target {
-                    hops: message.hops(),
-                    mac: pkt.from()?,
-                    latency: Some(latency),
-                }]);
-            }
-        };
+            let seen_at = Instant::now().duration_since(self.boot);
+            let latency = seen_at - *duration;
+            match downstream.entry(message.sender()) {
+                Entry::Occupied(mut entry) => {
+                    let value = entry.get_mut();
 
-        match downstream.entry(pkt.from()?) {
-            Entry::Occupied(mut entry) => {
-                let value = entry.get_mut();
+                    value.push(Target {
+                        hops: message.hops(),
+                        mac: pkt.from()?,
+                        latency: Some(latency),
+                    });
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(vec![Target {
+                        hops: message.hops(),
+                        mac: pkt.from()?,
+                        latency: Some(latency),
+                    }]);
+                }
+            };
 
-                value.push(Target {
-                    hops: 1,
-                    mac: pkt.from()?,
-                    latency: None,
-                });
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(vec![Target {
-                    hops: 1,
-                    mac: pkt.from()?,
-                    latency: None,
-                }]);
-            }
-        };
+            match downstream.entry(pkt.from()?) {
+                Entry::Occupied(mut entry) => {
+                    let value = entry.get_mut();
+
+                    value.push(Target {
+                        hops: 1,
+                        mac: pkt.from()?,
+                        latency: None,
+                    });
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(vec![Target {
+                        hops: 1,
+                        mac: pkt.from()?,
+                        latency: None,
+                    }]);
+                }
+            };
+        }
+
+        // Attempt to select and cache an upstream for the original heartbeat
+        // source now that we've recorded downstream observations. Do this
+        // before the early-return below so replies that would be skipped for
+        // forwarding still cause caching.
+    let selected = self.select_and_cache_upstream(message.source());
+    tracing::debug!(selection = ?selected.as_ref().map(|r| r.mac), "after heartbeat_reply: select_and_cache_upstream");
 
         // If the reply arrived from the node we'd forward to, don't forward
         // it back: that would produce an immediate bounce. Drop forwarding
         // (but keep the recorded downstream information above).
-        if pkt.from()? == *next_upstream {
+        if pkt.from()? == next_upstream_copy {
             return Ok(None);
         }
 
@@ -651,7 +680,7 @@ impl Routing {
         let reply = Ok(Some(vec![ReplyType::Wire(
             (&Message::new(
                 mac,
-                *next_upstream,
+                next_upstream_copy,
                 PacketType::Control(Control::HeartbeatReply(message.clone())),
             ))
                 .into(),
@@ -713,7 +742,7 @@ impl Routing {
             }
         }
 
-        reply
+    reply
     }
 
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
@@ -846,7 +875,8 @@ impl Routing {
     /// logic (above) from the side-effect of caching.
     pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
         let route = self.get_route_to(Some(mac))?;
-        self.cached_upstream.store(Some(route.mac.into()));
+    tracing::info!(upstream = %route.mac, source = %mac, "select_and_cache_upstream selected upstream for source");
+    self.cached_upstream.store(Some(route.mac.into()));
         #[cfg(feature = "stats")]
         crate::metrics::inc_cache_select();
         Some(route)

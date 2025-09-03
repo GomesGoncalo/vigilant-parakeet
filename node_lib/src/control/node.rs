@@ -44,6 +44,15 @@ pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<
     }
 }
 
+/// Return a compact hex string for a byte slice (e.g. "01 02 aa ...").
+pub fn bytes_to_hex(slice: &[u8]) -> String {
+    slice
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub async fn handle_messages(
     messages: Vec<ReplyType>,
     tun: &Arc<Tun>,
@@ -89,6 +98,10 @@ where
 {
     let mut buf = buffer();
     let n = dev.recv(&mut buf).await?;
+    // Log raw bytes read from the device as hex for debugging framing/parsing
+    tracing::debug!(n = n, raw = %bytes_to_hex(&buf[..n]), "raw device recv");
+    // Also emit a debug so test output can capture the raw bytes when tracing
+    tracing::debug!(n = n, raw = %bytes_to_hex(&buf[..n]), "wire_traffic recv");
     callable(buf, n).await
 }
 

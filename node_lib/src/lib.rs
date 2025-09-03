@@ -80,3 +80,14 @@ pub fn create(args: Args) -> Result<Arc<dyn Node>> {
 pub fn create(_args: Args) -> Result<Arc<dyn Node>> {
     anyhow::bail!("create() with TokioTun::builder() is unavailable in test builds")
 }
+
+/// Initialize a tracing subscriber for tests. Safe to call multiple times.
+pub fn init_test_tracing() {
+    use std::sync::Once;
+    static START: Once = Once::new();
+    START.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init();
+    });
+}

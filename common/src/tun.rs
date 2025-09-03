@@ -1,7 +1,7 @@
 // Test shim for `tokio_tun::Tun` so unit tests can exercise `Tun` without creating
-// a real tun device. This can be enabled for downstream test harnesses via the
-// `test_helpers` feature.
-#[cfg(any(test, feature = "test_helpers"))]
+// a real tun device. The module is exposed so downstream integration tests can
+// use the shim directly; the crate still controls whether `TokioTun` aliases
+// to this shim via feature flags.
 pub mod test_tun {
     use std::io::{self, IoSlice};
     use tokio::sync::mpsc;
@@ -89,29 +89,67 @@ pub use test_tun::TokioTun;
 pub use tokio_tun::Tun as TokioTun;
 
 pub struct Tun {
-    tun: TokioTun,
+    inner: TunInner,
     #[cfg(feature = "stats")]
     stats: Mutex<Stats>,
 }
 
+// Internal enum to store either the real runtime tun or the test shim.
+enum TunInner {
+    #[cfg(not(target_family = "wasm"))]
+    Real(tokio_tun::Tun),
+    Shim(test_tun::TokioTun),
+}
+
 impl Tun {
     pub fn new(tun: TokioTun) -> Self {
+        // TokioTun is aliased depending on cfg; delegate to the correct
+        // concrete constructor.
+        #[cfg(any(test, feature = "test_helpers"))]
+        {
+            Tun::new_shim(tun)
+        }
+
+        #[cfg(not(any(test, feature = "test_helpers")))]
+        {
+            Tun::new_real(tun)
+        }
+    }
+
+    /// Construct a `Tun` from the test shim type.
+    pub fn new_shim(t: test_tun::TokioTun) -> Self {
         Self {
-            tun,
+            inner: TunInner::Shim(t),
             #[cfg(feature = "stats")]
             stats: Stats::default().into(),
         }
     }
 
-    #[cfg(feature = "test_helpers")]
-    pub fn new_from_shim(_tun: test_tun::TokioTun) -> Self {
-        // Since TokioTun is aliased to the test shim under the feature, the
-        // argument type already matches `TokioTun`. This constructor exists
-        // for clarity in tests; simply forward to `Tun::new`.
-        // Note: keep the parameter name to maintain signature parity with
-        // previous code paths.
-        // SAFETY: parameter type equals TokioTun under cfg toggles.
-        Tun::new(_tun)
+    /// Construct a `common::tun::Tun` from a real `tokio_tun::Tun` instance.
+    ///
+    /// This helper is intentionally provided so callers don't need to depend on
+    /// the `test_helpers` feature to convert the concrete runtime type into
+    /// the wrapper. It is available for non-wasm builds.
+    /// Construct a `Tun` from a real `tokio_tun::Tun`.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn new_real(t: tokio_tun::Tun) -> Self {
+        Self {
+            inner: TunInner::Real(t),
+            #[cfg(feature = "stats")]
+            stats: Stats::default().into(),
+        }
+    }
+
+    /// Construct a `common::tun::Tun` from the test shim `TokioTun`.
+    ///
+    /// Provided so tests or integration harnesses can create a `Tun` from the
+    /// shim without needing to rely on `From` impls that change with cfg
+    /// toggles. This is available when the test shim is compiled in.
+    // Keep a convenience alias available for code that used the previous
+    // helper name.
+    #[allow(dead_code)]
+    pub fn from_shim_tun(t: test_tun::TokioTun) -> Self {
+        Tun::new_shim(t)
     }
 
     #[cfg(feature = "stats")]
@@ -120,7 +158,11 @@ impl Tun {
     }
 
     pub async fn send_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
-        let size = self.tun.send_vectored(bufs).await?;
+        let size = match &self.inner {
+            #[cfg(not(target_family = "wasm"))]
+            TunInner::Real(t) => t.send_vectored(bufs).await?,
+            TunInner::Shim(s) => s.send_vectored(bufs).await?,
+        };
         #[cfg(feature = "stats")]
         {
             let mut guard = self.stats.lock().unwrap();
@@ -131,7 +173,11 @@ impl Tun {
     }
 
     pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let size = self.tun.recv(buf).await?;
+        let size = match &self.inner {
+            #[cfg(not(target_family = "wasm"))]
+            TunInner::Real(t) => t.recv(buf).await?,
+            TunInner::Shim(s) => s.recv(buf).await?,
+        };
         #[cfg(feature = "stats")]
         {
             let mut guard = self.stats.lock().unwrap();
@@ -142,7 +188,11 @@ impl Tun {
     }
 
     pub async fn send_all(&self, buf: &[u8]) -> io::Result<()> {
-        self.tun.send_all(buf).await?;
+        match &self.inner {
+            #[cfg(not(target_family = "wasm"))]
+            TunInner::Real(t) => t.send_all(buf).await?,
+            TunInner::Shim(s) => s.send_all(buf).await?,
+        };
         #[cfg(feature = "stats")]
         {
             let mut guard = self.stats.lock().unwrap();
@@ -153,7 +203,11 @@ impl Tun {
     }
 
     pub fn name(&self) -> &str {
-        self.tun.name()
+        match &self.inner {
+            #[cfg(not(target_family = "wasm"))]
+            TunInner::Real(t) => t.name(),
+            TunInner::Shim(s) => s.name(),
+        }
     }
 }
 
@@ -184,7 +238,7 @@ mod tests {
     async fn tun_send_and_recv_roundtrip() {
         // create the in-test TokioTun pair (a <-> b)
         let (a, b) = TokioTun::new_pair();
-        let tun_a = Tun::new_from_shim(a);
+    let tun_a = Tun::new_shim(a);
 
         // spawn a task that receives from the peer side
         let handle = task::spawn(async move {
@@ -205,7 +259,7 @@ mod tests {
     #[tokio::test]
     async fn tun_send_vectored_and_name() {
         let (a, b) = TokioTun::new_pair();
-        let tun_a = Tun::new_from_shim(a);
+    let tun_a = Tun::new_shim(a);
 
         // prepare vectored buffers
         let part1 = b"hello ";
@@ -235,7 +289,7 @@ mod tests {
     #[tokio::test]
     async fn tun_recv_reads_data() {
         let (a, b) = TokioTun::new_pair();
-        let tun_a = Tun::new_from_shim(a);
+    let tun_a = Tun::new_shim(a);
 
         // spawn a task that sends data from the peer side
         let sender = task::spawn(async move {
@@ -256,7 +310,7 @@ mod tests {
         use std::io::IoSlice;
 
         let (a, b) = TokioTun::new_pair();
-        let tun_a = Tun::new_from_shim(a);
+    let tun_a = Tun::new_shim(a);
 
         let before = tun_a.stats();
         assert_eq!(before.transmitted_packets, 0);

@@ -21,6 +21,7 @@ itertools = "*"
 serde = { version = "*", features = ["derive"]}
 common = { path = "../common/" }
 arc-swap = { version = "*" }
+tracing-subscriber = { version = "*", features = ["env-filter"] }
 
 [features]
 stats = [ "common/stats" ]
@@ -28,4 +29,4 @@ test_helpers = [ "common/test_helpers" ]
 
 [dev-dependencies]
 criterion = "0.5"
-common = { path = "../common/", features = ["test_helpers"] }
+common = { path = "../common/" }

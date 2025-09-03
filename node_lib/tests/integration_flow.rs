@@ -11,7 +11,7 @@ use tokio::io::unix::AsyncFd;
 #[tokio::test]
 async fn handle_messages_sends_to_tun_and_device() {
     let (a, _b) = TokioTun::new_pair();
-    let tun = Tun::new(a);
+    let tun = Tun::from_shim_tun(a);
 
     // create a pipe to stand in for device fd
     let mut fds = [0; 2];
