@@ -1,14 +1,9 @@
-use common::device::Device;
-use common::device::DeviceIo;
-use common::tun::test_tun::TokioTun;
-use common::tun::Tun;
-use node_lib::args::{Args, NodeParameters, NodeType};
+use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
-use std::os::unix::io::FromRawFd;
+use node_lib::test_helpers::util::{mk_device_from_fd, mk_args, mk_shim_pair};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::unix::AsyncFd;
 
 /// Integration test: create an RSU and an OBU connected by a bidirectional
 /// socketpair and check that the OBU learns the RSU as its upstream.
@@ -16,10 +11,8 @@ use tokio::io::unix::AsyncFd;
 async fn rsu_and_obu_topology_discovery() {
     // Initialize tracing for test output
     node_lib::init_test_tracing();
-    // Create shim tun pair and wrap in common::tun::Tun
-    let (tun_a_shim, tun_b_shim) = TokioTun::new_pair();
-    let tun_a = Tun::new_shim(tun_a_shim);
-    let tun_b = Tun::new_shim(tun_b_shim);
+    // Create shim tun pair using shared helper
+    let (tun_a, tun_b) = mk_shim_pair();
 
     // Create a socketpair for bidirectional communication between devices
     let mut fds = [0; 2];
@@ -31,44 +24,15 @@ async fn rsu_and_obu_topology_discovery() {
         let _ = libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
     }
 
-    // Wrap each fd in an AsyncFd<DeviceIo> and create Devices with distinct MACs
-    let async_a = AsyncFd::new(unsafe { DeviceIo::from_raw_fd(fds[0]) }).unwrap();
-    let async_b = AsyncFd::new(unsafe { DeviceIo::from_raw_fd(fds[1]) }).unwrap();
-
     let mac_a: mac_address::MacAddress = [1u8, 2, 3, 4, 5, 6].into();
     let mac_b: mac_address::MacAddress = [10u8, 11, 12, 13, 14, 15].into();
 
-    let dev_a = Device::from_asyncfd_for_bench(mac_a, async_a);
-    let dev_b = Device::from_asyncfd_for_bench(mac_b, async_b);
+    let dev_a = mk_device_from_fd(mac_a, fds[0]);
+    let dev_b = mk_device_from_fd(mac_b, fds[1]);
 
     // Build Args for Rsu and Obu with hello periodicity so they exchange heartbeats
-    let node_params_rsu = NodeParameters {
-        node_type: NodeType::Rsu,
-        hello_history: 10,
-        hello_periodicity: Some(100),
-        cached_candidates: 3,
-    };
-    let node_params_obu = NodeParameters {
-        node_type: NodeType::Obu,
-        hello_history: 10,
-        hello_periodicity: None,
-        cached_candidates: 3,
-    };
-
-    let args_rsu = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: node_params_rsu,
-    };
-    let args_obu = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: node_params_obu,
-    };
+    let args_rsu = mk_args(NodeType::Rsu, Some(100));
+    let args_obu = mk_args(NodeType::Obu, None);
 
     // Construct nodes (they spawn background tasks)
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_a), Arc::new(dev_a)).expect("rsu new");

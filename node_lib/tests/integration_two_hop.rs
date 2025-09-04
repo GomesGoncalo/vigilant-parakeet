@@ -1,44 +1,28 @@
-use common::device::{Device, DeviceIo};
-use common::tun::test_tun::TokioTun;
-use common::tun::Tun;
-use node_lib::args::{Args, NodeParameters, NodeType};
+use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
 use node_lib::test_helpers::hub::{DownstreamFromIdxCheck, Hub, UpstreamMatchCheck};
-use std::os::unix::io::FromRawFd;
+use node_lib::test_helpers::util::{mk_device_from_fd, mk_args, mk_shim_pairs};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use std::time::Duration;
-use tokio::io::unix::AsyncFd;
 
 #[tokio::test]
 async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     node_lib::init_test_tracing();
 
-    // Create 3 TUNs (one per node). Keep OBU2's peer so we can inject upstream traffic reliably.
-    let (tun_rsu_a, _) = TokioTun::new_pair();
-    let (tun_obu1_a, _) = TokioTun::new_pair();
-    let (tun_obu2_a, tun_obu2_b) = TokioTun::new_pair();
-    let tun_rsu = Tun::new_shim(tun_rsu_a);
-    let tun_obu1 = Tun::new_shim(tun_obu1_a);
-    let tun_obu2 = Tun::new_shim(tun_obu2_a);
+    // Create 3 shim TUN pairs and keep the peer for OBU2
+    let mut pairs = mk_shim_pairs(3);
+    let (tun_rsu, _peer0) = pairs.remove(0);
+    let (tun_obu1, _peer1) = pairs.remove(0);
+    let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
     // Create 3 node<->hub links as socketpairs: (node_fd[i], hub_fd[i])
-    let mut node_fds = [0; 3];
-    let mut hub_fds = [0; 3];
-    for i in 0..3 {
-        let mut fds = [0; 2];
-        unsafe {
-            let r = libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr());
-            assert_eq!(r, 0, "socketpair failed");
-            let _ = libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
-            let _ = libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
-        }
-        node_fds[i] = fds[0];
-        hub_fds[i] = fds[1];
-    }
+    let (node_fds_v, hub_fds_v) = node_lib::test_helpers::util::mk_socketpairs(3);
+    let node_fds = [node_fds_v[0], node_fds_v[1], node_fds_v[2]];
+    let hub_fds = [hub_fds_v[0], hub_fds_v[1], hub_fds_v[2]];
 
     // Wrap node ends as Devices
     let mac_rsu: mac_address::MacAddress = [1, 2, 3, 4, 5, 6].into();
@@ -61,56 +45,14 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
         }))
         .spawn();
 
-    let dev_rsu = Device::from_asyncfd_for_bench(
-        mac_rsu,
-        AsyncFd::new(unsafe { DeviceIo::from_raw_fd(node_fds[0]) }).unwrap(),
-    );
-    let dev_obu1 = Device::from_asyncfd_for_bench(
-        mac_obu1,
-        AsyncFd::new(unsafe { DeviceIo::from_raw_fd(node_fds[1]) }).unwrap(),
-    );
-    let dev_obu2 = Device::from_asyncfd_for_bench(
-        mac_obu2,
-        AsyncFd::new(unsafe { DeviceIo::from_raw_fd(node_fds[2]) }).unwrap(),
-    );
+    let dev_rsu = mk_device_from_fd(mac_rsu, node_fds[0]);
+    let dev_obu1 = mk_device_from_fd(mac_obu1, node_fds[1]);
+    let dev_obu2 = mk_device_from_fd(mac_obu2, node_fds[2]);
 
     // Build Args
-    let args_rsu = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: NodeParameters {
-            node_type: NodeType::Rsu,
-            hello_history: 10,
-            hello_periodicity: Some(50),
-            cached_candidates: 3,
-        },
-    };
-    let args_obu1 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: NodeParameters {
-            node_type: NodeType::Obu,
-            hello_history: 10,
-            hello_periodicity: None,
-            cached_candidates: 3,
-        },
-    };
-    let args_obu2 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: NodeParameters {
-            node_type: NodeType::Obu,
-            hello_history: 10,
-            hello_periodicity: None,
-            cached_candidates: 3,
-        },
-    };
+    let args_rsu = mk_args(NodeType::Rsu, Some(50));
+    let args_obu1 = mk_args(NodeType::Obu, None);
+    let args_obu2 = mk_args(NodeType::Obu, None);
 
     // Construct nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).expect("rsu new");
@@ -136,8 +78,7 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     );
 
     // Trigger an upstream send by writing on the peer end of OBU2's TUN; the session task should forward it.
-    let peer = Tun::new_shim(tun_obu2_b);
-    let _ = peer.send_all(payload).await;
+    let _ = tun_obu2_peer.send_all(payload).await;
 
     // Wait up to ~2s for the hub to observe the upstream packet
     for _ in 0..20 {
@@ -159,15 +100,11 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
 async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     node_lib::init_test_tracing();
 
-    // Create TUNs. Keep peers for RSU and OBU2 to inject/observe frames.
-    let (tun_rsu_a, tun_rsu_b) = TokioTun::new_pair();
-    let (tun_obu1_a, _tun_obu1_b) = TokioTun::new_pair();
-    let (tun_obu2_a, tun_obu2_b) = TokioTun::new_pair();
-    let tun_rsu = Tun::new_shim(tun_rsu_a);
-    let tun_rsu_peer = Tun::new_shim(tun_rsu_b);
-    let tun_obu1 = Tun::new_shim(tun_obu1_a);
-    let tun_obu2 = Tun::new_shim(tun_obu2_a);
-    let tun_obu2_peer = Tun::new_shim(tun_obu2_b);
+    // Create shim TUN pairs and keep peers for RSU and OBU2
+    let mut pairs = mk_shim_pairs(3);
+    let (tun_rsu, tun_rsu_peer) = pairs.remove(0);
+    let (tun_obu1, _tun_obu1_peer) = pairs.remove(0);
+    let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
     // Create 3 node<->hub links as socketpairs: (node_fd[i], hub_fd[i])
     let mut node_fds = [0; 3];
@@ -199,45 +136,14 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
         }))
         .spawn();
 
-    // Wrap node ends as Devices
-    let dev_rsu = Device::from_asyncfd_for_bench(
-        mac_rsu,
-        AsyncFd::new(unsafe { DeviceIo::from_raw_fd(node_fds[0]) }).unwrap(),
-    );
-    let dev_obu1 = Device::from_asyncfd_for_bench(
-        mac_obu1,
-        AsyncFd::new(unsafe { DeviceIo::from_raw_fd(node_fds[1]) }).unwrap(),
-    );
-    let dev_obu2 = Device::from_asyncfd_for_bench(
-        mac_obu2,
-        AsyncFd::new(unsafe { DeviceIo::from_raw_fd(node_fds[2]) }).unwrap(),
-    );
+    // Wrap node ends as Devices using shared helper
+    let dev_rsu = mk_device_from_fd(mac_rsu, node_fds[0]);
+    let dev_obu1 = mk_device_from_fd(mac_obu1, node_fds[1]);
+    let dev_obu2 = mk_device_from_fd(mac_obu2, node_fds[2]);
 
-    // Build Args
-    let args_rsu = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: NodeParameters {
-            node_type: NodeType::Rsu,
-            hello_history: 10,
-            hello_periodicity: Some(50),
-            cached_candidates: 3,
-        },
-    };
-    let args_obu = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: NodeParameters {
-            node_type: NodeType::Obu,
-            hello_history: 10,
-            hello_periodicity: None,
-            cached_candidates: 3,
-        },
-    };
+    // Build Args using shared helper
+    let args_rsu = mk_args(NodeType::Rsu, Some(50));
+    let args_obu = mk_args(NodeType::Obu, None);
 
     // Construct nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).expect("rsu new");

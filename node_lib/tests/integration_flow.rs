@@ -1,17 +1,11 @@
-use common::device::Device;
-use common::device::DeviceIo;
-use common::tun::test_tun::TokioTun;
-use common::tun::Tun;
+use node_lib::test_helpers::util::{mk_device_from_fd, mk_shim_pair};
 use mac_address::MacAddress;
 use node_lib::control::node::{handle_messages, ReplyType};
-use std::os::unix::io::FromRawFd;
 use std::sync::Arc;
-use tokio::io::unix::AsyncFd;
 
 #[tokio::test]
 async fn handle_messages_sends_to_tun_and_device() {
-    let (a, _b) = TokioTun::new_pair();
-    let tun = Tun::from_shim_tun(a);
+    let (tun, _peer) = mk_shim_pair();
 
     // create a pipe to stand in for device fd
     let mut fds = [0; 2];
@@ -22,9 +16,8 @@ async fn handle_messages_sends_to_tun_and_device() {
     // make writer non-blocking
     unsafe { libc::fcntl(writer_fd, libc::F_SETFL, libc::O_NONBLOCK) };
 
-    let async_fd = AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
     let mac: MacAddress = [1u8; 6].into();
-    let device = Device::from_asyncfd_for_bench(mac, async_fd);
+    let device = mk_device_from_fd(mac, writer_fd);
 
     let tun = Arc::new(tun);
     let device = Arc::new(device);
