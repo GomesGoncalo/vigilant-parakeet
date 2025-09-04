@@ -12,8 +12,6 @@ use std::time::Duration;
 #[tokio::test]
 async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     node_lib::init_test_tracing();
-    // Use paused time for more deterministic test execution, but will resume briefly
-    tokio::time::pause();
 
     // Create 3 shim TUN pairs and keep the peer for OBU2
     let mut pairs = mk_shim_pairs(3);
@@ -65,25 +63,12 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     let obu2 = Obu::new(args_obu2, tun_obu2_arc, Arc::new(dev_obu2)).expect("Obu::new failed");
 
     // Wait for OBU2 to cache upstream route; expect it to be OBU1 (two-hop path)
-    // RSU sends heartbeats every 50ms, so advance time by that amount and check.
-    // Need enough time for route discovery AND latency measurement.
-    // Briefly resume time to allow async operations to process.
     let mut cached = None;
-    for i in 0..400 {
-        tokio::time::advance(Duration::from_millis(50)).await;
-        // Allow real time for a moment to let async operations execute
-        tokio::time::resume();
-        tokio::time::sleep(Duration::from_millis(1)).await;
-        tokio::time::pause();
-        
+    for _ in 0..100 {
+        // up to ~10s
+        tokio::time::sleep(Duration::from_millis(100)).await;
         cached = obu2.cached_upstream_mac();
-        // Log progress every 20 iterations
-        if i % 20 == 0 {
-            tracing::debug!(iteration = i, cached_upstream = ?cached, "test progress");
-        }
-        // Once we have a cached route, give extra time for latency measurement
-        // to stabilize before checking if it's the expected one
-        if cached == Some(mac_obu1) {
+        if cached.is_some() {
             break;
         }
     }
@@ -97,13 +82,12 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     // Trigger an upstream send by writing on the peer end of OBU2's TUN; the session task should forward it.
     tun_obu2_peer.send_all(payload).await.expect("tun_obu2_peer.send_all failed");
 
-    // Instead of polling with sleep, advance time in small increments to allow
-    // packet processing. Allow up to 2 seconds worth of time advancement (40 × 50ms).
-    for _ in 0..40 {
+    // Wait up to ~2s for the hub to observe the upstream packet
+    for _ in 0..20 {
         if saw_forward_to_obu1.load(Ordering::SeqCst) {
             break;
         }
-        tokio::time::advance(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     // This assertion is soft; the primary assertion is the cached upstream.
     assert!(saw_forward_to_obu1.load(Ordering::SeqCst));
@@ -117,8 +101,6 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
 #[tokio::test]
 async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     node_lib::init_test_tracing();
-    // Use paused time for deterministic test execution
-    tokio::time::pause();
 
     // Create shim TUN pairs and keep peers for RSU and OBU2
     let mut pairs = mk_shim_pairs(3);
@@ -163,17 +145,11 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let obu2 = Obu::new(args_obu, Arc::new(tun_obu2), Arc::new(dev_obu2)).expect("Obu::new failed");
 
     // Wait for OBU2 to cache upstream via OBU1 (two-hop path preferred)
-    // RSU sends heartbeats every 50ms, so advance time by that amount and check.
-    // Need enough time for route discovery AND latency measurement.
-    // Give some real scheduler time between time advances to allow async tasks to run.
     let mut cached = None;
-    for _ in 0..400 {
-        tokio::time::advance(Duration::from_millis(50)).await;
-        // Allow a moment for tasks to be scheduled and processed
-        tokio::task::yield_now().await;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
         cached = obu2.cached_upstream_mac();
-        // Once we have the expected route (OBU1), break
-        if cached == Some(mac_obu1) {
+        if cached.is_some() {
             break;
         }
     }
@@ -192,7 +168,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     prime.extend_from_slice(b"prime");
     tun_rsu_peer.send_all(&prime).await.expect("tun_rsu_peer.send_all failed");
     // Give a moment for RSU to process and store mapping
-    tokio::time::advance(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Compose a "ping" request frame from OBU2 destined to RSU
     let payload_req = b"ping-req";
@@ -210,8 +186,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     assert!(got_req_at_rsu, "RSU did not receive ping request on TUN");
 
     // Give RSU additional time to ensure it has a route to OBU2
-    // Advance time to allow route discovery (30 heartbeat cycles @ 50ms each)
-    tokio::time::advance(Duration::from_millis(1500)).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
 
     // Now craft and send a reply from RSU back to OBU2 via RSU's TUN
     let payload_rep = b"ping-rep";
@@ -226,7 +201,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
         if saw_downstream_from_rsu.load(Ordering::SeqCst) {
             break;
         }
-        tokio::time::advance(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     println!(
         "hub saw downstream from RSU: {}",
@@ -238,7 +213,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
         if saw_downstream_from_rsu.load(Ordering::SeqCst) {
             break;
         }
-        tokio::time::advance(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     // Expect OBU2's TUN to receive the full downstream reply frame (to+from+payload)
