@@ -4,7 +4,7 @@ use common::tun::Tun;
 use node_lib::args::{Args, NodeParameters, NodeType};
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
-use node_lib::test_helpers::hub::{Hub, UpstreamMatchCheck, DownstreamFromIdxCheck};
+use node_lib::test_helpers::hub::{DownstreamFromIdxCheck, Hub, UpstreamMatchCheck};
 use std::os::unix::io::FromRawFd;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -52,7 +52,13 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     // Payload we'll inject later; verify via hub check as well
     let payload: &[u8] = b"test payload";
     Hub::new(hub_fds.to_vec(), delays)
-        .add_check(Arc::new(UpstreamMatchCheck { idx: 2, from: mac_obu2, to: mac_obu1, expected_payload: Some(payload.to_vec()), flag: saw_forward_to_obu1.clone() }))
+        .add_check(Arc::new(UpstreamMatchCheck {
+            idx: 2,
+            from: mac_obu2,
+            to: mac_obu1,
+            expected_payload: Some(payload.to_vec()),
+            flag: saw_forward_to_obu1.clone(),
+        }))
         .spawn();
 
     let dev_rsu = Device::from_asyncfd_for_bench(
@@ -132,7 +138,6 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     // Trigger an upstream send by writing on the peer end of OBU2's TUN; the session task should forward it.
     let peer = Tun::new_shim(tun_obu2_b);
     let _ = peer.send_all(payload).await;
-    
 
     // Wait up to ~2s for the hub to observe the upstream packet
     for _ in 0..20 {
@@ -188,7 +193,10 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let delays = [[0, 2, 50], [2, 0, 2], [50, 2, 0]];
     let saw_downstream_from_rsu = Arc::new(AtomicBool::new(false));
     Hub::new(hub_fds.to_vec(), delays)
-        .add_check(Arc::new(DownstreamFromIdxCheck { idx: 0, flag: saw_downstream_from_rsu.clone() }))
+        .add_check(Arc::new(DownstreamFromIdxCheck {
+            idx: 0,
+            flag: saw_downstream_from_rsu.clone(),
+        }))
         .spawn();
 
     // Wrap node ends as Devices

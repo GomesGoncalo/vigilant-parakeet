@@ -51,7 +51,13 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     let saw_upstream = Arc::new(AtomicBool::new(false));
 
     Hub::new(hub_fds.to_vec(), delays)
-        .add_check(Arc::new(UpstreamMatchCheck { idx: 2, from: mac_obu2, to: mac_obu1, expected_payload: None, flag: saw_upstream.clone() }))
+        .add_check(Arc::new(UpstreamMatchCheck {
+            idx: 2,
+            from: mac_obu2,
+            to: mac_obu1,
+            expected_payload: None,
+            flag: saw_upstream.clone(),
+        }))
         .spawn();
 
     let dev_rsu = Device::from_asyncfd_for_bench(
@@ -68,7 +74,7 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     );
 
     // Build Args
-    // Use shorter hello_history/periodicity to converge faster in test
+    // Use sufficient hello_history/periodicity for reliable latency measurement
     let args_rsu = Args {
         bind: String::from("unused"),
         tap_name: None,
@@ -76,8 +82,8 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
         mtu: 1500,
         node_params: NodeParameters {
             node_type: NodeType::Rsu,
-            hello_history: 2,
-            hello_periodicity: Some(20),
+            hello_history: 10,
+            hello_periodicity: Some(50),
             cached_candidates: 3,
         },
     };
@@ -88,7 +94,7 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
         mtu: 1500,
         node_params: NodeParameters {
             node_type: NodeType::Obu,
-            hello_history: 2,
+            hello_history: 10,
             hello_periodicity: None,
             cached_candidates: 3,
         },
@@ -100,7 +106,7 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
         mtu: 1500,
         node_params: NodeParameters {
             node_type: NodeType::Obu,
-            hello_history: 2,
+            hello_history: 10,
             hello_periodicity: None,
             cached_candidates: 3,
         },
