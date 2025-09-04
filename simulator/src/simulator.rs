@@ -13,6 +13,7 @@ use itertools::Itertools;
 use mac_address::MacAddress;
 use netns_rs::NetNs;
 use node_lib::Node;
+use rand::Rng;
 use std::collections::VecDeque;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -144,7 +145,7 @@ impl Channel {
         let loss = self.parameters.read().unwrap().loss;
         if loss > 0.0 {
             let mut rng = rand::rng();
-            if rand::Rng::random::<f64>(&mut rng) < loss {
+            if rng.random::<f64>() < loss {
                 bail!("packet lost")
             }
         }
