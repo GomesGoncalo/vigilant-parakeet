@@ -11,7 +11,7 @@ use std::sync::{atomic::AtomicBool, Arc};
 /// hub endpoint to simulate a send failure and verify OBU2 promotes to another
 /// candidate.
 #[tokio::test]
-async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
+async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Result<()> {
     node_lib::init_test_tracing();
 
     // Create shim TUN pairs and keep the peer for OBU2
@@ -21,7 +21,7 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
     // Create 3 node<->hub links as socketpairs: (node_fd[i], hub_fd[i])
-    let (node_fds_v, hub_fds_v) = node_lib::test_helpers::util::mk_socketpairs(3);
+    let (node_fds_v, hub_fds_v) = node_lib::test_helpers::util::mk_socketpairs(3)?;
     let node_fds = [node_fds_v[0], node_fds_v[1], node_fds_v[2]];
     let hub_fds = [hub_fds_v[0], hub_fds_v[1], hub_fds_v[2]];
 
@@ -56,9 +56,9 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     let args_obu2 = mk_args(NodeType::Obu, None);
 
     // Construct nodes
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).expect("rsu new");
-    let _obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1)).expect("obu1 new");
-    let obu2 = Obu::new(args_obu2, Arc::new(tun_obu2), Arc::new(dev_obu2)).expect("obu2 new");
+    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu))?;
+    let _obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1))?;
+    let obu2 = Obu::new(args_obu2, Arc::new(tun_obu2), Arc::new(dev_obu2))?;
 
     // Wait for OBU2 to cache upstream route; expect it to eventually prefer OBU1
     // (two-hop path). Poll until the desired selection is observed.
@@ -91,9 +91,9 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     // Now simulate a send failure at OBU2 by shutting down reads on OBU2's hub endpoint (index 2).
     // This keeps the fd open but makes the peer's writes fail with EPIPE, triggering failover logic
     // without tearing down the entire hub.
-    unsafe {
-        libc::shutdown(hub_fds[2], libc::SHUT_RD);
-    }
+    // Simulate read-side shutdown on the hub endpoint to provoke EPIPE
+    // on the peer's writes without closing the descriptor entirely.
+    node_lib::test_helpers::util::shutdown_read(hub_fds[2]);
 
     // Repeatedly trigger upstream sends to force send errors and eventual failover
     // Repeatedly trigger upstream sends to force send errors and eventual failover
@@ -128,4 +128,6 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
         mac_obu1,
         "primary should have changed after failure"
     );
+
+    Ok(())
 }

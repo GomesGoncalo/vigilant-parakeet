@@ -119,21 +119,30 @@ pub fn mk_shim_tuns(n: usize) -> Vec<tun::Tun> {
 }
 
 /// Create `n` socketpairs and return (node_fds, hub_fds). Each entry is a raw fd.
-pub fn mk_socketpairs(n: usize) -> (Vec<i32>, Vec<i32>) {
+use std::io;
+
+/// Create `n` socketpairs and return (node_fds, hub_fds) or an io::Error.
+pub fn mk_socketpairs(n: usize) -> io::Result<(Vec<i32>, Vec<i32>)> {
     let mut node_fds = Vec::with_capacity(n);
     let mut hub_fds = Vec::with_capacity(n);
     for _ in 0..n {
         let mut fds = [0; 2];
         unsafe {
             let r = libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr());
-            assert_eq!(r, 0, "socketpair failed");
-            let _ = libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
-            let _ = libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
+            if r != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK) != 0 {
+                return Err(io::Error::last_os_error());
+            }
         }
         node_fds.push(fds[0]);
         hub_fds.push(fds[1]);
     }
-    (node_fds, hub_fds)
+    Ok((node_fds, hub_fds))
 }
 
 /// Convenience wrapper: spawn a `Hub` with given hub_fds, delays, and checks.
@@ -181,4 +190,51 @@ pub fn mk_hub_with_checks_flat(
 
     mk_hub_with_checks(hub_fds, delays_ms, checks);
     Ok(())
+}
+
+/// Safely shutdown the read side of a socket/file descriptor.
+/// This wraps the unsafe libc call and documents intent at call sites.
+pub fn shutdown_read(fd: i32) {
+    // Intentionally ignore the return value; callers use this to provoke
+    // EPIPE/EINVAL conditions on the peer without fully closing the fd.
+    unsafe {
+        let _ = libc::shutdown(fd, libc::SHUT_RD);
+    }
+}
+
+/// Create a pipe and make the writer end non-blocking. Returns (reader_fd, writer_fd).
+pub fn mk_pipe_nonblocking() -> std::io::Result<(i32, i32)> {
+    let mut fds = [0; 2];
+    unsafe {
+        if libc::pipe(fds.as_mut_ptr()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK) != 0 {
+            // attempt to close fds before returning error
+            let _ = libc::close(fds[0]);
+            let _ = libc::close(fds[1]);
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok((fds[0], fds[1]))
+}
+
+/// Read up to buf.len() bytes from fd into buf. Returns number of bytes read or io::Error.
+pub fn read_fd(fd: i32, buf: &mut [u8]) -> std::io::Result<usize> {
+    let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+    if n < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(n as usize)
+    }
+}
+
+/// Close a file descriptor, returning an io::Result.
+pub fn close_fd(fd: i32) -> std::io::Result<()> {
+    let r = unsafe { libc::close(fd) };
+    if r != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
