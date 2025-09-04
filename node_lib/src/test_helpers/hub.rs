@@ -1,16 +1,71 @@
 use mac_address::MacAddress;
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
+
+// Trait implemented by unit/integration tests to verify packets observed by the Hub.
+// Implementors can parse and assert whatever they need and set flags accordingly.
+pub trait HubCheck: Send + Sync + 'static {
+    fn on_packet(&self, from_idx: usize, data: &[u8]);
+}
+
+/// Reusable checker for Upstream packets, matching index, from/to, and optional payload.
+pub struct UpstreamMatchCheck {
+    pub idx: usize,
+    pub from: MacAddress,
+    pub to: MacAddress,
+    pub expected_payload: Option<Vec<u8>>, // None = don't check payload
+    pub flag: Arc<AtomicBool>,
+}
+
+impl HubCheck for UpstreamMatchCheck {
+    fn on_packet(&self, from_idx: usize, data: &[u8]) {
+        if from_idx != self.idx {
+            return;
+        }
+        if let Ok(msg) = crate::messages::message::Message::try_from(data) {
+            if let crate::messages::packet_type::PacketType::Data(
+                crate::messages::data::Data::Upstream(u),
+            ) = msg.get_packet_type()
+            {
+                if msg.from().ok() == Some(self.from) && msg.to().ok() == Some(self.to) {
+                    if let Some(exp) = &self.expected_payload {
+                        if u.data().as_ref() != &exp[..] {
+                            return;
+                        }
+                    }
+                    self.flag.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+    }
+}
+
+/// Reusable checker for any Downstream packet observed from a given hub index.
+pub struct DownstreamFromIdxCheck {
+    pub idx: usize,
+    pub flag: Arc<AtomicBool>,
+}
+
+impl HubCheck for DownstreamFromIdxCheck {
+    fn on_packet(&self, from_idx: usize, data: &[u8]) {
+        if from_idx != self.idx {
+            return;
+        }
+        if let Ok(msg) = crate::messages::message::Message::try_from(data) {
+            if let crate::messages::packet_type::PacketType::Data(
+                crate::messages::data::Data::Downstream(_),
+            ) = msg.get_packet_type()
+            {
+                self.flag.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+}
 
 pub struct Hub {
     hub_fds: Vec<i32>,
     delays_ms: [[u64; 3]; 3],
-    watch_up_from_idx: Option<usize>,
-    watch_flag: Option<Arc<AtomicBool>>,
-    watch_from_mac: Option<MacAddress>,
-    watch_to_mac: Option<MacAddress>,
-    watch_down_from_idx: Option<usize>,
-    watch_down_flag: Option<Arc<AtomicBool>>,
+    checks: Vec<Arc<dyn HubCheck>>,
 }
 
 impl Hub {
@@ -18,32 +73,19 @@ impl Hub {
         Self {
             hub_fds,
             delays_ms,
-            watch_up_from_idx: None,
-            watch_flag: None,
-            watch_from_mac: None,
-            watch_to_mac: None,
-            watch_down_from_idx: None,
-            watch_down_flag: None,
+            checks: Vec::new(),
         }
     }
 
-    pub fn with_upstream_watch(
-        mut self,
-        idx: usize,
-        from: MacAddress,
-        to: MacAddress,
-        flag: Arc<AtomicBool>,
-    ) -> Self {
-        self.watch_up_from_idx = Some(idx);
-        self.watch_flag = Some(flag);
-        self.watch_from_mac = Some(from);
-        self.watch_to_mac = Some(to);
+    /// Add a packet check to be invoked for every observed packet.
+    pub fn add_check(mut self, check: Arc<dyn HubCheck>) -> Self {
+        self.checks.push(check);
         self
     }
 
-    pub fn with_downstream_watch(mut self, idx: usize, flag: Arc<AtomicBool>) -> Self {
-        self.watch_down_from_idx = Some(idx);
-        self.watch_down_flag = Some(flag);
+    /// Replace the full list of checks.
+    pub fn with_checks(mut self, checks: Vec<Arc<dyn HubCheck>>) -> Self {
+        self.checks = checks;
         self
     }
 
@@ -51,12 +93,7 @@ impl Hub {
         tokio::spawn(async move {
             let hub_fds = self.hub_fds;
             let delays = self.delays_ms;
-            let watch_idx = self.watch_up_from_idx;
-            let watch_flag = self.watch_flag;
-            let watch_from = self.watch_from_mac;
-            let watch_to = self.watch_to_mac;
-            let watch_down_idx = self.watch_down_from_idx;
-            let watch_down_flag = self.watch_down_flag;
+            let checks = self.checks;
             loop {
                 for i in 0..hub_fds.len() {
                     let mut buf = vec![0u8; 2048];
@@ -65,45 +102,9 @@ impl Hub {
                     if n > 0 {
                         let n = n as usize;
                         buf.truncate(n);
-                        // Optional observation: if configured, detect an Upstream data packet arriving from index i
-                        if let (Some(idx), Some(flag)) = (watch_idx, watch_flag.as_ref()) {
-                            if idx == i {
-                                if let Ok(msg) =
-                                    crate::messages::message::Message::try_from(&buf[..])
-                                {
-                                    if let crate::messages::packet_type::PacketType::Data(
-                                        crate::messages::data::Data::Upstream(_),
-                                    ) = msg.get_packet_type()
-                                    {
-                                        if watch_from
-                                            .map(|m| msg.from().ok() == Some(m))
-                                            .unwrap_or(true)
-                                            && watch_to
-                                                .map(|m| msg.to().ok() == Some(m))
-                                                .unwrap_or(true)
-                                        {
-                                            flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // Optional observation: detect any Downstream data packet arriving from index i
-                        if let (Some(ds_idx), Some(flag)) =
-                            (watch_down_idx, watch_down_flag.as_ref())
-                        {
-                            if ds_idx == i {
-                                if let Ok(msg) =
-                                    crate::messages::message::Message::try_from(&buf[..])
-                                {
-                                    if let crate::messages::packet_type::PacketType::Data(
-                                        crate::messages::data::Data::Downstream(_),
-                                    ) = msg.get_packet_type()
-                                    {
-                                        flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                                    }
-                                }
-                            }
+                        // Invoke user-provided checks
+                        for check in &checks {
+                            check.on_packet(i, &buf);
                         }
 
                         for (j, out_fd) in hub_fds.iter().copied().enumerate() {

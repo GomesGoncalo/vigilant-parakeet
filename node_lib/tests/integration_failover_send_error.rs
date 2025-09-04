@@ -4,7 +4,7 @@ use common::tun::Tun;
 use node_lib::args::{Args, NodeParameters, NodeType};
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
-use node_lib::test_helpers::hub::Hub;
+use node_lib::test_helpers::hub::{Hub, UpstreamMatchCheck};
 use std::os::unix::io::FromRawFd;
 use std::sync::{atomic::AtomicBool, Arc};
 use std::time::Duration;
@@ -51,7 +51,7 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     let saw_upstream = Arc::new(AtomicBool::new(false));
 
     Hub::new(hub_fds.to_vec(), delays)
-        .with_upstream_watch(2, mac_obu2, mac_obu1, saw_upstream.clone())
+        .add_check(Arc::new(UpstreamMatchCheck { idx: 2, from: mac_obu2, to: mac_obu1, expected_payload: None, flag: saw_upstream.clone() }))
         .spawn();
 
     let dev_rsu = Device::from_asyncfd_for_bench(

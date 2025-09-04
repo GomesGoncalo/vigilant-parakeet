@@ -4,7 +4,7 @@ use common::tun::Tun;
 use node_lib::args::{Args, NodeParameters, NodeType};
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
-use node_lib::test_helpers::hub::Hub;
+use node_lib::test_helpers::hub::{Hub, UpstreamMatchCheck, DownstreamFromIdxCheck};
 use std::os::unix::io::FromRawFd;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -49,9 +49,10 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     // Make direct path RSU->OBU2 high latency (50ms), RSU<->OBU1 and OBU1<->OBU2 low (2ms)
     let delays = [[0, 2, 50], [2, 0, 2], [50, 2, 0]];
     let saw_forward_to_obu1 = Arc::new(AtomicBool::new(false));
+    // Payload we'll inject later; verify via hub check as well
+    let payload: &[u8] = b"test payload";
     Hub::new(hub_fds.to_vec(), delays)
-        // watch index 2 (OBU2's inbound to the hub) for an Upstream packet specifically from OBU2 headed to OBU1
-        .with_upstream_watch(2, mac_obu2, mac_obu1, saw_forward_to_obu1.clone())
+        .add_check(Arc::new(UpstreamMatchCheck { idx: 2, from: mac_obu2, to: mac_obu1, expected_payload: Some(payload.to_vec()), flag: saw_forward_to_obu1.clone() }))
         .spawn();
 
     let dev_rsu = Device::from_asyncfd_for_bench(
@@ -129,9 +130,9 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     );
 
     // Trigger an upstream send by writing on the peer end of OBU2's TUN; the session task should forward it.
-    let payload = b"test payload";
     let peer = Tun::new_shim(tun_obu2_b);
     let _ = peer.send_all(payload).await;
+    
 
     // Wait up to ~2s for the hub to observe the upstream packet
     for _ in 0..20 {
@@ -187,7 +188,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let delays = [[0, 2, 50], [2, 0, 2], [50, 2, 0]];
     let saw_downstream_from_rsu = Arc::new(AtomicBool::new(false));
     Hub::new(hub_fds.to_vec(), delays)
-        .with_downstream_watch(0, saw_downstream_from_rsu.clone()) // RSU index = 0
+        .add_check(Arc::new(DownstreamFromIdxCheck { idx: 0, flag: saw_downstream_from_rsu.clone() }))
         .spawn();
 
     // Wrap node ends as Devices
