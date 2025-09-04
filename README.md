@@ -309,12 +309,3 @@ Please run `cargo fmt` and `cargo clippy` before submitting.
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](./LICENSE) for details.
-
----
-
-If you'd like, I can:
-
-- add a short example that wires a full `simulator.yaml` with 3 nodes and a
-  sample run script, or
-- add module-level `///` Rust doc comments to `node_lib` and `common` to improve
-  API documentation.
