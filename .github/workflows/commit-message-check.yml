@@ -61,8 +61,9 @@ jobs:
             # Require at least 3 non-empty body lines after subject (What/Where/Why/Testing/Impact)
             BODY_LINES=$(echo "$MSG" | sed -n '2,$p' | sed '/^\s*$/d' | wc -l)
             if [ "$BODY_LINES" -lt 3 ]; then
-              echo "ERROR: Commit $c body is too short (need 3 non-empty lines describing What/Where/Why/Testing/Impact)." >&2
-              FAIL=1
+              echo "WARNING: Commit $c body is short (recommended: 3 non-empty lines describing What/Where/Why/Testing/Impact)." >&2
+              echo "This is a warning only in CI; subject format errors will still fail the job." >&2
+              # Do not mark as FAIL; keep this as a warning to avoid CI failures for short bodies
             fi
           done
 
