@@ -1297,7 +1297,7 @@ impl Routing {
         // Track that `pkt.from()` forwarded a heartbeat for `message.source()`
         self.source_neighbors
             .entry(message.source())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(pkt.from()?);
 
         // If we've already seen this heartbeat id for the given source, we've now ensured
@@ -1741,21 +1741,19 @@ impl Routing {
                     if best_score != u128::MAX {
                         // best candidate is measured; let the default return of
                         // best happen (do nothing here).
-                    } else {
-                        if let Some((_, _, _, cached_hops_ref)) = upstream_routes
-                            .iter()
-                            .find(|(_, _, mac_ref, _)| **mac_ref == cached_mac)
-                        {
-                            let cached_hops = **cached_hops_ref;
-                            if best_mac != cached_mac {
-                                let fewer_hops = best_hops < cached_hops;
-                                if !fewer_hops {
-                                    return Some(Route {
-                                        hops: cached_hops,
-                                        mac: cached_mac,
-                                        latency: None,
-                                    });
-                                }
+                    } else if let Some((_, _, _, cached_hops_ref)) = upstream_routes
+                        .iter()
+                        .find(|(_, _, mac_ref, _)| **mac_ref == cached_mac)
+                    {
+                        let cached_hops = **cached_hops_ref;
+                        if best_mac != cached_mac {
+                            let fewer_hops = best_hops < cached_hops;
+                            if !fewer_hops {
+                                return Some(Route {
+                                    hops: cached_hops,
+                                    mac: cached_mac,
+                                    latency: None,
+                                });
                             }
                         }
                     }

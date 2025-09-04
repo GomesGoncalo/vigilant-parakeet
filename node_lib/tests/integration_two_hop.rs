@@ -286,7 +286,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
             tokio::time::timeout(Duration::from_millis(100), tun_rsu_peer.recv(&mut buf)).await
         {
             let n = n.expect("rsu peer recv ok");
-            if n >= req.len() && &buf[..req.len()] == &req[..] {
+            if n >= req.len() && buf[..req.len()] == req[..] {
                 got_req_at_rsu = true;
                 break;
             }
@@ -341,7 +341,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
             if seen_samples.len() < 8 {
                 seen_samples.push(snapshot.clone());
             }
-            if n >= rep.len() && &snapshot[..rep.len()] == &rep[..] {
+            if n >= rep.len() && snapshot[..rep.len()] == rep[..] {
                 got_rep_at_obu2 = true;
                 break;
             }
