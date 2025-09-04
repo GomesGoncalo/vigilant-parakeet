@@ -107,7 +107,7 @@ pub fn init_test_tracing() {
 mod tests {
     use super::*;
     use common::device::{Device, DeviceIo};
-    use common::tun::test_tun::TokioTun;
+    use crate::test_helpers::util::mk_shim_pair;
     use std::os::unix::io::FromRawFd;
     use tokio::io::unix::AsyncFd;
 
@@ -126,9 +126,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_with_vdev_obu_and_rsu() {
-        let (a, b) = TokioTun::new_pair();
-        let tun_a = Arc::new(Tun::new_shim(a));
-        let tun_b = Arc::new(Tun::new_shim(b));
+        let (tun_a, tun_b) = mk_shim_pair();
+        let tun_a = Arc::new(tun_a);
+        let tun_b = Arc::new(tun_b);
         let mac_rsu: mac_address::MacAddress = [1, 2, 3, 4, 5, 6].into();
         let mac_obu: mac_address::MacAddress = [10, 11, 12, 13, 14, 15].into();
         let dev_rsu = Arc::new(make_dev(mac_rsu));

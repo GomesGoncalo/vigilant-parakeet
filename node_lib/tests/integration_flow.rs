@@ -1,6 +1,6 @@
-use node_lib::test_helpers::util::{mk_device_from_fd, mk_shim_pair};
 use mac_address::MacAddress;
 use node_lib::control::node::{handle_messages, ReplyType};
+use node_lib::test_helpers::util::{mk_device_from_fd, mk_shim_pair};
 use std::sync::Arc;
 
 #[tokio::test]
