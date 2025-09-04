@@ -109,19 +109,9 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
     // Create 3 node<->hub links as socketpairs: (node_fd[i], hub_fd[i])
-    let mut node_fds = [0; 3];
-    let mut hub_fds = [0; 3];
-    for i in 0..3 {
-        let mut fds = [0; 2];
-        unsafe {
-            let r = libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr());
-            assert_eq!(r, 0, "socketpair failed");
-            let _ = libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
-            let _ = libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
-        }
-        node_fds[i] = fds[0];
-        hub_fds[i] = fds[1];
-    }
+    let (node_fds_v, hub_fds_v) = node_lib::test_helpers::util::mk_socketpairs(3);
+    let node_fds = [node_fds_v[0], node_fds_v[1], node_fds_v[2]];
+    let hub_fds = [hub_fds_v[0], hub_fds_v[1], hub_fds_v[2]];
 
     // Node MACs: index 0=RSU, 1=OBU1, 2=OBU2
     let mac_rsu: mac_address::MacAddress = [1, 2, 3, 4, 5, 6].into();

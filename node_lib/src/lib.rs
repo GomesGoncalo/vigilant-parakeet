@@ -106,21 +106,16 @@ pub fn init_test_tracing() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common::device::{Device, DeviceIo};
     use crate::test_helpers::util::mk_shim_pair;
+    use common::device::{Device, DeviceIo};
     use std::os::unix::io::FromRawFd;
     use tokio::io::unix::AsyncFd;
 
     fn make_dev(mac: mac_address::MacAddress) -> Device {
-        let mut fds = [0; 2];
-        unsafe {
-            let r = libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr());
-            assert_eq!(r, 0, "socketpair failed");
-            let _ = libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
-        }
+        let (node_fds, _hub_fds) = crate::test_helpers::util::mk_socketpairs(1);
         Device::from_asyncfd_for_bench(
             mac,
-            AsyncFd::new(unsafe { DeviceIo::from_raw_fd(fds[0]) }).unwrap(),
+            AsyncFd::new(unsafe { DeviceIo::from_raw_fd(node_fds[0]) }).unwrap(),
         )
     }
 

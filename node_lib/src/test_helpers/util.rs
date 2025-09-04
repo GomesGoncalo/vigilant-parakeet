@@ -111,9 +111,9 @@ pub fn mk_hub_with_checks_flat(
     checks: Vec<std::sync::Arc<dyn crate::test_helpers::hub::HubCheck>>,
 ) -> Result<()> {
     let n = hub_fds.len();
-    let expected_len = n.checked_mul(n).ok_or_else(|| {
-        anyhow::anyhow!("overflow computing n*n for hub_fds length={}", n)
-    })?;
+    let expected_len = n
+        .checked_mul(n)
+        .ok_or_else(|| anyhow::anyhow!("overflow computing n*n for hub_fds length={}", n))?;
     if delays_flat.len() != expected_len {
         return Err(anyhow::anyhow!(
             "delays_flat length must be n*n (got {} expected {})",
