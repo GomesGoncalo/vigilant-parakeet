@@ -131,7 +131,9 @@ pub async fn poll_tun_recv_expected_mocked(
 ) -> bool {
     let mut buf = vec![0u8; 256];
     for _ in 0..attempts {
-        if let Some(n) = poll_tun_recv_with_timeout_mocked(tun, &mut buf, timeout_ms, attempts).await {
+        if let Some(n) =
+            poll_tun_recv_with_timeout_mocked(tun, &mut buf, timeout_ms, attempts).await
+        {
             if n >= expected.len() && buf[..expected.len()] == expected[..] {
                 return true;
             }

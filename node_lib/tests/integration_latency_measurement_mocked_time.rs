@@ -1,16 +1,18 @@
 use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
-use node_lib::test_helpers::util::{mk_args, mk_device_from_fd, mk_hub_with_checks_mocked_time, mk_shim_pairs};
+use node_lib::test_helpers::util::{
+    mk_args, mk_device_from_fd, mk_hub_with_checks_mocked_time, mk_shim_pairs,
+};
 use std::time::Duration;
 
 /// Test that demonstrates the latency measurement issue with mocked time.
-/// 
+///
 /// This test should verify that latency-based routing decisions work correctly
 /// with mocked time, but currently fails due to timing measurement issues.
-/// 
+///
 /// Issue: https://github.com/GomesGoncalo/vigilant-parakeet/issues/XXX
-/// 
+///
 /// The problem is that with `tokio::time::pause()` and discrete time advancement,
 /// the latency measurement system used by the routing algorithm doesn't work
 /// correctly, affecting the core latency-aware route selection functionality.
@@ -18,7 +20,7 @@ use std::time::Duration;
 #[ignore = "Latency measurement doesn't work correctly with mocked time - Issue #XXX"]
 async fn test_latency_measurement_with_mocked_time() {
     node_lib::init_test_tracing();
-    
+
     // Use mocked time - this is where the problem occurs
     tokio::time::pause();
 
@@ -39,8 +41,8 @@ async fn test_latency_measurement_with_mocked_time() {
 
     // Set up hub with a known delay (e.g., 20ms)
     let delays: Vec<Vec<u64>> = vec![
-        vec![0, 20],  // RSU -> OBU: 20ms
-        vec![20, 0],  // OBU -> RSU: 20ms
+        vec![0, 20], // RSU -> OBU: 20ms
+        vec![20, 0], // OBU -> RSU: 20ms
     ];
 
     mk_hub_with_checks_mocked_time(hub_fds.to_vec(), delays, vec![]);
@@ -59,9 +61,10 @@ async fn test_latency_measurement_with_mocked_time() {
     // Wait for OBU to receive heartbeats and cache an upstream route with latency measurement
     // With working latency measurement, the OBU should cache a route with latency info
     let mut route_found = false;
-    for i in 0..500 {  // up to 5s worth, checking every 10ms
+    for i in 0..500 {
+        // up to 5s worth, checking every 10ms
         tokio::time::advance(Duration::from_millis(10)).await;
-        
+
         // Check if the OBU has cached an upstream route with latency measurement
         if let Some(cached_route) = obu.cached_upstream_route() {
             tracing::debug!(
@@ -70,7 +73,7 @@ async fn test_latency_measurement_with_mocked_time() {
                 route_latency = ?cached_route.latency,
                 "Found cached upstream route"
             );
-            
+
             // Check if latency measurement is working correctly
             if cached_route.latency.is_some() {
                 // With the 20ms delay set in the hub, we should see meaningful latency measurements
@@ -78,15 +81,21 @@ async fn test_latency_measurement_with_mocked_time() {
                 break;
             }
         }
-        
+
         if i % 10 == 0 {
-            tracing::debug!(iteration = i, "Polling for cached upstream route with latency measurement");
+            tracing::debug!(
+                iteration = i,
+                "Polling for cached upstream route with latency measurement"
+            );
         }
     }
 
     // This assertion should pass if latency measurement works correctly with mocked time
-    assert!(route_found, "OBU should cache upstream route with latency measurement");
-    
+    assert!(
+        route_found,
+        "OBU should cache upstream route with latency measurement"
+    );
+
     // Additional verification: check that the measured latency is reasonable
     if let Some(cached_route) = obu.cached_upstream_route() {
         if let Some(latency) = cached_route.latency {
