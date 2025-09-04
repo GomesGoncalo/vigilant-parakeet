@@ -2,7 +2,7 @@ use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
 use node_lib::test_helpers::hub::{DownstreamFromIdxCheck, UpstreamMatchCheck};
-use node_lib::test_helpers::util::{mk_args, mk_device_from_fd, mk_shim_pairs, mk_hub_with_checks};
+use node_lib::test_helpers::util::{mk_args, mk_device_from_fd, mk_shim_pairs, mk_hub_with_checks_mocked_time};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -13,7 +13,7 @@ use std::time::Duration;
 async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     node_lib::init_test_tracing();
     // Use mocked time for deterministic test execution - MUST be before node creation
-    // tokio::time::pause();
+    tokio::time::pause();
 
     // Create 3 shim TUN pairs and keep the peer for OBU2
     let mut pairs = mk_shim_pairs(3);
@@ -38,7 +38,7 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     // Payload we'll inject later; verify via hub check as well
     let payload: &[u8] = b"test payload";
 
-    mk_hub_with_checks(
+    mk_hub_with_checks_mocked_time(
         hub_fds.to_vec(),
         delays,
         vec![Arc::new(UpstreamMatchCheck {
@@ -69,7 +69,7 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     // RSU sends heartbeats every 50ms, so check every 100ms
     let mut cached = None;
     for i in 0..100 { // up to 10s worth 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::advance(Duration::from_millis(100)).await;
         cached = obu2.cached_upstream_mac();
         tracing::debug!(poll = i, cached_upstream = ?cached, "polling for upstream selection");
         if cached == Some(mac_obu1) {
@@ -107,7 +107,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     node_lib::init_test_tracing();
 
     // Use mocked time for deterministic test execution - MUST be before node creation
-    // tokio::time::pause();
+    tokio::time::pause();
 
     // Create shim TUN pairs and keep peers for RSU and OBU2
     let mut pairs = mk_shim_pairs(3);
@@ -129,7 +129,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let delays: Vec<Vec<u64>> = vec![vec![0, 2, 50], vec![2, 0, 2], vec![50, 2, 0]];
     let saw_downstream_from_rsu = Arc::new(AtomicBool::new(false));
 
-    mk_hub_with_checks(
+    mk_hub_with_checks_mocked_time(
         hub_fds.to_vec(),
         delays,
         vec![Arc::new(DownstreamFromIdxCheck {
@@ -155,7 +155,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     // Wait for OBU2 to cache upstream via OBU1 (two-hop path preferred)
     let mut cached = None;
     for i in 0..200 { // equivalent to 20s
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::advance(Duration::from_millis(100)).await;
         cached = obu2.cached_upstream_mac();
         tracing::debug!(poll = i, cached_upstream = ?cached, "polling for upstream selection");
         if cached == Some(mac_obu1) {
@@ -177,7 +177,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     prime.extend_from_slice(b"prime");
     tun_rsu_peer.send_all(&prime).await.expect("tun_rsu_peer.send_all failed");
     // Give a moment for RSU to process and store mapping
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::advance(Duration::from_millis(100)).await;
 
     // Compose a "ping" request frame from OBU2 destined to RSU
     let payload_req = b"ping-req";
@@ -195,7 +195,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     assert!(got_req_at_rsu, "RSU did not receive ping request on TUN");
 
     // Give RSU additional time to ensure it has a route to OBU2
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::advance(Duration::from_millis(1500)).await;
 
     // Now craft and send a reply from RSU back to OBU2 via RSU's TUN
     let payload_rep = b"ping-rep";
@@ -210,7 +210,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
         if saw_downstream_from_rsu.load(Ordering::SeqCst) {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::advance(Duration::from_millis(100)).await;
     }
     println!(
         "hub saw downstream from RSU: {}",
@@ -222,7 +222,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
         if saw_downstream_from_rsu.load(Ordering::SeqCst) {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::advance(Duration::from_millis(100)).await;
     }
 
     // Expect OBU2's TUN to receive the full downstream reply frame (to+from+payload)
