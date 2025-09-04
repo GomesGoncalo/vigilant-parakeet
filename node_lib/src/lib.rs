@@ -67,7 +67,7 @@ pub fn create(args: Args) -> Result<Arc<dyn Node>> {
             .build()?
             .into_iter()
             .next()
-            .expect("Expecting at least 1 item in vec")
+            .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
     } else {
         RealTokioTun::builder()
             .name(args.tap_name.as_ref().unwrap_or(&String::default()))
@@ -77,7 +77,7 @@ pub fn create(args: Args) -> Result<Arc<dyn Node>> {
             .build()?
             .into_iter()
             .next()
-            .expect("Expecting at least 1 item in vec")
+            .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
     };
 
     // Use From/Into impl to convert the concrete real_tun into our `Tun`.
@@ -112,7 +112,8 @@ mod tests {
     use tokio::io::unix::AsyncFd;
 
     fn make_dev(mac: mac_address::MacAddress) -> Device {
-        let (node_fds, _hub_fds) = crate::test_helpers::util::mk_socketpairs(1);
+        let (node_fds, _hub_fds) =
+            crate::test_helpers::util::mk_socketpairs(1).expect("mk_socketpairs(1) failed");
         Device::from_asyncfd_for_bench(
             mac,
             AsyncFd::new(unsafe { DeviceIo::from_raw_fd(node_fds[0]) }).unwrap(),

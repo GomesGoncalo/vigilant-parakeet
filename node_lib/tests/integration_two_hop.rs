@@ -10,7 +10,7 @@ use std::sync::{
 use std::time::Duration;
 
 #[tokio::test]
-async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
+async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() -> anyhow::Result<()> {
     node_lib::init_test_tracing();
 
     // Create 3 shim TUN pairs and keep the peer for OBU2
@@ -20,7 +20,7 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
     // Create 3 node<->hub links as socketpairs: (node_fd[i], hub_fd[i])
-    let (node_fds_v, hub_fds_v) = node_lib::test_helpers::util::mk_socketpairs(3);
+    let (node_fds_v, hub_fds_v) = node_lib::test_helpers::util::mk_socketpairs(3)?;
     let node_fds = [node_fds_v[0], node_fds_v[1], node_fds_v[2]];
     let hub_fds = [hub_fds_v[0], hub_fds_v[1], hub_fds_v[2]];
 
@@ -57,10 +57,10 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     let args_obu2 = mk_args(NodeType::Obu, None);
 
     // Construct nodes
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).expect("rsu new");
-    let _obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1)).expect("obu1 new");
+    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu))?;
+    let _obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1))?;
     let tun_obu2_arc = Arc::new(tun_obu2);
-    let obu2 = Obu::new(args_obu2, tun_obu2_arc, Arc::new(dev_obu2)).expect("obu2 new");
+    let obu2 = Obu::new(args_obu2, tun_obu2_arc, Arc::new(dev_obu2))?;
 
     // Wait for OBU2 to cache upstream route; expect it to be OBU1 (two-hop path)
     let cached =
@@ -72,7 +72,7 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     );
 
     // Trigger an upstream send by writing on the peer end of OBU2's TUN; the session task should forward it.
-    let _ = tun_obu2_peer.send_all(payload).await;
+    tun_obu2_peer.send_all(payload).await?;
 
     // Wait up to ~2s for the hub to observe the upstream packet
     let saw = node_lib::test_helpers::util::poll_until(
@@ -91,6 +91,8 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
         saw.is_some(),
         "hub did not observe upstream forwarded to OBU1"
     );
+
+    Ok(())
 }
 
 /// End-to-end: OBU2 "pings" RSU two hops away. We inject a request frame into
@@ -99,7 +101,7 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
 /// and expect OBU2's TUN to receive the reply payload. This verifies both
 /// directions succeed across the two-hop route selection.
 #[tokio::test]
-async fn two_hop_ping_roundtrip_obu2_to_rsu() {
+async fn two_hop_ping_roundtrip_obu2_to_rsu() -> anyhow::Result<()> {
     node_lib::init_test_tracing();
 
     // Create shim TUN pairs and keep peers for RSU and OBU2
@@ -109,7 +111,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
     // Create 3 node<->hub links as socketpairs: (node_fd[i], hub_fd[i])
-    let (node_fds_v, hub_fds_v) = node_lib::test_helpers::util::mk_socketpairs(3);
+    let (node_fds_v, hub_fds_v) = node_lib::test_helpers::util::mk_socketpairs(3)?;
     let node_fds = [node_fds_v[0], node_fds_v[1], node_fds_v[2]];
     let hub_fds = [hub_fds_v[0], hub_fds_v[1], hub_fds_v[2]];
 
@@ -140,10 +142,9 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let args_obu = mk_args(NodeType::Obu, None);
 
     // Construct nodes
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).expect("rsu new");
-    let _obu1 =
-        Obu::new(args_obu.clone(), Arc::new(tun_obu1), Arc::new(dev_obu1)).expect("obu1 new");
-    let obu2 = Obu::new(args_obu, Arc::new(tun_obu2), Arc::new(dev_obu2)).expect("obu2 new");
+    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu))?;
+    let _obu1 = Obu::new(args_obu.clone(), Arc::new(tun_obu1), Arc::new(dev_obu1))?;
+    let obu2 = Obu::new(args_obu, Arc::new(tun_obu2), Arc::new(dev_obu2))?;
 
     // Wait for OBU2 to cache upstream via OBU1 (two-hop path preferred)
     let cached =
@@ -156,10 +157,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     prime.extend_from_slice(&[255u8; 6]); // dest broadcast
     prime.extend_from_slice(&mac_rsu.bytes()); // from = RSU
     prime.extend_from_slice(b"prime");
-    tun_rsu_peer
-        .send_all(&prime)
-        .await
-        .expect("prime send to RSU tun");
+    tun_rsu_peer.send_all(&prime).await?;
     // Give a moment for RSU to process and store mapping
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -171,10 +169,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     req.extend_from_slice(payload_req); // body
 
     // Send request into OBU2's TUN (session will forward upstream over two hops)
-    tun_obu2_peer
-        .send_all(&req)
-        .await
-        .expect("send ping req to OBU2 tun");
+    tun_obu2_peer.send_all(&req).await?;
 
     // Expect RSU's TUN to receive the full upstream request frame (to+from+payload)
     let got_req_at_rsu =
@@ -201,10 +196,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     rep.extend_from_slice(&mac_obu2.bytes()); // to
     rep.extend_from_slice(&mac_rsu.bytes()); // from
     rep.extend_from_slice(payload_rep);
-    tun_rsu_peer
-        .send_all(&rep)
-        .await
-        .expect("send ping reply from RSU tun");
+    tun_rsu_peer.send_all(&rep).await?;
 
     // Wait for hub to observe a Downstream packet from RSU (port index 0)
     let saw = node_lib::test_helpers::util::poll_until(
@@ -225,4 +217,6 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let got_rep_at_obu2 =
         node_lib::test_helpers::util::poll_tun_recv_expected(&tun_obu2_peer, &rep, 100, 150).await;
     assert!(got_rep_at_obu2, "OBU2 did not receive ping reply on TUN");
+
+    Ok(())
 }

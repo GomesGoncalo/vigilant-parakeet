@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
                 .build()?
                 .into_iter()
                 .next()
-                .expect("Expecting at least 1 item in vec"),
+                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?,
         ));
         #[cfg(feature = "test_helpers")]
         let tun = {
@@ -151,7 +151,7 @@ async fn main() -> Result<()> {
                 .build()?
                 .into_iter()
                 .next()
-                .expect("Expecting at least 1 item in vec")
+                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
         } else {
             TokioTun::builder()
                 .tap()
@@ -161,7 +161,7 @@ async fn main() -> Result<()> {
                 .build()?
                 .into_iter()
                 .next()
-                .expect("Expecting at least 1 item in vec")
+                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
         }));
         #[cfg(feature = "test_helpers")]
         let virtual_tun = {
@@ -173,7 +173,7 @@ async fn main() -> Result<()> {
         let node = node_lib::create_with_vdev(args, virtual_tun, dev.clone())?;
         devices
             .lock()
-            .unwrap()
+            .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
             .insert(name.to_string(), (dev.clone(), tun.clone()));
         Ok((dev, tun, node))
     })?;
@@ -185,7 +185,8 @@ async fn main() -> Result<()> {
             .and(warp::path("nodes"))
             .and(warp::path::end())
             .map(move || {
-                warp::reply::json(&devicesc.lock().unwrap().keys().cloned().collect_vec())
+                let guard = devicesc.lock().unwrap_or_else(|e| e.into_inner());
+                warp::reply::json(&guard.keys().cloned().collect_vec())
             });
 
         let devicesc = devices.clone();
@@ -193,10 +194,9 @@ async fn main() -> Result<()> {
             .and(warp::path("stats"))
             .and(warp::path::end())
             .map(move || {
+                let guard = devicesc.lock().unwrap_or_else(|e| e.into_inner());
                 warp::reply::json(
-                    &devicesc
-                        .lock()
-                        .unwrap()
+                    &guard
                         .iter()
                         .map(|(node, (device, tun))| (node, (device.stats(), tun.stats())))
                         .collect::<HashMap<_, _>>(),
@@ -207,9 +207,8 @@ async fn main() -> Result<()> {
             .and(warp::path!("node" / String))
             .and(warp::path::end())
             .map(move |node: String| {
-                let Some(reply) = &devices
-                    .lock()
-                    .unwrap()
+                let guard = devices.lock().unwrap_or_else(|e| e.into_inner());
+                let Some(reply) = &guard
                     .get(&node)
                     .map(|(device, tun)| (device.stats(), tun.stats()))
                 else {

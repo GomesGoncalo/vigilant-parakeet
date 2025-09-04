@@ -8,14 +8,14 @@ use std::time::Duration;
 /// Integration test: create an RSU and an OBU connected by a bidirectional
 /// socketpair and check that the OBU learns the RSU as its upstream.
 #[tokio::test]
-async fn rsu_and_obu_topology_discovery() {
+async fn rsu_and_obu_topology_discovery() -> anyhow::Result<()> {
     // Initialize tracing for test output
     node_lib::init_test_tracing();
     // Create shim tun pair using shared helper
     let (tun_a, tun_b) = mk_shim_pair();
 
     // Create a socketpair for bidirectional communication between devices
-    let (node_fds, _hub_fds) = node_lib::test_helpers::util::mk_socketpairs(1);
+    let (node_fds, _hub_fds) = node_lib::test_helpers::util::mk_socketpairs(1)?;
     let mac_a: mac_address::MacAddress = [1u8, 2, 3, 4, 5, 6].into();
     let mac_b: mac_address::MacAddress = [10u8, 11, 12, 13, 14, 15].into();
 
@@ -27,8 +27,8 @@ async fn rsu_and_obu_topology_discovery() {
     let args_obu = mk_args(NodeType::Obu, None);
 
     // Construct nodes (they spawn background tasks)
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_a), Arc::new(dev_a)).expect("rsu new");
-    let obu = Obu::new(args_obu, Arc::new(tun_b), Arc::new(dev_b)).expect("obu new");
+    let _rsu = Rsu::new(args_rsu, Arc::new(tun_a), Arc::new(dev_a))?;
+    let obu = Obu::new(args_obu, Arc::new(tun_b), Arc::new(dev_b))?;
 
     // Wait (poll) up to 5s for the OBU to discover an upstream route.
     // Polling reduces flakiness and prints progress for debugging.
@@ -45,4 +45,6 @@ async fn rsu_and_obu_topology_discovery() {
     // The OBU should have discovered the RSU as its upstream
     assert!(cached.is_some(), "OBU did not discover an upstream");
     assert_eq!(cached.unwrap(), mac_a);
+
+    Ok(())
 }

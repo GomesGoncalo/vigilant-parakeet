@@ -68,7 +68,7 @@ mod tests {
         inc_cache_select();
         let after = cache_select_count();
         assert!(
-            after >= before + 1,
+            after > before,
             "counter did not increase: before={} after={}",
             before,
             after
@@ -81,7 +81,7 @@ mod tests {
         inc_cache_clear();
         let after = cache_clear_count();
         assert!(
-            after >= before + 1,
+            after > before,
             "cache clear counter did not increase: before={} after={}",
             before,
             after
