@@ -1,10 +1,9 @@
-use common::tun::test_tun::TokioTun;
-use common::tun::Tun;
+use node_lib::test_helpers::util::mk_shim_pairs;
 use node_lib::args::NodeType;
-use node_lib::test_helpers::util::{mk_device_from_fd, mk_args, poll_until};
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
-use node_lib::test_helpers::hub::{Hub, UpstreamMatchCheck};
+use node_lib::test_helpers::hub::UpstreamMatchCheck;
+use node_lib::test_helpers::util::{mk_args, mk_device_from_fd, poll_until};
 use std::sync::{atomic::AtomicBool, Arc};
 use std::time::Duration;
 
@@ -16,15 +15,11 @@ use std::time::Duration;
 async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     node_lib::init_test_tracing();
 
-    // Create 3 TUNs (one per node). Keep OBU2's peer so we can inject upstream traffic reliably.
-    let (tun_rsu_a, _) = TokioTun::new_pair();
-    let (tun_obu1_a, _) = TokioTun::new_pair();
-    let (tun_obu2_a, tun_obu2_b) = TokioTun::new_pair();
-    let tun_rsu = Tun::new_shim(tun_rsu_a);
-    let tun_obu1 = Tun::new_shim(tun_obu1_a);
-    let tun_obu2 = Tun::new_shim(tun_obu2_a);
-    // keep the peer end of OBU2's shim so tests can inject traffic without using the Tun moved into the node
-    let tun_obu2_peer = Tun::new_shim(tun_obu2_b);
+    // Create shim TUN pairs and keep the peer for OBU2
+    let mut pairs = mk_shim_pairs(3);
+    let (tun_rsu, _peer0) = pairs.remove(0);
+    let (tun_obu1, _peer1) = pairs.remove(0);
+    let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
     // Create 3 node<->hub links as socketpairs: (node_fd[i], hub_fd[i])
     let (node_fds_v, hub_fds_v) = node_lib::test_helpers::util::mk_socketpairs(3);
@@ -37,18 +32,20 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     let mac_obu2: mac_address::MacAddress = [20, 21, 22, 23, 24, 25].into();
 
     // Hub delays: prefer RSU<->OBU1 and OBU1<->OBU2 (2ms) over direct RSU<->OBU2 (50ms).
-    let delays = [[0, 2, 50], [2, 0, 2], [50, 2, 0]];
+    let delays: Vec<Vec<u64>> = vec![vec![0, 2, 50], vec![2, 0, 2], vec![50, 2, 0]];
     let saw_upstream = Arc::new(AtomicBool::new(false));
 
-    Hub::new(hub_fds.to_vec(), delays)
-        .add_check(Arc::new(UpstreamMatchCheck {
+    node_lib::test_helpers::util::mk_hub_with_checks(
+        hub_fds.to_vec(),
+        delays,
+        vec![Arc::new(UpstreamMatchCheck {
             idx: 2,
             from: mac_obu2,
             to: mac_obu1,
             expected_payload: None,
             flag: saw_upstream.clone(),
-        }))
-        .spawn();
+        }) as Arc<dyn node_lib::test_helpers::hub::HubCheck>],
+    );
 
     let dev_rsu = mk_device_from_fd(mac_rsu, node_fds[0]);
     let dev_obu1 = mk_device_from_fd(mac_obu1, node_fds[1]);
@@ -100,11 +97,11 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     }
 
     // Repeatedly trigger upstream sends to force send errors and eventual failover
+    let _ = tun_obu2_peer.send_all(b"trigger after close").await;
+    for _ in 0..5 {
         let _ = tun_obu2_peer.send_all(b"trigger after close").await;
-        for _ in 0..5 {
-            let _ = tun_obu2_peer.send_all(b"trigger after close").await;
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     // Wait for OBU2 to promote to the next candidate (not OBU1)
     let promoted = poll_until(
@@ -121,6 +118,13 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     )
     .await;
 
-    assert!(promoted.is_some(), "OBU2 did not promote after send failure");
-    assert_ne!(promoted.unwrap(), mac_obu1, "primary should have changed after failure");
+    assert!(
+        promoted.is_some(),
+        "OBU2 did not promote after send failure"
+    );
+    assert_ne!(
+        promoted.unwrap(),
+        mac_obu1,
+        "primary should have changed after failure"
+    );
 }

@@ -67,12 +67,12 @@ impl HubCheck for DownstreamFromIdxCheck {
 
 pub struct Hub {
     hub_fds: Vec<i32>,
-    delays_ms: [[u64; 3]; 3],
+    delays_ms: Vec<Vec<u64>>,
     checks: Vec<Arc<dyn HubCheck>>,
 }
 
 impl Hub {
-    pub fn new(hub_fds: Vec<i32>, delays_ms: [[u64; 3]; 3]) -> Self {
+    pub fn new(hub_fds: Vec<i32>, delays_ms: Vec<Vec<u64>>) -> Self {
         Self {
             hub_fds,
             delays_ms,
@@ -114,7 +114,13 @@ impl Hub {
                             if j == i {
                                 continue;
                             }
-                            let delay = Duration::from_millis(delays[i][j]);
+                            // Safely index into the delays matrix; default to 0ms when absent.
+                            let delay_ms = delays
+                                .get(i)
+                                .and_then(|r| r.get(j))
+                                .copied()
+                                .unwrap_or(0u64);
+                            let delay = Duration::from_millis(delay_ms);
                             let data = buf.clone();
                             tokio::spawn(async move {
                                 if delay.as_millis() > 0 {

@@ -1,11 +1,13 @@
 #[cfg(feature = "webview")]
 use crate::simulator::Channel;
+#[cfg(not(feature = "test_helpers"))]
 use anyhow::Context;
 use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
 use common::device::Device;
 #[cfg(feature = "webview")]
 use common::network_interface::NetworkInterface;
+#[cfg(not(feature = "test_helpers"))]
 use common::tun::Tun;
 use config::Config;
 #[cfg(feature = "webview")]
@@ -108,10 +110,9 @@ async fn main() -> Result<()> {
         ));
         #[cfg(feature = "test_helpers")]
         let tun = {
-            // test build: the test shim is active; construct a placeholder
-            // Tun by creating the shim via its new_pair and taking one end.
-            let (a, _b) = common::tun::test_tun::TokioTun::new_pair();
-            Arc::new(Tun::from(a))
+            // test build: use shared test helper to construct a shim Tun and take one end.
+            let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+            Arc::new(tun_a)
         };
 
         // Read optional cached_candidates; default to 3 when not present or invalid.
@@ -164,8 +165,8 @@ async fn main() -> Result<()> {
         }));
         #[cfg(feature = "test_helpers")]
         let virtual_tun = {
-            let (a, _b) = common::tun::test_tun::TokioTun::new_pair();
-            Arc::new(Tun::from(a))
+            let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+            Arc::new(tun_a)
         };
 
         let dev = Arc::new(Device::new(tun.name())?);

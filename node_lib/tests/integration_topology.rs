@@ -1,7 +1,7 @@
 use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
-use node_lib::test_helpers::util::{mk_device_from_fd, mk_args, mk_shim_pair};
+use node_lib::test_helpers::util::{mk_args, mk_device_from_fd, mk_shim_pair};
 use std::sync::Arc;
 use std::time::Duration;
 

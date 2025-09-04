@@ -52,7 +52,7 @@ Purpose: Help AI coding agents be productive quickly in this Rust workspace by c
 - Creating devices for tests:
   - `let dev = Device::from_asyncfd_for_bench(mac, AsyncFd::new(DeviceIo::from_raw_fd(fd))?)` (ensure `O_NONBLOCK`).
 - Tun shim pair:
-  - `let (a, b) = common::tun::test_tun::TokioTun::new_pair(); let tun = Tun::new_shim(a);`
+  - `let (a, b) = node_lib::test_helpers::util::mk_shim_pair(); // returns (Tun, Tun) shim pair`
 - Selecting and caching a route:
   - `if let Some(route) = routing.select_and_cache_upstream(target_mac) { /* use route.next_hop */ }`
 

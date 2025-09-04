@@ -1,8 +1,8 @@
 use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
-use node_lib::test_helpers::hub::{DownstreamFromIdxCheck, Hub, UpstreamMatchCheck};
-use node_lib::test_helpers::util::{mk_device_from_fd, mk_args, mk_shim_pairs};
+use node_lib::test_helpers::hub::{DownstreamFromIdxCheck, UpstreamMatchCheck};
+use node_lib::test_helpers::util::{mk_args, mk_device_from_fd, mk_shim_pairs};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -31,19 +31,21 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
 
     // Spawn the hub with delay matrix: index 0=RSU, 1=OBU1, 2=OBU2
     // Make direct path RSU->OBU2 high latency (50ms), RSU<->OBU1 and OBU1<->OBU2 low (2ms)
-    let delays = [[0, 2, 50], [2, 0, 2], [50, 2, 0]];
+    let delays: Vec<Vec<u64>> = vec![vec![0, 2, 50], vec![2, 0, 2], vec![50, 2, 0]];
     let saw_forward_to_obu1 = Arc::new(AtomicBool::new(false));
     // Payload we'll inject later; verify via hub check as well
     let payload: &[u8] = b"test payload";
-    Hub::new(hub_fds.to_vec(), delays)
-        .add_check(Arc::new(UpstreamMatchCheck {
+    node_lib::test_helpers::util::mk_hub_with_checks(
+        hub_fds.to_vec(),
+        delays,
+        vec![Arc::new(UpstreamMatchCheck {
             idx: 2,
             from: mac_obu2,
             to: mac_obu1,
             expected_payload: Some(payload.to_vec()),
             flag: saw_forward_to_obu1.clone(),
-        }))
-        .spawn();
+        }) as Arc<dyn node_lib::test_helpers::hub::HubCheck>],
+    );
 
     let dev_rsu = mk_device_from_fd(mac_rsu, node_fds[0]);
     let dev_obu1 = mk_device_from_fd(mac_obu1, node_fds[1]);
@@ -127,14 +129,16 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let mac_obu2: mac_address::MacAddress = [20, 21, 22, 23, 24, 25].into();
 
     // Hub delays: prefer RSU<->OBU1 and OBU1<->OBU2 (2ms) over direct RSU<->OBU2 (50ms).
-    let delays = [[0, 2, 50], [2, 0, 2], [50, 2, 0]];
+    let delays: Vec<Vec<u64>> = vec![vec![0, 2, 50], vec![2, 0, 2], vec![50, 2, 0]];
     let saw_downstream_from_rsu = Arc::new(AtomicBool::new(false));
-    Hub::new(hub_fds.to_vec(), delays)
-        .add_check(Arc::new(DownstreamFromIdxCheck {
+    node_lib::test_helpers::util::mk_hub_with_checks(
+        hub_fds.to_vec(),
+        delays,
+        vec![Arc::new(DownstreamFromIdxCheck {
             idx: 0,
             flag: saw_downstream_from_rsu.clone(),
-        }))
-        .spawn();
+        }) as Arc<dyn node_lib::test_helpers::hub::HubCheck>],
+    );
 
     // Wrap node ends as Devices using shared helper
     let dev_rsu = mk_device_from_fd(mac_rsu, node_fds[0]);

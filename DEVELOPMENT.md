@@ -103,8 +103,9 @@ use node_lib::test_helpers::hub::Hub;
 - For TUN-level testing use the shim exposed in `common`:
 
 ```rust
-let (a, b) = common::tun::test_tun::TokioTun::new_pair();
-let tun = common::Tun::new_shim(a);
+// Prefer the shared shim helper that returns (Tun, Tun) already wrapped.
+let (a, b) = node_lib::test_helpers::util::mk_shim_pair();
+let tun = a; // `a` and `b` are `common::tun::Tun` values
 ```
 
   This avoids creating OS TUN devices in CI or local development.
