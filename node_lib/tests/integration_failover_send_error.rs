@@ -1,14 +1,12 @@
-use common::device::{Device, DeviceIo};
 use common::tun::test_tun::TokioTun;
 use common::tun::Tun;
-use node_lib::args::{Args, NodeParameters, NodeType};
+use node_lib::args::NodeType;
+use node_lib::test_helpers::util::{mk_device_from_fd, mk_args, poll_until};
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
 use node_lib::test_helpers::hub::{Hub, UpstreamMatchCheck};
-use std::os::unix::io::FromRawFd;
 use std::sync::{atomic::AtomicBool, Arc};
 use std::time::Duration;
-use tokio::io::unix::AsyncFd;
 
 /// Integration test: build RSU, OBU1, OBU2 connected by a hub. OBU2 should
 /// prefer OBU1 as upstream (two-hop) given the delay matrix. Then close OBU1's
@@ -25,21 +23,13 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     let tun_rsu = Tun::new_shim(tun_rsu_a);
     let tun_obu1 = Tun::new_shim(tun_obu1_a);
     let tun_obu2 = Tun::new_shim(tun_obu2_a);
+    // keep the peer end of OBU2's shim so tests can inject traffic without using the Tun moved into the node
+    let tun_obu2_peer = Tun::new_shim(tun_obu2_b);
 
     // Create 3 node<->hub links as socketpairs: (node_fd[i], hub_fd[i])
-    let mut node_fds = [0; 3];
-    let mut hub_fds = [0; 3];
-    for i in 0..3 {
-        let mut fds = [0; 2];
-        unsafe {
-            let r = libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr());
-            assert_eq!(r, 0, "socketpair failed");
-            let _ = libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
-            let _ = libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
-        }
-        node_fds[i] = fds[0];
-        hub_fds[i] = fds[1];
-    }
+    let (node_fds_v, hub_fds_v) = node_lib::test_helpers::util::mk_socketpairs(3);
+    let node_fds = [node_fds_v[0], node_fds_v[1], node_fds_v[2]];
+    let hub_fds = [hub_fds_v[0], hub_fds_v[1], hub_fds_v[2]];
 
     // Node MACs: index 0=RSU, 1=OBU1, 2=OBU2
     let mac_rsu: mac_address::MacAddress = [1, 2, 3, 4, 5, 6].into();
@@ -60,84 +50,40 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
         }))
         .spawn();
 
-    let dev_rsu = Device::from_asyncfd_for_bench(
-        mac_rsu,
-        AsyncFd::new(unsafe { DeviceIo::from_raw_fd(node_fds[0]) }).unwrap(),
-    );
-    let dev_obu1 = Device::from_asyncfd_for_bench(
-        mac_obu1,
-        AsyncFd::new(unsafe { DeviceIo::from_raw_fd(node_fds[1]) }).unwrap(),
-    );
-    let dev_obu2 = Device::from_asyncfd_for_bench(
-        mac_obu2,
-        AsyncFd::new(unsafe { DeviceIo::from_raw_fd(node_fds[2]) }).unwrap(),
-    );
+    let dev_rsu = mk_device_from_fd(mac_rsu, node_fds[0]);
+    let dev_obu1 = mk_device_from_fd(mac_obu1, node_fds[1]);
+    let dev_obu2 = mk_device_from_fd(mac_obu2, node_fds[2]);
 
-    // Build Args
-    // Use sufficient hello_history/periodicity for reliable latency measurement
-    let args_rsu = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: NodeParameters {
-            node_type: NodeType::Rsu,
-            hello_history: 10,
-            hello_periodicity: Some(50),
-            cached_candidates: 3,
-        },
-    };
-    let args_obu1 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: NodeParameters {
-            node_type: NodeType::Obu,
-            hello_history: 10,
-            hello_periodicity: None,
-            cached_candidates: 3,
-        },
-    };
-    let args_obu2 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: NodeParameters {
-            node_type: NodeType::Obu,
-            hello_history: 10,
-            hello_periodicity: None,
-            cached_candidates: 3,
-        },
-    };
+    // Build Args using the shared helper.
+    let args_rsu = mk_args(NodeType::Rsu, Some(50));
+    let args_obu1 = mk_args(NodeType::Obu, None);
+    let args_obu2 = mk_args(NodeType::Obu, None);
 
     // Construct nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).expect("rsu new");
     let _obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1)).expect("obu1 new");
     let obu2 = Obu::new(args_obu2, Arc::new(tun_obu2), Arc::new(dev_obu2)).expect("obu2 new");
 
-    // Wait for OBU2 to cache upstream route; expect it to eventually prefer OBU1 (two-hop path).
-    // Some routes may be briefly observed; poll until we see the desired selection.
-    let mut cached = None;
-    for _ in 0..200 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        cached = obu2.cached_upstream_mac();
-        if cached == Some(mac_obu1) {
-            break;
-        }
-    }
-
+    // Wait for OBU2 to cache upstream route; expect it to eventually prefer OBU1
+    // (two-hop path). Poll until the desired selection is observed.
+    let cached = poll_until(|| obu2.cached_upstream_mac(), 200, 100).await;
     assert_eq!(cached, Some(mac_obu1), "OBU2 should prefer OBU1 initially");
 
     // Ensure we have at least two candidates cached at OBU2 before cutting the link
-    for _ in 0..160 {
-        if obu2.cached_upstream_candidates_len() >= 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    if obu2.cached_upstream_candidates_len() < 2 {
+    let have_two = poll_until(
+        || {
+            let len = obu2.cached_upstream_candidates_len();
+            if len >= 2 {
+                Some(len)
+            } else {
+                None
+            }
+        },
+        160,
+        50,
+    )
+    .await;
+    if have_two.is_none() {
         let current = obu2.cached_upstream_mac();
         panic!(
             "expected at least two candidates cached, got {} (primary={:?})",
@@ -154,29 +100,27 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     }
 
     // Repeatedly trigger upstream sends to force send errors and eventual failover
-    let peer = Tun::new_shim(tun_obu2_b);
-    for _ in 0..5 {
-        let _ = peer.send_all(b"trigger after close").await;
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+        let _ = tun_obu2_peer.send_all(b"trigger after close").await;
+        for _ in 0..5 {
+            let _ = tun_obu2_peer.send_all(b"trigger after close").await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
 
     // Wait for OBU2 to promote to the next candidate (not OBU1)
-    let mut promoted = None;
-    for _ in 0..80 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        promoted = obu2.cached_upstream_mac();
-        if promoted.is_some() && promoted.unwrap() != mac_obu1 {
-            break;
-        }
-    }
+    let promoted = poll_until(
+        || {
+            let p = obu2.cached_upstream_mac();
+            if p.is_some() && p.unwrap() != mac_obu1 {
+                p
+            } else {
+                None
+            }
+        },
+        80,
+        50,
+    )
+    .await;
 
-    assert!(
-        promoted.is_some(),
-        "OBU2 did not promote after send failure"
-    );
-    assert_ne!(
-        promoted.unwrap(),
-        mac_obu1,
-        "primary should have changed after failure"
-    );
+    assert!(promoted.is_some(), "OBU2 did not promote after send failure");
+    assert_ne!(promoted.unwrap(), mac_obu1, "primary should have changed after failure");
 }

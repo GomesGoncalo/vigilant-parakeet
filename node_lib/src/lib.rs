@@ -11,6 +11,7 @@ pub mod metrics;
 // avoids CI friction when running integration tests.
 pub mod test_helpers {
     pub mod hub;
+    pub mod util;
 }
 
 #[cfg(not(any(test, feature = "test_helpers")))]
