@@ -237,7 +237,8 @@ pub fn mk_hub_with_checks_mocked_time(
     delays_ms: Vec<Vec<u64>>,
     checks: Vec<std::sync::Arc<dyn crate::test_helpers::hub::HubCheck>>,
 ) {
-    let hub = crate::test_helpers::hub::Hub::new_with_mocked_time(hub_fds, delays_ms).with_checks(checks);
+    let hub =
+        crate::test_helpers::hub::Hub::new_with_mocked_time(hub_fds, delays_ms).with_checks(checks);
     hub.spawn();
 }
 
