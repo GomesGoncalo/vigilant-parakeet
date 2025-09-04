@@ -1,45 +1,14 @@
 use mac_address::MacAddress;
-use std::collections::BinaryHeap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc,
 };
 use std::time::Duration;
-use tokio::time::Instant as TokioInstant;
 
 // Trait implemented by unit/integration tests to verify packets observed by the Hub.
 // Implementors can parse and assert whatever they need and set flags accordingly.
 pub trait HubCheck: Send + Sync + 'static {
     fn on_packet(&self, from_idx: usize, data: &[u8]);
-}
-
-/// Delayed packet for mocked time simulation
-#[derive(Debug)]
-struct DelayedPacket {
-    data: Vec<u8>,
-    target_fd: i32,
-    delivery_time: TokioInstant,
-}
-
-impl Eq for DelayedPacket {}
-
-impl PartialEq for DelayedPacket {
-    fn eq(&self, other: &Self) -> bool {
-        self.delivery_time == other.delivery_time
-    }
-}
-
-impl Ord for DelayedPacket {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reverse ordering for min-heap (earliest delivery time first)
-        other.delivery_time.cmp(&self.delivery_time)
-    }
-}
-
-impl PartialOrd for DelayedPacket {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 /// Reusable checker for Upstream packets, matching index, from/to, and optional payload.
@@ -101,7 +70,6 @@ pub struct Hub {
     delays_ms: Vec<Vec<u64>>,
     checks: Vec<Arc<dyn HubCheck>>,
     use_mocked_time: bool,
-    pending_packets: Arc<Mutex<BinaryHeap<DelayedPacket>>>,
 }
 
 impl Hub {
@@ -111,20 +79,18 @@ impl Hub {
             delays_ms,
             checks: Vec::new(),
             use_mocked_time: false,
-            pending_packets: Arc::new(Mutex::new(BinaryHeap::new())),
         }
     }
 
     /// Create a Hub that works properly with mocked Tokio time.
-    /// When mocked time is used, delays are simulated by queuing packets
-    /// and delivering them when the simulated time advances.
+    /// When mocked time is used, delays are simulated using tokio::time::sleep
+    /// which respects mocked time advancement.
     pub fn new_with_mocked_time(hub_fds: Vec<i32>, delays_ms: Vec<Vec<u64>>) -> Self {
         Self {
             hub_fds,
             delays_ms,
             checks: Vec::new(),
             use_mocked_time: true,
-            pending_packets: Arc::new(Mutex::new(BinaryHeap::new())),
         }
     }
 
@@ -195,16 +161,13 @@ impl Hub {
     }
 
     fn spawn_with_mocked_time(self) {
-        let pending_packets = self.pending_packets.clone();
-
-        // Spawn the packet receiver task
-        let hub_fds = self.hub_fds.clone();
-        let delays = self.delays_ms;
-        let checks = self.checks.clone();
-        let pending_for_receiver = pending_packets.clone();
+        // In mocked time mode, we use tokio::time::sleep directly with the delay
+        // instead of trying to track absolute delivery times
         tokio::spawn(async move {
+            let hub_fds = self.hub_fds;
+            let delays = self.delays_ms;
+            let checks = self.checks;
             loop {
-                let mut found_packet = false;
                 for i in 0..hub_fds.len() {
                     let mut buf = vec![0u8; 2048];
                     let n = unsafe {
@@ -216,7 +179,6 @@ impl Hub {
                         )
                     };
                     if n > 0 {
-                        found_packet = true;
                         let n = n as usize;
                         buf.truncate(n);
                         // Invoke user-provided checks
@@ -230,72 +192,32 @@ impl Hub {
                             buf.len()
                         );
 
-                        // Queue packets with their delivery times
-                        let now = tokio::time::Instant::now();
+                        // Forward packets with delays
                         for (j, out_fd) in hub_fds.iter().copied().enumerate() {
                             if j == i {
                                 continue;
                             }
-                            let delay = Duration::from_millis(delays[i][j]);
-                            let delivery_time = now + delay;
-                            let packet = DelayedPacket {
-                                data: buf.clone(),
-                                target_fd: out_fd,
-                                delivery_time,
-                            };
+                            let delay_ms = delays[i][j];
+                            let delay = Duration::from_millis(delay_ms);
+                            let data = buf.clone();
 
-                            tracing::debug!("Hub queuing packet from {} to {} with delay {:?}, delivery at {:?}", 
-                                          i, j, delay, delivery_time);
+                            tracing::debug!("Hub spawning delivery task from {} to {} with delay {:?}", 
+                                          i, j, delay);
 
-                            if let Ok(mut queue) = pending_for_receiver.lock() {
-                                queue.push(packet);
-                            }
+                            tokio::spawn(async move {
+                                if delay.as_millis() > 0 {
+                                    tokio::time::sleep(delay).await;
+                                }
+                                tracing::debug!("Hub delivering packet with delay {:?}", delay);
+                                let _ = unsafe {
+                                    libc::send(out_fd, data.as_ptr() as *const _, data.len(), 0)
+                                };
+                            });
                         }
                     }
                 }
 
-                // Only yield if we didn't find packets to process
-                if !found_packet {
-                    tokio::task::yield_now().await;
-                }
-            }
-        });
-
-        // Spawn the packet delivery task
-        tokio::spawn(async move {
-            loop {
-                // Check for packets ready to be delivered
-                let mut packets_to_deliver = Vec::new();
-                let now = tokio::time::Instant::now();
-
-                if let Ok(mut queue) = pending_packets.lock() {
-                    while let Some(packet) = queue.peek() {
-                        if packet.delivery_time <= now {
-                            packets_to_deliver.push(queue.pop().unwrap());
-                        } else {
-                            break;
-                        }
-                    }
-                }
-
-                // Deliver ready packets
-                for packet in packets_to_deliver {
-                    tracing::debug!(
-                        "Hub delivering packet at time {:?} (delivery time was {:?})",
-                        now,
-                        packet.delivery_time
-                    );
-                    let _ = unsafe {
-                        libc::send(
-                            packet.target_fd,
-                            packet.data.as_ptr() as *const _,
-                            packet.data.len(),
-                            0,
-                        )
-                    };
-                }
-
-                // Use a smaller sleep interval to allow more precise delivery timing
+                // Use a small sleep to allow tokio to advance mocked time
                 tokio::time::sleep(Duration::from_micros(100)).await;
             }
         });
