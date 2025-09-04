@@ -63,34 +63,31 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     let obu2 = Obu::new(args_obu2, tun_obu2_arc, Arc::new(dev_obu2)).expect("obu2 new");
 
     // Wait for OBU2 to cache upstream route; expect it to be OBU1 (two-hop path)
-    let mut cached = None;
-    for _ in 0..100 {
-        // up to ~10s
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        cached = obu2.cached_upstream_mac();
-        if cached.is_some() {
-            break;
-        }
-    }
-    assert!(cached.is_some(), "OBU2 did not cache an upstream");
-    assert_eq!(
-        cached.unwrap(),
-        mac_obu1,
-        "OBU2 should prefer two-hop path via OBU1 when direct link has higher latency"
-    );
+    let cached = node_lib::test_helpers::util::poll_until(
+        || obu2.cached_upstream_mac(),
+        100,
+        100,
+    )
+    .await;
+    assert_eq!(cached, Some(mac_obu1), "OBU2 should prefer two-hop path via OBU1");
 
     // Trigger an upstream send by writing on the peer end of OBU2's TUN; the session task should forward it.
     let _ = tun_obu2_peer.send_all(payload).await;
 
     // Wait up to ~2s for the hub to observe the upstream packet
-    for _ in 0..20 {
-        if saw_forward_to_obu1.load(Ordering::SeqCst) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    // This assertion is soft; the primary assertion is the cached upstream.
-    assert!(saw_forward_to_obu1.load(Ordering::SeqCst));
+    let saw = node_lib::test_helpers::util::poll_until(
+        || {
+            if saw_forward_to_obu1.load(Ordering::SeqCst) {
+                Some(())
+            } else {
+                None
+            }
+        },
+        20,
+        100,
+    )
+    .await;
+    assert!(saw.is_some(), "hub did not observe upstream forwarded to OBU1");
 }
 
 /// End-to-end: OBU2 "pings" RSU two hops away. We inject a request frame into
@@ -146,20 +143,8 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let obu2 = Obu::new(args_obu, Arc::new(tun_obu2), Arc::new(dev_obu2)).expect("obu2 new");
 
     // Wait for OBU2 to cache upstream via OBU1 (two-hop path preferred)
-    let mut cached = None;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        cached = obu2.cached_upstream_mac();
-        if cached.is_some() {
-            break;
-        }
-    }
-    assert!(cached.is_some(), "OBU2 did not cache an upstream");
-    assert_eq!(
-        cached.unwrap(),
-        mac_obu1,
-        "OBU2 should pick OBU1 as upstream"
-    );
+    let cached = node_lib::test_helpers::util::poll_until(|| obu2.cached_upstream_mac(), 100, 100).await;
+    assert_eq!(cached, Some(mac_obu1), "OBU2 should pick OBU1 as upstream");
 
     // Prime RSU's client cache with a mapping for RSU's own MAC -> RSU node MAC
     // by sending any frame from RSU's TUN (process_tap_traffic stores `from` -> device.mac).
@@ -188,23 +173,28 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
         .expect("send ping req to OBU2 tun");
 
     // Expect RSU's TUN to receive the full upstream request frame (to+from+payload)
-    let mut buf = vec![0u8; 256];
-    let mut got_req_at_rsu = false;
-    for _ in 0..100 {
-        if let Ok(n) =
-            tokio::time::timeout(Duration::from_millis(100), tun_rsu_peer.recv(&mut buf)).await
-        {
-            let n = n.expect("rsu peer recv ok");
-            if n >= req.len() && buf[..req.len()] == req[..] {
-                got_req_at_rsu = true;
-                break;
-            }
-        }
-    }
+    let got_req_at_rsu = node_lib::test_helpers::util::poll_tun_recv_expected(
+        &tun_rsu_peer,
+        &req,
+        100,
+        100,
+    )
+    .await;
     assert!(got_req_at_rsu, "RSU did not receive ping request on TUN");
 
     // Give RSU additional time to ensure it has a route to OBU2
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let _ = node_lib::test_helpers::util::poll_until(
+        || {
+            if saw_downstream_from_rsu.load(Ordering::SeqCst) {
+                Some(())
+            } else {
+                None
+            }
+        },
+        15,
+        100,
+    )
+    .await;
 
     // Now craft and send a reply from RSU back to OBU2 via RSU's TUN
     let payload_rep = b"ping-rep";
@@ -218,55 +208,21 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
         .expect("send ping reply from RSU tun");
 
     // Wait for hub to observe a Downstream packet from RSU (port index 0)
-    for _ in 0..50 {
-        if saw_downstream_from_rsu.load(Ordering::SeqCst) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    println!(
-        "hub saw downstream from RSU: {}",
-        saw_downstream_from_rsu.load(Ordering::SeqCst)
-    );
-
-    // Wait for the hub to observe a Downstream frame emitted from RSU before expecting OBU2's TUN
-    for _ in 0..50 {
-        if saw_downstream_from_rsu.load(Ordering::SeqCst) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    let saw = node_lib::test_helpers::util::poll_until(
+        || {
+            if saw_downstream_from_rsu.load(Ordering::SeqCst) {
+                Some(())
+            } else {
+                None
+            }
+        },
+        50,
+        100,
+    )
+    .await;
+    println!("hub saw downstream from RSU: {}", saw.is_some());
 
     // Expect OBU2's TUN to receive the full downstream reply frame (to+from+payload)
-    let mut got_rep_at_obu2 = false;
-    let mut rx = vec![0u8; 256];
-    let mut seen_samples: Vec<Vec<u8>> = Vec::new();
-    for _ in 0..150 {
-        if let Ok(n) =
-            tokio::time::timeout(Duration::from_millis(100), tun_obu2_peer.recv(&mut rx)).await
-        {
-            let n = n.expect("obu2 peer recv ok");
-            let snapshot = rx[..n].to_vec();
-            if seen_samples.len() < 8 {
-                seen_samples.push(snapshot.clone());
-            }
-            if n >= rep.len() && snapshot[..rep.len()] == rep[..] {
-                got_rep_at_obu2 = true;
-                break;
-            }
-        }
-    }
-    if !got_rep_at_obu2 {
-        println!("received {} frames at OBU2 TUN:", seen_samples.len());
-        for (i, s) in seen_samples.iter().enumerate() {
-            let preview: Vec<String> = s.iter().take(24).map(|b| format!("{:02x}", b)).collect();
-            println!(
-                "frame {}: len={}, head={}...",
-                i,
-                s.len(),
-                preview.join(" ")
-            );
-        }
-    }
+    let got_rep_at_obu2 = node_lib::test_helpers::util::poll_tun_recv_expected(&tun_obu2_peer, &rep, 100, 150).await;
     assert!(got_rep_at_obu2, "OBU2 did not receive ping reply on TUN");
 }

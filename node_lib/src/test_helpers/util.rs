@@ -44,6 +44,57 @@ where
     None
 }
 
+/// Try to recv from a shim `Tun` with a per-attempt timeout. Returns the
+/// number of bytes read on success, or `None` if no successful recv occurred
+/// within the given attempts.
+pub async fn poll_tun_recv_with_timeout(
+    tun: &tun::Tun,
+    buf: &mut [u8],
+    timeout_ms: u64,
+    attempts: u32,
+) -> Option<usize> {
+    for _ in 0..attempts {
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), tun.recv(buf)).await {
+            Ok(Ok(n)) => return Some(n),
+            Ok(Err(_)) => continue,
+            Err(_) => continue, // timed out
+        }
+    }
+    None
+}
+
+/// Poll until a specific expected payload is observed on `tun` within the
+/// attempt/time budget. Uses an internal 256-byte buffer for reads.
+pub async fn poll_tun_recv_expected(
+    tun: &tun::Tun,
+    expected: &[u8],
+    timeout_ms: u64,
+    attempts: u32,
+) -> bool {
+    let mut buf = vec![0u8; 256];
+    for _ in 0..attempts {
+        if let Some(n) = poll_tun_recv_with_timeout(tun, &mut buf, timeout_ms, 1).await {
+            if n >= expected.len() && buf[..expected.len()] == expected[..] {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Repeat an async send function `times` times with `delay_ms` between attempts.
+/// The send closure is expected to be an async function returning Result<(), E>.
+pub async fn repeat_async_send<F, Fut, E>(mut send_fn: F, times: u32, delay_ms: u64)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), E>>,
+{
+    for _ in 0..times {
+        let _ = send_fn().await;
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    }
+}
+
 /// Create a pair of shim TUNs and return them wrapped as `common::tun::Tun`.
 pub fn mk_shim_pair() -> (tun::Tun, tun::Tun) {
     let (a, b) = test_tun::TokioTun::new_pair();
