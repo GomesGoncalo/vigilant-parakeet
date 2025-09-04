@@ -15,20 +15,12 @@ async fn rsu_and_obu_topology_discovery() {
     let (tun_a, tun_b) = mk_shim_pair();
 
     // Create a socketpair for bidirectional communication between devices
-    let mut fds = [0; 2];
-    unsafe {
-        let r = libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr());
-        assert_eq!(r, 0, "socketpair failed");
-        // make both ends non-blocking so AsyncFd readiness works and writes don't block
-        let _ = libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
-        let _ = libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
-    }
-
+    let (node_fds, _hub_fds) = node_lib::test_helpers::util::mk_socketpairs(1);
     let mac_a: mac_address::MacAddress = [1u8, 2, 3, 4, 5, 6].into();
     let mac_b: mac_address::MacAddress = [10u8, 11, 12, 13, 14, 15].into();
 
-    let dev_a = mk_device_from_fd(mac_a, fds[0]);
-    let dev_b = mk_device_from_fd(mac_b, fds[1]);
+    let dev_a = mk_device_from_fd(mac_a, node_fds[0]);
+    let dev_b = mk_device_from_fd(mac_b, _hub_fds[0]);
 
     // Build Args for Rsu and Obu with hello periodicity so they exchange heartbeats
     let args_rsu = mk_args(NodeType::Rsu, Some(100));

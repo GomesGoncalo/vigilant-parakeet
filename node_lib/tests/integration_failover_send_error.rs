@@ -1,8 +1,8 @@
-use node_lib::test_helpers::util::mk_shim_pairs;
 use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
 use node_lib::test_helpers::hub::UpstreamMatchCheck;
+use node_lib::test_helpers::util::mk_shim_pairs;
 use node_lib::test_helpers::util::{mk_args, mk_device_from_fd, poll_until};
 use std::sync::{atomic::AtomicBool, Arc};
 use std::time::Duration;
