@@ -15,6 +15,7 @@ fn bench_obu_get_route(_c: &mut Criterion) {
             node_type: node_lib::args::NodeType::Obu,
             hello_history: 8,
             hello_periodicity: None,
+            cached_candidates: 3,
         },
     };
 
@@ -63,6 +64,7 @@ fn bench_rsu_get_route(_c: &mut Criterion) {
             node_type: node_lib::args::NodeType::Rsu,
             hello_history: 8,
             hello_periodicity: None,
+            cached_candidates: 3,
         },
     };
 

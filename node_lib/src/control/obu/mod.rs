@@ -57,9 +57,20 @@ impl Obu {
         self.routing.read().unwrap().get_route_to(None)
     }
 
+    /// Return the number of cached upstream candidates kept for failover.
+    pub fn cached_upstream_candidates_len(&self) -> usize {
+        self.routing
+            .read()
+            .unwrap()
+            .get_cached_candidates()
+            .map(|v| v.len())
+            .unwrap_or(0)
+    }
+
     fn wire_traffic_task(obu: Arc<Self>) -> Result<()> {
         let device = obu.device.clone();
         let tun = obu.tun.clone();
+        let routing_handle = obu.routing.clone();
         tokio::task::spawn(async move {
             loop {
                 let obu_c = obu.clone();
@@ -81,7 +92,15 @@ impl Obu {
                     }
                 }).await;
                 if let Ok(Some(messages)) = messages {
-                    let _ = node::handle_messages(messages, &tun, &device).await;
+                    // Provide the routing handle so `handle_messages` can trigger
+                    // `failover_cached_upstream()` on send errors.
+                    let _ = node::handle_messages(
+                        messages,
+                        &tun,
+                        &device,
+                        Some(routing_handle.clone()),
+                    )
+                    .await;
                 }
             }
         });
@@ -93,14 +112,19 @@ impl Obu {
         let session = self.session.clone();
         let device = self.device.clone();
         let tun = self.tun.clone();
+        let routing_handle = routing.clone();
         tokio::task::spawn(async move {
             loop {
                 let devicec = device.clone();
-                let routing = routing.clone();
+                // Provide two clones: one for the async closure (which will move
+                // it) and one we keep to pass into handle_messages after `await`.
+                let routing_for_closure = routing_handle.clone();
+                let routing_for_handle = routing_handle.clone();
                 let messages = session
                     .process(|x, size| async move {
                         let y: &[u8] = &x[..size];
-                        let Some(upstream) = routing.read().unwrap().get_route_to(None) else {
+                        let Some(upstream) = routing_for_closure.read().unwrap().get_route_to(None)
+                        else {
                             return Ok(None);
                         };
                         let outgoing = vec![ReplyType::Wire(
@@ -120,7 +144,15 @@ impl Obu {
                     .await;
 
                 if let Ok(Some(messages)) = messages {
-                    let _ = node::handle_messages(messages, &tun, &device).await;
+                    // Pass the routing handle so send failures from TAP-originated
+                    // upstream packets can promote the next candidate.
+                    let _ = node::handle_messages(
+                        messages,
+                        &tun,
+                        &device,
+                        Some(routing_for_handle.clone()),
+                    )
+                    .await;
                 }
             }
         });
@@ -276,6 +308,7 @@ mod obu_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         let boot = Instant::now();
@@ -304,6 +337,7 @@ mod obu_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         let boot = Instant::now();
@@ -344,6 +378,7 @@ mod obu_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         let boot = Instant::now();
@@ -396,6 +431,7 @@ mod obu_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         let boot = Instant::now();
@@ -433,6 +469,7 @@ mod obu_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         let boot = Instant::now();
@@ -485,6 +522,7 @@ mod obu_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         let boot = Instant::now();
@@ -539,6 +577,7 @@ mod obu_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         let boot = Instant::now();

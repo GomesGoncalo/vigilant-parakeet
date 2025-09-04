@@ -46,11 +46,13 @@ async fn rsu_and_obu_topology_discovery() {
         node_type: NodeType::Rsu,
         hello_history: 10,
         hello_periodicity: Some(100),
+        cached_candidates: 3,
     };
     let node_params_obu = NodeParameters {
         node_type: NodeType::Obu,
         hello_history: 10,
         hello_periodicity: None,
+        cached_candidates: 3,
     };
 
     let args_rsu = Args {

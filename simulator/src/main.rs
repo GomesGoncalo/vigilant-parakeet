@@ -114,6 +114,13 @@ async fn main() -> Result<()> {
             Arc::new(Tun::from(a))
         };
 
+        // Read optional cached_candidates; default to 3 when not present or invalid.
+        let cached_candidates = settings
+            .get_int("cached_candidates")
+            .ok()
+            .and_then(|x| u32::try_from(x).ok())
+            .unwrap_or(3u32);
+
         let args = Args {
             bind: tun.name().to_string(),
             tap_name: Some("virtual".to_string()),
@@ -128,6 +135,7 @@ async fn main() -> Result<()> {
                     .map(|x| u32::try_from(x).ok())
                     .ok()
                     .flatten(),
+                cached_candidates,
             },
         };
 

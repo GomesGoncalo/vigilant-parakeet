@@ -261,6 +261,41 @@ cargo fmt -- --check
 - Follow Rust idioms and keep `node_lib` focused on logic so `node` and
   `simulator` stay thin wrappers.
 
+## Testing & test helpers
+
+Run the full test suite from the repository root to verify the workspace:
+
+```sh
+cargo test --workspace
+```
+
+Run tests for the `node_lib` crate only (useful when iterating on routing):
+
+```sh
+cargo test -p node_lib
+```
+
+The repository provides shared, reusable test helpers to simplify integration
+tests. In particular there is a canonical `Hub` helper you should use instead
+of duplicating a local implementation in tests. Import it from the crate root:
+
+```rust
+use node_lib::test_helpers::hub::Hub;
+// or, from inside tests that already re-export it:
+// use crate::tests::hub::Hub;
+```
+
+Key helpers to know about:
+- `node_lib::test_helpers::hub::Hub` — in-process programmable hub that
+  forwards frames between endpoints and can inject per-link latency and
+  provide upstream/downstream watch hooks used by integration tests.
+- `common::tun::test_tun::TokioTun` and `common::Tun::new_shim` — a TUN shim
+  used by tests to inject/observe TAP traffic without creating OS TUN devices.
+
+When adding or updating integration tests, prefer the shared helpers and
+export a single `hub` module for tests (the repository already provides
+`node_lib/tests/hub.rs` which re-exports the shared helper).
+
 ## Contributing
 
 Contributions are welcome. Suggested workflow:

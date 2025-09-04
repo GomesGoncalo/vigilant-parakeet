@@ -86,6 +86,28 @@ Edge cases and pitfalls
 - Stale sequences: `IndexMap` capacity is limited by `hello_history`; old entries are evicted. Be careful in tests to use matching ids.
 - Concurrency: `Routing` is frequently wrapped by `RwLock` in runtime; heavy concurrency could produce stale reads — keep critical writes short and protected.
 
+### Testing & shared test helpers
+
+- Run unit and integration tests for the crate:
+
+```sh
+cargo test -p node_lib
+```
+
+- Shared helpers:
+  - `node_lib::test_helpers::hub::Hub` — canonical in-process hub used by
+    integration tests. It forwards frames between hub endpoints, can simulate
+    per-link latency/loss and exposes upstream/downstream watch hooks so tests
+    can assert on traffic patterns.
+  - `common::tun::test_tun::TokioTun` + `common::Tun::new_shim` — a TUN shim
+    for tests that lets you send/receive TAP frames without creating OS TUN
+    devices.
+
+When adding integration tests, prefer the shared `Hub` and TUN shim instead of
+copying helper implementations into each test file; the repository already
+contains `node_lib/tests/hub.rs` which re-exports the shared helper for
+convenience.
+
 Testing & debugging
 - Unit tests: the crate already has focused tests for routing and message parsing. Add tests that:
   - Simulate heartbeat seen via a neighbor and a reply arriving via the same neighbor (assert no forward to avoid bounce).
@@ -187,3 +209,20 @@ Where to expand next
 - Add an explicit section describing the `routes` map before/after a heartbeat+reply pair (sample dump).
 - Add a short guide showing how to enable `stats` in the simulator and wire counters to `/node_info` for visualization.
 - Replace unsafe parsing with safe code and add fuzz-style tests for malformed packets.
+
+## N-best cached upstream candidates (OBU routing)
+
+The OBU routing logic now stores a small ordered list of N-best upstream candidates for each selected upstream target. This is intended to reduce failover latency when a primary next-hop becomes unreachable.
+
+Key points:
+
+- Config: `NodeParameters.cached_candidates` (type: integer) controls the number of candidates cached; default is `3`.
+- Selection vs. Caching:
+  - `get_route_to(Some(target_mac))` computes the best route but must not mutate cached state.
+  - `select_and_cache_upstream(target_mac)` is the write-api: it selects the primary route and also computes a top-N candidate list (ranked by latency and hop-count) and stores it in `Routing` state.
+- Failover API:
+  - `Routing::get_cached_candidates()` exposes the current candidate list for diagnostics.
+  - `Routing::failover_cached_upstream()` rotates/promotes the next candidate and returns the newly promoted next hop (or `None`). This method is intended to be called by higher-level OBU/session code when an upstream send or session error occurs.
+- Hysteresis: the implementation intentionally avoids silently replacing the primary cached upstream when recomputing candidates so that existing hysteresis behavior remains intact (to avoid flapping between equivalent routes).
+
+See `node_lib/src/control/obu/routing.rs` for the implementation and tests that demonstrate selection, candidate population, and the failover rotation behavior.

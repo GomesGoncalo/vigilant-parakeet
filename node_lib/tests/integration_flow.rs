@@ -33,7 +33,9 @@ async fn handle_messages_sends_to_tun_and_device() {
     let wire = ReplyType::Wire(vec![vec![0u8; 14]]);
 
     let msgs = vec![tap, wire];
-    handle_messages(msgs, &tun, &device).await.expect("ok");
+    handle_messages(msgs, &tun, &device, None)
+        .await
+        .expect("ok");
 
     // drain the reader side of the pipe to observe bytes written
     let mut buf = [0u8; 64];

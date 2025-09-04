@@ -232,6 +232,7 @@ mod tests {
                 node_type: NodeType::Rsu,
                 hello_history: 1,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -276,6 +277,7 @@ mod tests {
                 node_type: NodeType::Rsu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -327,6 +329,7 @@ mod more_tests {
                 node_type: NodeType::Rsu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 

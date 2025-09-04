@@ -12,7 +12,8 @@ use anyhow::{bail, Result};
 use arc_swap::ArcSwapOption;
 use indexmap::IndexMap;
 use mac_address::MacAddress;
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 use tracing::Level;
 
@@ -49,6 +50,7 @@ mod tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -88,6 +90,7 @@ mod tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -150,6 +153,7 @@ mod cache_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -186,6 +190,67 @@ mod cache_tests {
         assert!(cached.is_some());
         assert_eq!(cached.unwrap().mac, selected.unwrap().mac);
     }
+
+    #[test]
+    fn failover_promotes_next_candidate() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 2,
+                hello_periodicity: None,
+                cached_candidates: 3,
+            },
+        };
+
+        let boot = Instant::now() - Duration::from_secs(1);
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        // Create a heartbeat to populate routes and select primary
+        let hb_source: MacAddress = [7u8; 6].into();
+        let pkt_from: MacAddress = [8u8; 6].into();
+        let our_mac: MacAddress = [9u8; 6].into();
+        let hb = crate::messages::control::heartbeat::Heartbeat::new(
+            std::time::Duration::from_millis(1),
+            1u32,
+            hb_source,
+        );
+        let hb_msg = crate::messages::message::Message::new(
+            pkt_from,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb.clone()),
+            ),
+        );
+        let _ = routing
+            .handle_heartbeat(&hb_msg, our_mac)
+            .expect("handled hb");
+
+        // Now select and cache the upstream for hb_source
+        let _ = routing
+            .select_and_cache_upstream(hb_source)
+            .expect("selected");
+
+        // Ensure we have candidates stored; for test determinism populate two candidates
+        use std::sync::Arc;
+        let primary_before = routing.get_cached_upstream().expect("primary");
+        let next_candidate: MacAddress = [11u8; 6].into();
+        // store ordered candidates [primary, next]
+        routing
+            .cached_candidates
+            .store(Some(Arc::new(vec![primary_before, next_candidate])));
+        routing.cached_upstream.store(Some(primary_before.into()));
+
+        // Simulate a send failure by directly calling failover_cached_upstream()
+        let promoted = routing.failover_cached_upstream();
+        assert!(promoted.is_some());
+        let primary_after = routing.get_cached_upstream().expect("primary after");
+        assert_ne!(primary_before, primary_after);
+        assert_eq!(primary_after, promoted.unwrap());
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +282,7 @@ mod regression_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -272,6 +338,7 @@ mod regression_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -333,6 +400,7 @@ mod more_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -357,6 +425,7 @@ mod more_tests {
                 node_type: NodeType::Obu,
                 hello_history: 4,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -394,8 +463,9 @@ mod more_tests {
             mtu: 1500,
             node_params: NodeParameters {
                 node_type: NodeType::Obu,
-                hello_history: 1, // force capacity 1
+                hello_history: 1,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -452,6 +522,7 @@ mod more_tests {
                 node_type: NodeType::Obu,
                 hello_history: 4,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -509,6 +580,7 @@ mod more_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -530,6 +602,7 @@ mod more_tests {
                 node_type: NodeType::Obu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -567,8 +640,9 @@ mod more_tests {
             mtu: 1500,
             node_params: NodeParameters {
                 node_type: NodeType::Obu,
-                hello_history: 8,
+                hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -627,8 +701,9 @@ mod more_tests {
             mtu: 1500,
             node_params: NodeParameters {
                 node_type: NodeType::Obu,
-                hello_history: 8,
+                hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -690,8 +765,9 @@ mod more_tests {
             mtu: 1500,
             node_params: NodeParameters {
                 node_type: NodeType::Obu,
-                hello_history: 8,
+                hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         // Use paused time so we can deterministically advance time
@@ -772,7 +848,6 @@ mod more_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    #[ignore]
     async fn hysteresis_latency_improvement_above_10_percent_switches() {
         let args = Args {
             bind: String::default(),
@@ -781,8 +856,9 @@ mod more_tests {
             mtu: 1500,
             node_params: NodeParameters {
                 node_type: NodeType::Obu,
-                hello_history: 8,
+                hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         // Use paused time so we can deterministically advance time
@@ -887,9 +963,19 @@ pub struct Routing {
         >,
     >,
     cached_upstream: ArcSwapOption<MacAddress>,
+    // Remember the last source MAC for which we selected/cached an upstream (e.g., RSU MAC).
+    cached_source: ArcSwapOption<MacAddress>,
+    // Keep an ordered list of N-best candidate upstreams for fast failover.
+    // This is optional and kept in sync with `cached_upstream` when selection
+    // is performed.
+    cached_candidates: ArcSwapOption<Vec<MacAddress>>,
+    // Track distinct neighbors that forwarded heartbeats for a given source (e.g., RSU)
+    source_neighbors: HashMap<MacAddress, HashSet<MacAddress>>,
 }
 
 impl Routing {
+    // ...existing code...
+
     pub fn new(args: &Args, boot: &Instant) -> Result<Self> {
         if args.node_params.hello_history == 0 {
             bail!("we need to be able to store at least 1 hello");
@@ -899,11 +985,15 @@ impl Routing {
             boot: *boot,
             routes: HashMap::default(),
             cached_upstream: ArcSwapOption::from(None),
+            cached_source: ArcSwapOption::from(None),
+            cached_candidates: ArcSwapOption::from(None),
+            source_neighbors: HashMap::default(),
         })
     }
 
     /// Return the cached upstream MAC if present.
     pub fn get_cached_upstream(&self) -> Option<MacAddress> {
+        // Primary cached upstream (first candidate) -- kept for backwards compat.
         self.cached_upstream.load().as_ref().map(|m| **m)
     }
 
@@ -911,8 +1001,135 @@ impl Routing {
     pub fn clear_cached_upstream(&self) {
         tracing::trace!("clearing cached_upstream");
         self.cached_upstream.store(None);
+        self.cached_candidates.store(None);
         #[cfg(feature = "stats")]
         crate::metrics::inc_cache_clear();
+    }
+
+    /// Return the ordered cached candidates (primary first) when present.
+    pub fn get_cached_candidates(&self) -> Option<Vec<MacAddress>> {
+        self.cached_candidates
+            .load()
+            .as_ref()
+            .map(|arcv| (**arcv).clone())
+    }
+
+    /// Rotate to the next cached candidate (promote the next candidate to primary).
+    /// Returns the newly promoted primary if any.
+    pub fn failover_cached_upstream(&self) -> Option<MacAddress> {
+        let mut cand_opt = self
+            .cached_candidates
+            .load()
+            .as_ref()
+            .map(|arcv| (**arcv).clone());
+
+        let mut cands = cand_opt.take().unwrap_or_default();
+        if cands.len() <= 1 {
+            // Try to rebuild an N-best list based on the last cached source (e.g., RSU)
+            if let Some(src) = self.cached_source.load().as_ref().map(|m| **m) {
+                let n_best = usize::try_from(self.args.node_params.cached_candidates)
+                    .unwrap_or(3)
+                    .max(1);
+                // Compute latency-based candidates first
+                let mut scored: Vec<(u128, u32, MacAddress)> = Vec::new();
+                let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> =
+                    HashMap::default();
+                for (_rsu, seqs) in self.routes.iter() {
+                    for (_seq, (_dur, _mac, _hops, _r, downstream)) in seqs.iter() {
+                        if let Some(vec) = downstream.get(&src) {
+                            for route in vec.iter() {
+                                if let Some(lat) = route.latency.map(|x| x.as_micros()) {
+                                    let entry = latency_candidates.entry(route.mac).or_insert((
+                                        u128::MAX,
+                                        0u128,
+                                        0u32,
+                                        route.hops,
+                                    ));
+                                    if entry.0 > lat {
+                                        entry.0 = lat;
+                                    }
+                                    entry.1 += lat;
+                                    entry.2 += 1;
+                                    entry.3 = route.hops;
+                                }
+                            }
+                        }
+                    }
+                }
+                if !latency_candidates.is_empty() {
+                    for (macaddr, (min_us, sum_us, n, hops_val)) in latency_candidates.into_iter() {
+                        let avg_us = if n > 0 {
+                            sum_us / (n as u128)
+                        } else {
+                            u128::MAX
+                        };
+                        let score = if min_us == u128::MAX || avg_us == u128::MAX {
+                            u128::MAX
+                        } else {
+                            min_us + avg_us
+                        };
+                        scored.push((score, hops_val, macaddr));
+                    }
+                    scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+                    cands = scored
+                        .into_iter()
+                        .map(|(_s, _h, m)| m)
+                        .take(n_best)
+                        .collect();
+                }
+                // Backfill with hop-based ordering if needed
+                if cands.len() < n_best {
+                    let mut upstream_routes: Vec<_> = self
+                        .routes
+                        .iter()
+                        .flat_map(|(rsu_mac, seqs)| {
+                            seqs.iter()
+                                .map(move |(seq, (_, mac, hops, _, _))| (seq, rsu_mac, mac, hops))
+                        })
+                        .filter(|(_, rsu_mac, _, _)| rsu_mac == &&src)
+                        .collect();
+                    upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
+                    let mut seen: std::collections::HashSet<MacAddress> =
+                        cands.iter().copied().collect();
+                    for (_seq, _rsu, mac_ref, _hops) in upstream_routes.into_iter() {
+                        if !seen.contains(mac_ref) {
+                            seen.insert(*mac_ref);
+                            cands.push(*mac_ref);
+                            if cands.len() >= n_best {
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Store rebuilt candidates
+                if !cands.is_empty() {
+                    self.cached_candidates.store(Some(Arc::new(cands.clone())));
+                }
+            }
+        }
+
+        if cands.len() <= 1 {
+            // Nothing to rotate to
+            return cands.first().copied();
+        }
+        // Rotate to next
+        let old = cands.remove(0);
+        cands.push(old);
+        self.cached_candidates.store(Some(Arc::new(cands.clone())));
+        self.cached_upstream.store(Some(cands[0].into()));
+        Some(cands[0])
+    }
+
+    /// Test helper: directly set cached candidates and primary for tests.
+    pub fn test_set_cached_candidates(&self, cands: Vec<MacAddress>) {
+        use std::sync::Arc;
+        if cands.is_empty() {
+            self.cached_candidates.store(None);
+            self.cached_upstream.store(None);
+        } else {
+            self.cached_candidates.store(Some(Arc::new(cands.clone())));
+            self.cached_upstream.store(Some(cands[0].into()));
+        }
     }
 
     pub fn handle_heartbeat(
@@ -967,7 +1184,7 @@ impl Routing {
             entry_from.clear();
         }
 
-    if entry_from.len() == entry_from.capacity() && entry_from.capacity() > 0 {
+        if entry_from.len() == entry_from.capacity() && entry_from.capacity() > 0 {
             entry_from.swap_remove_index(0);
         }
 
@@ -986,9 +1203,18 @@ impl Routing {
             );
         }
 
+        // Track that `pkt.from()` forwarded a heartbeat for `message.source()`
+        self.source_neighbors
+            .entry(message.source())
+            .or_insert_with(HashSet::new)
+            .insert(pkt.from()?);
+
         // If we've already seen this heartbeat id for the given source, we've now ensured
         // the adjacency entry for pkt.from(), but we should not forward or reply again.
+        // However, refresh selection/cached candidates to incorporate the newly observed
+        // neighbor in the N-best list (hysteresis preserves current primary).
         if seen_seq {
+            let _ = self.select_and_cache_upstream(message.source());
             return Ok(None);
         }
 
@@ -1309,7 +1535,11 @@ impl Routing {
             }
             let mut best: Option<(u128, MacAddress, u128)> = None; // (score, mac, avg)
             for (mac, (min_us, sum_us, cnt)) in per_next.into_iter() {
-                let avg_us = if cnt > 0 { sum_us / (cnt as u128) } else { u128::MAX };
+                let avg_us = if cnt > 0 {
+                    sum_us / (cnt as u128)
+                } else {
+                    u128::MAX
+                };
                 let score = if min_us == u128::MAX || avg_us == u128::MAX {
                     u128::MAX
                 } else {
@@ -1355,49 +1585,34 @@ impl Routing {
             .collect();
         upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
 
-        // Prepare references to per-seq downstream observations, grouped by RSU
-        let route_options: IndexMap<_, _> = self
-            .routes
-            .iter()
-            .flat_map(|(rsus, im)| {
-                im.iter()
-                    .map(move |(seq, (dur, mac, hops, _r, downstream))| {
-                        (seq, (dur, mac, hops, downstream, rsus))
-                    })
-            })
-            .collect();
-
         // Compute deterministic integer-based metrics for latency in microseconds across ALL hops.
         // Prefer lower latency first; break ties by fewer hops.
-        let latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> = route_options
-            .iter()
-            .rev()
-            .filter_map(|(_seq, (_dur, _mac, _hops, downstream, rsu_mac))| {
-                if *rsu_mac == &target_mac {
-                    downstream.get(&target_mac)
-                } else {
-                    None
-                }
-            })
-            .flat_map(|route_vec| route_vec.iter())
-            .fold(
-                HashMap::default(),
-                |mut hm: HashMap<MacAddress, (u128, u128, u32, u32)>, route| {
-                    let hop_val = route.hops;
-                    if let Some(lat) = route.latency.map(|x| x.as_micros()) {
-                        let entry =
-                            hm.entry(route.mac)
-                                .or_insert((u128::MAX, 0u128, 0u32, hop_val));
-                        if entry.0 > lat {
-                            entry.0 = lat; // min
+        // Build latency_candidates deterministically by scanning all recorded sequences
+        // (same approach as `select_and_cache_upstream`) to avoid timing/order issues.
+        let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> =
+            HashMap::default();
+        for (_rsu, seqs) in self.routes.iter() {
+            for (_seq, (_dur, _mac, _hops, _r, downstream)) in seqs.iter() {
+                if let Some(vec) = downstream.get(&target_mac) {
+                    for route in vec.iter() {
+                        if let Some(lat) = route.latency.map(|x| x.as_micros()) {
+                            let entry = latency_candidates.entry(route.mac).or_insert((
+                                u128::MAX,
+                                0u128,
+                                0u32,
+                                route.hops,
+                            ));
+                            if entry.0 > lat {
+                                entry.0 = lat;
+                            }
+                            entry.1 += lat;
+                            entry.2 += 1;
+                            entry.3 = route.hops;
                         }
-                        entry.1 += lat; // sum
-                        entry.2 += 1; // count
-                        entry.3 = hop_val; // keep latest hops (they should be consistent per mac)
                     }
-                    hm
-                },
-            );
+                }
+            }
+        }
 
         if !latency_candidates.is_empty() {
             // Select by (score = min + avg), then by hops
@@ -1449,6 +1664,26 @@ impl Routing {
                 if let Some((cached_min, cached_sum, cached_n, cached_hops)) =
                     latency_candidates.get(&cached_mac).copied()
                 {
+                    let cached_avg = if cached_n > 0 {
+                        cached_sum / (cached_n as u128)
+                    } else {
+                        u128::MAX
+                    };
+                    let cached_score = if cached_min == u128::MAX || cached_avg == u128::MAX {
+                        u128::MAX
+                    } else {
+                        cached_min + cached_avg
+                    };
+                    tracing::debug!(
+                        "cached candidate: mac={:?} min={} sum={} n={} hops={} avg={} score={}",
+                        cached_mac,
+                        cached_min,
+                        cached_sum,
+                        cached_n,
+                        cached_hops,
+                        cached_avg,
+                        cached_score
+                    );
                     let cached_avg = if cached_n > 0 {
                         cached_sum / (cached_n as u128)
                     } else {
@@ -1555,7 +1790,163 @@ impl Routing {
     pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
         let route = self.get_route_to(Some(mac))?;
         tracing::debug!(upstream = %route.mac, source = %mac, "select_and_cache_upstream selected upstream for source");
+        // Store primary cached upstream as before
         self.cached_upstream.store(Some(route.mac.into()));
+        // Remember the source (e.g., RSU) we selected for
+        self.cached_source.store(Some(mac.into()));
+        // Also attempt to populate an ordered list of N-best candidates for fast failover.
+        // Use the configured value from `Args` (convert to usize), defaulting to 3 if invalid.
+        let n_best = usize::try_from(self.args.node_params.cached_candidates)
+            .unwrap_or(3)
+            .max(1);
+        if let Some(candidates) = {
+            // Re-run a variant of selection to fetch multiple candidates.
+            // Call get_route_to for this mac to trigger same computation; then
+            // fall back to computing from latency_candidates in the routing
+            // internal structures. Because `get_route_to` is pure, we can
+            // compute candidates deterministically by copying the logic here.
+            // For simplicity, compute from latency and hops collected across
+            // observed routes.
+            let mut scored: Vec<(u128, u32, MacAddress)> = Vec::new();
+            // Recreate the latency_candidates map used by get_route_to.
+            let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> =
+                HashMap::default();
+            for (_rsu, seqs) in self.routes.iter() {
+                for (_seq, (_dur, _mac, _hops, _r, downstream)) in seqs.iter() {
+                    if let Some(vec) = downstream.get(&mac) {
+                        for route in vec.iter() {
+                            if let Some(lat) = route.latency.map(|x| x.as_micros()) {
+                                let entry = latency_candidates.entry(route.mac).or_insert((
+                                    u128::MAX,
+                                    0u128,
+                                    0u32,
+                                    route.hops,
+                                ));
+                                if entry.0 > lat {
+                                    entry.0 = lat;
+                                }
+                                entry.1 += lat;
+                                entry.2 += 1;
+                                entry.3 = route.hops;
+                            }
+                        }
+                    }
+                }
+            }
+            if !latency_candidates.is_empty() {
+                for (macaddr, (min_us, sum_us, n, hops_val)) in latency_candidates.into_iter() {
+                    let avg_us = if n > 0 {
+                        sum_us / (n as u128)
+                    } else {
+                        u128::MAX
+                    };
+                    let score = if min_us == u128::MAX || avg_us == u128::MAX {
+                        u128::MAX
+                    } else {
+                        min_us + avg_us
+                    };
+                    scored.push((score, hops_val, macaddr));
+                }
+                scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+                let mut out: Vec<MacAddress> = scored
+                    .into_iter()
+                    .map(|(_s, _h, m)| m)
+                    .take(n_best)
+                    .collect();
+                // If we still have capacity, backfill with hop-based candidates not already present
+                if out.len() < n_best {
+                    let mut upstream_routes: Vec<_> = self
+                        .routes
+                        .iter()
+                        .flat_map(|(rsu_mac, seqs)| {
+                            seqs.iter()
+                                .map(move |(seq, (_, mac, hops, _, _))| (seq, rsu_mac, mac, hops))
+                        })
+                        .filter(|(_, rsu_mac, _, _)| rsu_mac == &&mac)
+                        .collect();
+                    upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
+                    let mut seen: std::collections::HashSet<MacAddress> =
+                        out.iter().copied().collect();
+                    for (_seq, _rsu, mac_ref, _hops) in upstream_routes.into_iter() {
+                        if !seen.contains(mac_ref) {
+                            seen.insert(*mac_ref);
+                            out.push(*mac_ref);
+                            if out.len() >= n_best {
+                                break;
+                            }
+                        }
+                    }
+                }
+                // As a final fallback, add any recorded neighbors that forwarded heartbeats
+                // for this source (not yet included), then, if capacity remains, include the
+                // source itself.
+                if out.len() < n_best {
+                    if let Some(neigh) = self.source_neighbors.get(&mac) {
+                        for cand in neigh.iter() {
+                            if !out.contains(cand) {
+                                out.push(*cand);
+                                if out.len() >= n_best {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if out.len() < n_best && !out.contains(&mac) {
+                    out.push(mac);
+                }
+                Some(out)
+            } else {
+                // Fallback: choose by fewest hops across upstream_routes
+                let mut upstream_routes: Vec<_> = self
+                    .routes
+                    .iter()
+                    .flat_map(|(rsu_mac, seqs)| {
+                        seqs.iter()
+                            .map(move |(seq, (_, mac, hops, _, _))| (seq, rsu_mac, mac, hops))
+                    })
+                    .filter(|(_, rsu_mac, _, _)| rsu_mac == &&mac)
+                    .collect();
+                upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
+                let mut seen = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for (_seq, _rsu, mac_ref, _hops) in upstream_routes.into_iter() {
+                    if !seen.contains(mac_ref) {
+                        seen.insert(*mac_ref);
+                        out.push(*mac_ref);
+                        if out.len() >= n_best {
+                            break;
+                        }
+                    }
+                }
+                if out.len() < n_best {
+                    if let Some(neigh) = self.source_neighbors.get(&mac) {
+                        for cand in neigh.iter() {
+                            if !out.contains(cand) {
+                                out.push(*cand);
+                                if out.len() >= n_best {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if out.len() < n_best && !out.contains(&mac) {
+                    out.push(mac);
+                }
+                if out.is_empty() {
+                    None
+                } else {
+                    Some(out)
+                }
+            }
+        } {
+            // store candidates but do NOT override the already-stored primary
+            // cached upstream; keep `route.mac` as the primary to preserve
+            // hysteresis semantics handled by `get_route_to`.
+            self.cached_candidates
+                .store(Some(Arc::new(candidates.clone())));
+        }
         #[cfg(feature = "stats")]
         crate::metrics::inc_cache_select();
         Some(route)

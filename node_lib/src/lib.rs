@@ -4,6 +4,14 @@ pub mod control;
 mod data;
 pub mod messages;
 pub mod metrics;
+// Re-export test helpers for integration tests.
+// Make this available unconditionally so integration tests can import
+// `node_lib::test_helpers::hub` without passing a feature flag.
+// The helper code is small and test-oriented; keeping it always exported
+// avoids CI friction when running integration tests.
+pub mod test_helpers {
+    pub mod hub;
+}
 
 #[cfg(not(any(test, feature = "test_helpers")))]
 use anyhow::Context;
@@ -134,6 +142,7 @@ mod tests {
                 node_type: NodeType::Rsu,
                 hello_history: 10,
                 hello_periodicity: Some(100),
+                cached_candidates: 3,
             },
         };
         let args_obu = Args {
@@ -145,6 +154,7 @@ mod tests {
                 node_type: NodeType::Obu,
                 hello_history: 10,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
 
@@ -168,6 +178,7 @@ mod tests {
                 node_type: NodeType::Obu,
                 hello_history: 1,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         let res = crate::create(args);

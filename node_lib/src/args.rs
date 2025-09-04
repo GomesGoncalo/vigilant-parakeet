@@ -21,6 +21,10 @@ pub struct NodeParameters {
     /// Hello periodicity
     #[arg(short, long)]
     pub hello_periodicity: Option<u32>,
+
+    /// Number of cached upstream candidates to keep for fast failover
+    #[arg(long, default_value_t = 3)]
+    pub cached_candidates: u32,
 }
 
 #[derive(Parser, Debug, Clone)]

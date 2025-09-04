@@ -4,6 +4,7 @@ use common::tun::Tun;
 use node_lib::args::{Args, NodeParameters, NodeType};
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
+use node_lib::test_helpers::hub::Hub;
 use std::os::unix::io::FromRawFd;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -11,133 +12,6 @@ use std::sync::{
 };
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
-
-/// Simple 3-port hub that forwards frames from any port to all others with
-/// configurable per-edge delays.
-struct Hub {
-    hub_fds: Vec<i32>,
-    delays_ms: [[u64; 3]; 3],
-    watch_upstream_from_idx: Option<usize>,
-    watch_flag: Option<Arc<AtomicBool>>,
-    watch_from_mac: Option<mac_address::MacAddress>,
-    watch_to_mac: Option<mac_address::MacAddress>,
-    watch_downstream_from_idx: Option<usize>,
-    watch_downstream_flag: Option<Arc<AtomicBool>>,
-}
-
-impl Hub {
-    fn new(hub_fds: Vec<i32>, delays_ms: [[u64; 3]; 3]) -> Self {
-        Self {
-            hub_fds,
-            delays_ms,
-            watch_upstream_from_idx: None,
-            watch_flag: None,
-            watch_from_mac: None,
-            watch_to_mac: None,
-            watch_downstream_from_idx: None,
-            watch_downstream_flag: None,
-        }
-    }
-
-    fn with_upstream_watch(
-        mut self,
-        idx: usize,
-        from: mac_address::MacAddress,
-        to: mac_address::MacAddress,
-        flag: Arc<AtomicBool>,
-    ) -> Self {
-        self.watch_upstream_from_idx = Some(idx);
-        self.watch_flag = Some(flag);
-        self.watch_from_mac = Some(from);
-        self.watch_to_mac = Some(to);
-        self
-    }
-
-    fn with_downstream_watch(mut self, idx: usize, flag: Arc<AtomicBool>) -> Self {
-        self.watch_downstream_from_idx = Some(idx);
-        self.watch_downstream_flag = Some(flag);
-        self
-    }
-
-    fn spawn(self) {
-        tokio::spawn(async move {
-            let hub_fds = self.hub_fds;
-            let delays = self.delays_ms;
-            let watch_idx = self.watch_upstream_from_idx;
-            let watch_flag = self.watch_flag;
-            let watch_from = self.watch_from_mac;
-            let watch_to = self.watch_to_mac;
-            let watch_ds_idx = self.watch_downstream_from_idx;
-            let watch_ds_flag = self.watch_downstream_flag;
-            loop {
-                for i in 0..hub_fds.len() {
-                    let mut buf = vec![0u8; 2048];
-                    let n =
-                        unsafe { libc::recv(hub_fds[i], buf.as_mut_ptr() as *mut _, buf.len(), 0) };
-                    if n > 0 {
-                        let n = n as usize;
-                        buf.truncate(n);
-                        // Optional observation: if configured, detect an Upstream data packet arriving from index i
-                        if let (Some(idx), Some(flag)) = (watch_idx, watch_flag.as_ref()) {
-                            if idx == i {
-                                if let Ok(msg) =
-                                    node_lib::messages::message::Message::try_from(&buf[..])
-                                {
-                                    if let node_lib::messages::packet_type::PacketType::Data(
-                                        node_lib::messages::data::Data::Upstream(_),
-                                    ) = msg.get_packet_type()
-                                    {
-                                        if watch_from
-                                            .map(|m| msg.from().ok() == Some(m))
-                                            .unwrap_or(true)
-                                            && watch_to
-                                                .map(|m| msg.to().ok() == Some(m))
-                                                .unwrap_or(true)
-                                        {
-                                            flag.store(true, Ordering::SeqCst);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // Optional observation: detect any Downstream data packet arriving from index i
-                        if let (Some(ds_idx), Some(flag)) = (watch_ds_idx, watch_ds_flag.as_ref()) {
-                            if ds_idx == i {
-                                if let Ok(msg) =
-                                    node_lib::messages::message::Message::try_from(&buf[..])
-                                {
-                                    if let node_lib::messages::packet_type::PacketType::Data(
-                                        node_lib::messages::data::Data::Downstream(_),
-                                    ) = msg.get_packet_type()
-                                    {
-                                        flag.store(true, Ordering::SeqCst);
-                                    }
-                                }
-                            }
-                        }
-                        for (j, out_fd) in hub_fds.iter().copied().enumerate() {
-                            if j == i {
-                                continue;
-                            }
-                            let delay = Duration::from_millis(delays[i][j]);
-                            let data = buf.clone();
-                            tokio::spawn(async move {
-                                if delay.as_millis() > 0 {
-                                    tokio::time::sleep(delay).await;
-                                }
-                                let _ = unsafe {
-                                    libc::send(out_fd, data.as_ptr() as *const _, data.len(), 0)
-                                };
-                            });
-                        }
-                    }
-                }
-                // small yield to avoid busy loop
-                tokio::task::yield_now().await;
-            }
-        });
-    }
-}
 
 #[tokio::test]
 async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
@@ -203,6 +77,7 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
             node_type: NodeType::Rsu,
             hello_history: 10,
             hello_periodicity: Some(50),
+            cached_candidates: 3,
         },
     };
     let args_obu1 = Args {
@@ -214,6 +89,7 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
             node_type: NodeType::Obu,
             hello_history: 10,
             hello_periodicity: None,
+            cached_candidates: 3,
         },
     };
     let args_obu2 = Args {
@@ -225,6 +101,7 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
             node_type: NodeType::Obu,
             hello_history: 10,
             hello_periodicity: None,
+            cached_candidates: 3,
         },
     };
 
@@ -337,6 +214,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
             node_type: NodeType::Rsu,
             hello_history: 10,
             hello_periodicity: Some(50),
+            cached_candidates: 3,
         },
     };
     let args_obu = Args {
@@ -348,6 +226,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
             node_type: NodeType::Obu,
             hello_history: 10,
             hello_periodicity: None,
+            cached_candidates: 3,
         },
     };
 

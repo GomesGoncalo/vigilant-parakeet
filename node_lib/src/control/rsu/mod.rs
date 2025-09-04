@@ -73,7 +73,7 @@ impl Rsu {
                     }
                 }).await;
                 if let Ok(Some(messages)) = messages {
-                    let _ = node::handle_messages(messages, &tun, &device).await;
+                    let _ = node::handle_messages(messages, &tun, &device, None).await;
                 }
             }
         });
@@ -215,73 +215,48 @@ impl Rsu {
                 let devicec = device.clone();
                 let cache = cache.clone();
                 let routing = routing.clone();
-                let messages =
-                    node::tap_traffic(&tun, |pkt, size| async move {
-                        let data: &[u8] = &pkt[..size];
-                        let to: [u8; 6] = data[0..6].try_into()?;
-                        let to: MacAddress = to.into();
-                        let target = cache.get(to);
-                        let from: [u8; 6] = data[6..12].try_into()?;
-                        let from: MacAddress = from.into();
-                        let source_mac = devicec.mac_address().bytes();
-                        cache.store_mac(from, devicec.mac_address());
-                        let routing = routing.read().unwrap();
-                        let outgoing =
-                            if let Some(target) = target {
-                                if let Some(hop) = routing.get_route_to(Some(target)) {
-                                    vec![ReplyType::Wire(
-                                        (&Message::new(
-                                            devicec.mac_address(),
-                                            hop.mac,
-                                            PacketType::Data(Data::Downstream(ToDownstream::new(
-                                                &source_mac,
-                                                target,
-                                                data,
-                                            ))),
-                                        ))
-                                            .into(),
-                                    )]
-                                } else {
-                                    // Fallback: no unicast route yet.
-                                    // First try: send directly to the cached node for this client if known.
-                                    if let Some(next_hop_mac) = cache.get(target) {
-                                        vec![ReplyType::Wire(
-                                            (&Message::new(
-                                                devicec.mac_address(),
-                                                next_hop_mac,
-                                                PacketType::Data(Data::Downstream(
-                                                    ToDownstream::new(&source_mac, target, data),
-                                                )),
-                                            ))
-                                                .into(),
-                                        )]
-                                    } else {
-                                        // Second try: fan out toward all known next hops.
-                                        routing
-                                            .iter_next_hops()
-                                            .filter(|x| x != &&devicec.mac_address())
-                                            .filter_map(|x| {
-                                                let dest = routing.get_route_to(Some(*x))?;
-                                                Some((x, dest))
-                                            })
-                                            .map(|(x, y)| (x, y.mac))
-                                            .unique_by(|(x, _)| *x)
-                                            .map(|(_x, next_hop)| {
-                                                let msg = Message::new(
-                                                    devicec.mac_address(),
-                                                    next_hop,
-                                                    PacketType::Data(Data::Downstream(
-                                                        ToDownstream::new(&source_mac, target, data),
-                                                    )),
-                                                );
-                                                ReplyType::Wire((&msg).into())
-                                            })
-                                            .collect_vec()
-                                    }
-                                }
+                let messages = node::tap_traffic(&tun, |pkt, size| async move {
+                    let data: &[u8] = &pkt[..size];
+                    let to: [u8; 6] = data[0..6].try_into()?;
+                    let to: MacAddress = to.into();
+                    let target = cache.get(to);
+                    let from: [u8; 6] = data[6..12].try_into()?;
+                    let from: MacAddress = from.into();
+                    let source_mac = devicec.mac_address().bytes();
+                    cache.store_mac(from, devicec.mac_address());
+                    let routing = routing.read().unwrap();
+                    let outgoing = if let Some(target) = target {
+                        if let Some(hop) = routing.get_route_to(Some(target)) {
+                            vec![ReplyType::Wire(
+                                (&Message::new(
+                                    devicec.mac_address(),
+                                    hop.mac,
+                                    PacketType::Data(Data::Downstream(ToDownstream::new(
+                                        &source_mac,
+                                        target,
+                                        data,
+                                    ))),
+                                ))
+                                    .into(),
+                            )]
+                        } else {
+                            // Fallback: no unicast route yet.
+                            // First try: send directly to the cached node for this client if known.
+                            if let Some(next_hop_mac) = cache.get(target) {
+                                vec![ReplyType::Wire(
+                                    (&Message::new(
+                                        devicec.mac_address(),
+                                        next_hop_mac,
+                                        PacketType::Data(Data::Downstream(ToDownstream::new(
+                                            &source_mac,
+                                            target,
+                                            data,
+                                        ))),
+                                    ))
+                                        .into(),
+                                )]
                             } else {
-                                // No client-cache mapping for destination yet: fan out using the original
-                                // destination MAC from the TUN frame, not the next-hop address.
+                                // Second try: fan out toward all known next hops.
                                 routing
                                     .iter_next_hops()
                                     .filter(|x| x != &&devicec.mac_address())
@@ -292,24 +267,52 @@ impl Rsu {
                                     .map(|(x, y)| (x, y.mac))
                                     .unique_by(|(x, _)| *x)
                                     .map(|(_x, next_hop)| {
-                                        let msg = Message::new(
-                                            devicec.mac_address(),
-                                            next_hop,
-                                            PacketType::Data(Data::Downstream(
-                                                ToDownstream::new(&source_mac, to, data),
-                                            )),
-                                        );
+                                        let msg =
+                                            Message::new(
+                                                devicec.mac_address(),
+                                                next_hop,
+                                                PacketType::Data(Data::Downstream(
+                                                    ToDownstream::new(&source_mac, target, data),
+                                                )),
+                                            );
                                         ReplyType::Wire((&msg).into())
                                     })
                                     .collect_vec()
-                            };
-                        tracing::trace!(?outgoing, "outgoing from tap");
-                        Ok(Some(outgoing))
-                    })
-                    .await;
+                            }
+                        }
+                    } else {
+                        // No client-cache mapping for destination yet: fan out using the original
+                        // destination MAC from the TUN frame, not the next-hop address.
+                        routing
+                            .iter_next_hops()
+                            .filter(|x| x != &&devicec.mac_address())
+                            .filter_map(|x| {
+                                let dest = routing.get_route_to(Some(*x))?;
+                                Some((x, dest))
+                            })
+                            .map(|(x, y)| (x, y.mac))
+                            .unique_by(|(x, _)| *x)
+                            .map(|(_x, next_hop)| {
+                                let msg = Message::new(
+                                    devicec.mac_address(),
+                                    next_hop,
+                                    PacketType::Data(Data::Downstream(ToDownstream::new(
+                                        &source_mac,
+                                        to,
+                                        data,
+                                    ))),
+                                );
+                                ReplyType::Wire((&msg).into())
+                            })
+                            .collect_vec()
+                    };
+                    tracing::trace!(?outgoing, "outgoing from tap");
+                    Ok(Some(outgoing))
+                })
+                .await;
 
                 if let Ok(Some(messages)) = messages {
-                    let _ = node::handle_messages(messages, &tun, &device).await;
+                    let _ = node::handle_messages(messages, &tun, &device, None).await;
                 }
             }
         });
@@ -447,6 +450,7 @@ mod rsu_tests {
                 node_type: NodeType::Rsu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -488,6 +492,7 @@ mod rsu_tests {
                 node_type: NodeType::Rsu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -527,6 +532,7 @@ mod rsu_tests {
                 node_type: NodeType::Rsu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -575,6 +581,7 @@ mod rsu_tests {
                 node_type: NodeType::Rsu,
                 hello_history: 2,
                 hello_periodicity: None,
+                cached_candidates: 3,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
