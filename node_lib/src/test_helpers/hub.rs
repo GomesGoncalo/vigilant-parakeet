@@ -1,5 +1,8 @@
 use mac_address::MacAddress;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 // Trait implemented by unit/integration tests to verify packets observed by the Hub.

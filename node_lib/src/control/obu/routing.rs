@@ -1463,7 +1463,12 @@ impl Routing {
 
             let seen_at = Instant::now().duration_since(self.boot);
             let latency = seen_at - *duration;
-            match downstream.entry(message.sender()) {
+            // Record measured latency for reaching the original heartbeat source
+            // (e.g., the RSU) via the neighbor we received this reply from.
+            // Previously this keyed on `message.sender()`, which is the node
+            // that originated the HeartbeatReply (often an intermediate OBU),
+            // preventing latency-based selection toward the actual source.
+            match downstream.entry(message.source()) {
                 Entry::Occupied(mut entry) => {
                     let value = entry.get_mut();
 

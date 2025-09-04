@@ -142,11 +142,8 @@ impl Channel {
         }
 
         let loss = self.parameters.read().unwrap().loss;
-        if loss > 0.0 {
-            let mut rng = rand::thread_rng();
-            if rand::Rng::gen::<f64>(&mut rng) < loss {
-                bail!("packet lost")
-            }
+        if loss > 0.0 && rand::random::<f64>() < loss {
+            bail!("packet lost")
         }
 
         Ok(())
