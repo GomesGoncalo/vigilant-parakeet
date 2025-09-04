@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Local commit-msg hook: emit warnings only (do not block commits).
+# This helps developers catch problems early; CI is authoritative and will fail
+# PRs for subject format errors (and warn on short bodies).
+
+msgfile="$1"
+
+if [ ! -f "$msgfile" ]; then
+  echo "No commit message file provided; skipping checks."
+  exit 0
+fi
+
+MSG=$(sed 's/\r$//' "$msgfile")
+SUBJECT=$(echo "$MSG" | sed -n '1p')
+
+# Regex for Conventional Commit subject: type(scope)?: subject
+TYPE_RE='^(feat|fix|chore|docs|style|refactor|perf|test|ci|build|revert)(\([^)]+\))?: .+'
+
+WARNED=0
+if ! echo "$SUBJECT" | grep -Eq "$TYPE_RE"; then
+  echo "WARNING: Commit subject does not follow Conventional Commits format:" >&2
+  echo "  Found: $SUBJECT" >&2
+  echo "  Expected format: type(scope): subject  e.g. fix(routing): record heartbeat-reply latency under RSU source" >&2
+  WARNED=1
+fi
+
+# Recommend a non-trivial commit body (What/Where/Why/Testing/Impact)
+BODY_LINES=$(echo "$MSG" | sed -n '2,$p' | sed '/^\s*$/d' | wc -l)
+if [ "$BODY_LINES" -lt 3 ]; then
+  echo "WARNING: Commit body is short (recommended: 3 non-empty lines: What/Where/Why/Testing/Impact)." >&2
+  WARNED=1
+fi
+
+if [ "$WARNED" -eq 1 ]; then
+  echo "Note: This is a local warning only. CI will enforce subject format and may fail the PR if invalid." >&2
+fi
+
+# Always allow the commit to proceed
+exit 0
