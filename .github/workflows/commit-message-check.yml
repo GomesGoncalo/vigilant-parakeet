@@ -1,0 +1,74 @@
+name: Commit message checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - '**'
+
+jobs:
+  commit-msg-check:
+    name: Validate commit messages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate commit messages follow Conventional Commits and include a descriptive body
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Determine the commit range to inspect depending on event type
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            RANGE="${{ github.event.before }}..${{ github.sha }}"
+          fi
+
+          echo "Inspecting commits in range: $RANGE"
+
+          # If range resolves to no commits, exit successfully
+          if ! git rev-parse --verify $RANGE >/dev/null 2>&1; then
+            echo "No commits in range (empty branch or identical SHAs)."
+            exit 0
+          fi
+
+          COMMITS=$(git rev-list --no-merges $RANGE || true)
+          if [ -z "$COMMITS" ]; then
+            echo "No commits to check."
+            exit 0
+          fi
+
+          # Regex for Conventional Commit subject: type(scope)?: subject
+          TYPE_RE='^(feat|fix|chore|docs|style|refactor|perf|test|ci|build|revert)(\([^)]+\))?: .+'
+
+          FAIL=0
+          for c in $COMMITS; do
+            echo "\nChecking commit: $c"
+            MSG=$(git log --format=%B -n 1 $c)
+            SUBJECT=$(echo "$MSG" | sed -n '1p' | tr -d '\r')
+
+            if ! echo "$SUBJECT" | grep -Eq "$TYPE_RE"; then
+              echo "ERROR: Commit $c subject does not follow Conventional Commits format:" >&2
+              echo "  Found subject: $SUBJECT" >&2
+              FAIL=1
+            fi
+
+            # Require at least 3 non-empty body lines after subject (What/Where/Why/Testing/Impact)
+            BODY_LINES=$(echo "$MSG" | sed -n '2,$p' | sed '/^\s*$/d' | wc -l)
+            if [ "$BODY_LINES" -lt 3 ]; then
+              echo "ERROR: Commit $c body is too short (need 3 non-empty lines describing What/Where/Why/Testing/Impact)." >&2
+              FAIL=1
+            fi
+          done
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "One or more commit messages failed validation. Please amend commits to follow Conventional Commits and include a descriptive body." >&2
+            exit 1
+          fi
+
+          echo "All commit messages in range validated."
