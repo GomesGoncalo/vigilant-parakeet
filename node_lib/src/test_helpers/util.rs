@@ -44,6 +44,21 @@ where
     None
 }
 
+/// Mocked-time version of poll_until that uses tokio::time::advance instead of sleep.
+/// This works with tokio::time::pause() for deterministic, fast tests.
+pub async fn poll_until_mocked<T, F>(mut check: F, attempts: u32, delay_ms: u64) -> Option<T>
+where
+    F: FnMut() -> Option<T>,
+{
+    for _ in 0..attempts {
+        if let Some(v) = check() {
+            return Some(v);
+        }
+        tokio::time::advance(Duration::from_millis(delay_ms)).await;
+    }
+    None
+}
+
 /// Try to recv from a shim `Tun` with a per-attempt timeout. Returns the
 /// number of bytes read on success, or `None` if no successful recv occurred
 /// within the given attempts.
@@ -92,6 +107,19 @@ where
     for _ in 0..times {
         let _ = send_fn().await;
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    }
+}
+
+/// Mocked-time version of repeat_async_send that uses tokio::time::advance instead of sleep.
+/// This works with tokio::time::pause() for deterministic, fast tests.
+pub async fn repeat_async_send_mocked<F, Fut, E>(mut send_fn: F, times: u32, delay_ms: u64)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), E>>,
+{
+    for _ in 0..times {
+        let _ = send_fn().await;
+        tokio::time::advance(Duration::from_millis(delay_ms)).await;
     }
 }
 
@@ -156,6 +184,17 @@ pub fn mk_hub_with_checks(
     checks: Vec<std::sync::Arc<dyn crate::test_helpers::hub::HubCheck>>,
 ) {
     let hub = crate::test_helpers::hub::Hub::new(hub_fds, delays_ms).with_checks(checks);
+    hub.spawn();
+}
+
+/// Mocked-time version of mk_hub_with_checks that creates a Hub compatible with tokio::time::pause().
+/// This Hub will properly deliver packets when tokio::time::advance() is called.
+pub fn mk_hub_with_checks_mocked_time(
+    hub_fds: Vec<i32>,
+    delays_ms: Vec<Vec<u64>>,
+    checks: Vec<std::sync::Arc<dyn crate::test_helpers::hub::HubCheck>>,
+) {
+    let hub = crate::test_helpers::hub::Hub::new_with_mocked_time(hub_fds, delays_ms).with_checks(checks);
     hub.spawn();
 }
 
