@@ -4,8 +4,8 @@ use node_lib::control::rsu::Rsu;
 use node_lib::test_helpers::hub::UpstreamMatchCheck;
 use node_lib::test_helpers::util::mk_shim_pairs;
 use node_lib::test_helpers::util::{
-    mk_args, mk_device_from_fd, mk_hub_with_checks_mocked_time, poll_until_mocked,
-    repeat_async_send_mocked,
+    mk_args, mk_device_from_fd, mk_hub_with_checks, poll_until,
+    repeat_async_send,
 };
 use std::sync::{atomic::AtomicBool, Arc};
 
@@ -16,8 +16,6 @@ use std::sync::{atomic::AtomicBool, Arc};
 #[tokio::test]
 async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Result<()> {
     node_lib::init_test_tracing();
-    // Use mocked time for deterministic, fast test execution - MUST be before node creation
-    tokio::time::pause();
 
     // Create shim TUN pairs and keep the peer for OBU2
     let mut pairs = mk_shim_pairs(3);
@@ -39,7 +37,7 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Resul
     let delays: Vec<Vec<u64>> = vec![vec![0, 2, 50], vec![2, 0, 2], vec![50, 2, 0]];
     let saw_upstream = Arc::new(AtomicBool::new(false));
 
-    mk_hub_with_checks_mocked_time(
+    mk_hub_with_checks(
         hub_fds.to_vec(),
         delays,
         vec![Arc::new(UpstreamMatchCheck {
@@ -67,11 +65,11 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Resul
 
     // Wait for OBU2 to cache upstream route; expect it to eventually prefer OBU1
     // (two-hop path). Poll until the desired selection is observed.
-    let cached = poll_until_mocked(|| obu2.cached_upstream_mac(), 200, 100).await;
+    let cached = poll_until(|| obu2.cached_upstream_mac(), 200, 100).await;
     assert_eq!(cached, Some(mac_obu1), "OBU2 should prefer OBU1 initially");
 
     // Ensure we have at least two candidates cached at OBU2 before cutting the link
-    let have_two = poll_until_mocked(
+    let have_two = poll_until(
         || {
             let len = obu2.cached_upstream_candidates_len();
             if len >= 2 {
@@ -101,10 +99,10 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Resul
     node_lib::test_helpers::util::shutdown_read(hub_fds[2]);
 
     // Repeatedly trigger upstream sends to force send errors and eventual failover
-    repeat_async_send_mocked(|| tun_obu2_peer.send_all(b"trigger after close"), 6, 20).await;
+    repeat_async_send(|| tun_obu2_peer.send_all(b"trigger after close"), 6, 20).await;
 
     // Wait for OBU2 to promote to the next candidate (not OBU1)
-    let promoted = poll_until_mocked(
+    let promoted = poll_until(
         || {
             let p = obu2.cached_upstream_mac();
             if p.is_some() && p.unwrap() != mac_obu1 {
