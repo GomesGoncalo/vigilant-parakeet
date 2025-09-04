@@ -46,6 +46,36 @@ cargo fmt
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+Developer setup — install local git hooks
+----------------------------------------
+
+We provide a small `./scripts/install-hooks.sh` helper that configures your
+clone to use the repository's bundled `.githooks` directory. This is optional
+but recommended: the CI enforces commit message format and other checks, and
+enabling local hooks gives early warnings before you push.
+
+One-liner (run once per clone):
+
+```bash
+# enable the repo hooks for this clone
+git config core.hooksPath .githooks
+chmod +x .githooks/*
+```
+
+Or run the convenience script included in the repo:
+
+```bash
+./scripts/install-hooks.sh
+```
+
+Notes:
+- This action is explicit and local-only (git does not allow repos to auto-run
+  or force hooks on clones for security reasons).
+- CI is authoritative; the GitHub Actions workflow will still fail PRs if
+  commit subjects do not match the Conventional Commits format. Local hooks
+  only provide warnings to help authors before pushing.
+
+
 Testing notes
 
 - Unit tests and integration tests are Rust-native. Integration tests live in
