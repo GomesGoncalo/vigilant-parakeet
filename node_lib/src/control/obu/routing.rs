@@ -942,6 +942,97 @@ mod more_tests {
         let cached = routing.get_route_to(None).expect("cached route");
         assert_eq!(cached.mac, via_c, "cached should reflect the switch");
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hysteresis_prefers_measured_when_cached_unmeasured() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 2,
+                hello_periodicity: None,
+                cached_candidates: 3,
+            },
+        };
+        // Use paused time for deterministic latency measurement
+        tokio::time::pause();
+        let boot = Instant::now() - Duration::from_secs(1);
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        let rsu: MacAddress = [50u8; 6].into();
+        let via_b: MacAddress = [60u8; 6].into();
+        let via_c: MacAddress = [70u8; 6].into();
+        let our_mac: MacAddress = [111u8; 6].into();
+
+        // Insert a heartbeat observed via B (id 1) and make it the cached primary
+        let mut hb1_bytes = Vec::new();
+        hb1_bytes.extend_from_slice(&0u128.to_be_bytes());
+        hb1_bytes.extend_from_slice(&1u32.to_be_bytes());
+        hb1_bytes.extend_from_slice(&0u32.to_be_bytes());
+        hb1_bytes.extend_from_slice(&rsu.bytes());
+        let hb1 =
+            crate::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..]).expect("hb1");
+        let msg1 = crate::messages::message::Message::new(
+            via_b,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb1.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
+        // Force cached primary to via_b but do NOT record any latency for it
+        routing.test_set_cached_candidates(vec![via_b]);
+
+        // Now observe the RSU via C and record a latency for C
+        let mut hb2_bytes = Vec::new();
+        hb2_bytes.extend_from_slice(&0u128.to_be_bytes());
+        hb2_bytes.extend_from_slice(&2u32.to_be_bytes());
+        hb2_bytes.extend_from_slice(&0u32.to_be_bytes());
+        hb2_bytes.extend_from_slice(&rsu.bytes());
+        let hb2 =
+            crate::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..]).expect("hb2");
+        let msg2 = crate::messages::message::Message::new(
+            via_c,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb2.clone()),
+            ),
+        );
+        let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
+
+        // Advance time so the reply records a measurable latency for via_c
+        tokio::time::advance(Duration::from_millis(30)).await;
+        let hbr2 = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb2, rsu);
+        let reply2 = crate::messages::message::Message::new(
+            via_c,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::HeartbeatReply(hbr2.clone()),
+            ),
+        );
+        // This will record latency for via_c and also trigger select_and_cache_upstream
+        let _ = routing
+            .handle_heartbeat_reply(&reply2, our_mac)
+            .unwrap_or(None);
+
+        // Now selection should prefer the measured candidate via_c even though
+        // the cached primary (via_b) had no latency observations.
+        let route = routing.get_route_to(Some(rsu)).expect("route");
+        assert_eq!(
+            route.mac, via_c,
+            "should prefer measured candidate when cached unmeasured"
+        );
+
+        // And the cached upstream should reflect the switch after selection
+        let cached = routing.get_route_to(None).expect("cached route");
+        assert_eq!(
+            cached.mac, via_c,
+            "cached should reflect the measured switch"
+        );
+    }
 }
 
 #[derive(Debug)]
@@ -1636,22 +1727,35 @@ impl Routing {
             let (best_score, best_hops, best_mac, best_avg) = scored[0];
 
             // If cached is set but isn't in latency candidates (no latency observed yet),
-            // keep cached unless best has at least one fewer hop.
+            // prefer a measured candidate when available. The previous behavior kept
+            // cached unless the best had at least one fewer hop; that prevented
+            // switching when the new candidate had strictly better latency but the
+            // cached one had no latency measurements. Here we switch to the best
+            // measured candidate (when one exists). If there are no measured
+            // candidates, fall back to the hops-only hysteresis.
             if let Some(cached_mac) = cached {
                 if !latency_candidates.contains_key(&cached_mac) {
-                    if let Some((_, _, _, cached_hops_ref)) = upstream_routes
-                        .iter()
-                        .find(|(_, _, mac_ref, _)| **mac_ref == cached_mac)
-                    {
-                        let cached_hops = **cached_hops_ref;
-                        if best_mac != cached_mac {
-                            let fewer_hops = best_hops < cached_hops;
-                            if !fewer_hops {
-                                return Some(Route {
-                                    hops: cached_hops,
-                                    mac: cached_mac,
-                                    latency: None,
-                                });
+                    // If we have a finite scored best (i.e., measured candidate),
+                    // prefer it (allow switching). Otherwise fall back to hops-only
+                    // decision as before.
+                    if best_score != u128::MAX {
+                        // best candidate is measured; let the default return of
+                        // best happen (do nothing here).
+                    } else {
+                        if let Some((_, _, _, cached_hops_ref)) = upstream_routes
+                            .iter()
+                            .find(|(_, _, mac_ref, _)| **mac_ref == cached_mac)
+                        {
+                            let cached_hops = **cached_hops_ref;
+                            if best_mac != cached_mac {
+                                let fewer_hops = best_hops < cached_hops;
+                                if !fewer_hops {
+                                    return Some(Route {
+                                        hops: cached_hops,
+                                        mac: cached_mac,
+                                        latency: None,
+                                    });
+                                }
                             }
                         }
                     }
