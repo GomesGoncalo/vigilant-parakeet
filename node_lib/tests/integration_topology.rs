@@ -11,6 +11,8 @@ use std::time::Duration;
 async fn rsu_and_obu_topology_discovery() -> anyhow::Result<()> {
     // Initialize tracing for test output
     node_lib::init_test_tracing();
+    // Use paused time for deterministic test execution
+    tokio::time::pause();
     // Create shim tun pair using shared helper
     let (tun_a, tun_b) = mk_shim_pair();
 
@@ -30,11 +32,12 @@ async fn rsu_and_obu_topology_discovery() -> anyhow::Result<()> {
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_a), Arc::new(dev_a))?;
     let obu = Obu::new(args_obu, Arc::new(tun_b), Arc::new(dev_b))?;
 
-    // Wait (poll) up to 5s for the OBU to discover an upstream route.
-    // Polling reduces flakiness and prints progress for debugging.
+    // Instead of polling with sleep, advance time in controlled increments.
+    // RSU sends heartbeats every 100ms, so advance time by that amount and check.
+    // Allow up to 5 seconds worth of time advancement (50 × 100ms).
     let mut cached = None;
     for i in 0..50 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::advance(Duration::from_millis(100)).await;
         cached = obu.cached_upstream_mac();
         tracing::debug!(poll = i, cached_upstream = ?cached, "test poll progress");
         if cached.is_some() {
