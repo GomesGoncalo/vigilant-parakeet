@@ -159,7 +159,7 @@ mod tests {
     fn edge_width_scaling() {
         // zero traffic should produce a small positive width
         let w0 = compute_edge_width(0.0, 0.0);
-    assert!((1..=3).contains(&w0));
+        assert!((1..=3).contains(&w0));
         // moderate traffic increases or stays within bounds
         assert!(compute_edge_width(100.0, 0.0) >= 1);
         // very large traffic should still be capped

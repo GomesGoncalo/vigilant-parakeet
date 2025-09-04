@@ -941,26 +941,20 @@ impl Routing {
             entry.swap_remove_index(0);
         }
 
-        if let Some((_, _, _hops, _, _)) = entry.get(&message.id()) {
-            return Ok(None);
-            // So this makes us prioritize hops instead of latency
-            // TODO: Is that preferable
-            // if _hops < &message.hops() {
-            //     return Ok(None);
-            // }
-        }
-
+        let seen_seq = entry.get(&message.id()).is_some();
         let duration = Instant::now().duration_since(self.boot);
-        entry.insert(
-            message.id(),
-            (
-                duration,
-                pkt.from()?,
-                message.hops(),
-                IndexMap::new(),
-                HashMap::default(),
-            ),
-        );
+        if !seen_seq {
+            entry.insert(
+                message.id(),
+                (
+                    duration,
+                    pkt.from()?,
+                    message.hops(),
+                    IndexMap::new(),
+                    HashMap::default(),
+                ),
+            );
+        }
 
         let entry_from = self
             .routes
@@ -973,20 +967,30 @@ impl Routing {
             entry_from.clear();
         }
 
-        if entry_from.len() == entry_from.capacity() && entry_from.capacity() > 0 {
+    if entry_from.len() == entry_from.capacity() && entry_from.capacity() > 0 {
             entry_from.swap_remove_index(0);
         }
 
-        entry_from.insert(
-            message.id(),
-            (
-                duration,
-                pkt.from()?,
-                1,
-                IndexMap::new(),
-                HashMap::default(),
-            ),
-        );
+        // Always ensure we have an adjacency entry for the neighbor that forwarded
+        // this heartbeat sequence (pkt.from). Insert if absent for this seq id.
+        if !entry_from.contains_key(&message.id()) {
+            entry_from.insert(
+                message.id(),
+                (
+                    duration,
+                    pkt.from()?,
+                    1,
+                    IndexMap::new(),
+                    HashMap::default(),
+                ),
+            );
+        }
+
+        // If we've already seen this heartbeat id for the given source, we've now ensured
+        // the adjacency entry for pkt.from(), but we should not forward or reply again.
+        if seen_seq {
+            return Ok(None);
+        }
 
         match (old_route, self.get_route_to(Some(message.source()))) {
             (None, Some(new_route)) => {
@@ -1270,6 +1274,70 @@ impl Routing {
                 latency: None,
             });
         };
+        // If the target_mac is not an RSU we've recorded heartbeats for, attempt to
+        // compute a route toward this node using downstream observations across all
+        // heartbeat sequences. This allows forwarding downstream frames toward other
+        // OBUs (e.g., two-hop paths) using observed neighbors and latencies.
+        if !self.routes.contains_key(&target_mac) {
+            // Collect candidate next hops that lead to target_mac along with hop-count and latency.
+            let mut candidates: Vec<(u32, MacAddress, u128)> = Vec::new();
+            for (_rsu, seqs) in self.routes.iter() {
+                for (_seq, (_dur, _next_upstream, _hops, _r, downstream)) in seqs.iter() {
+                    if let Some(vec) = downstream.get(&target_mac) {
+                        for t in vec.iter() {
+                            let us = t.latency.map(|d| d.as_micros()).unwrap_or(u128::MAX);
+                            candidates.push((t.hops, t.mac, us));
+                        }
+                    }
+                }
+            }
+            if candidates.is_empty() {
+                return None;
+            }
+            let min_hops = candidates.iter().map(|(h, _, _)| *h).min().unwrap();
+            let mut per_next: std::collections::HashMap<MacAddress, (u128, u128, u32)> =
+                std::collections::HashMap::new();
+            for (_h, mac, us) in candidates.into_iter().filter(|(h, _, _)| *h == min_hops) {
+                let e = per_next.entry(mac).or_insert((u128::MAX, 0, 0));
+                if us < e.0 {
+                    e.0 = us;
+                }
+                if us != u128::MAX {
+                    e.1 += us;
+                    e.2 += 1;
+                }
+            }
+            let mut best: Option<(u128, MacAddress, u128)> = None; // (score, mac, avg)
+            for (mac, (min_us, sum_us, cnt)) in per_next.into_iter() {
+                let avg_us = if cnt > 0 { sum_us / (cnt as u128) } else { u128::MAX };
+                let score = if min_us == u128::MAX || avg_us == u128::MAX {
+                    u128::MAX
+                } else {
+                    min_us + avg_us
+                };
+                match &mut best {
+                    None => best = Some((score, mac, avg_us)),
+                    Some((bscore, bmac, bavg)) => {
+                        if score < *bscore || (score == *bscore && mac.bytes() < bmac.bytes()) {
+                            *bscore = score;
+                            *bmac = mac;
+                            *bavg = avg_us;
+                        }
+                    }
+                }
+            }
+
+            let (_score, mac, avg) = best?;
+            return Some(Route {
+                hops: min_hops,
+                mac,
+                latency: if avg == u128::MAX {
+                    None
+                } else {
+                    Some(Duration::from_micros(avg as u64))
+                },
+            });
+        }
         // Optionally incorporate hysteresis against the currently cached upstream.
         // We will compute the usual "best" candidate, but if it differs from the
         // cached upstream we only switch when it's better by a margin (>=10% lower
@@ -1486,7 +1554,7 @@ impl Routing {
     /// logic (above) from the side-effect of caching.
     pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
         let route = self.get_route_to(Some(mac))?;
-        tracing::info!(upstream = %route.mac, source = %mac, "select_and_cache_upstream selected upstream for source");
+        tracing::debug!(upstream = %route.mac, source = %mac, "select_and_cache_upstream selected upstream for source");
         self.cached_upstream.store(Some(route.mac.into()));
         #[cfg(feature = "stats")]
         crate::metrics::inc_cache_select();

@@ -142,79 +142,66 @@ impl Routing {
     }
 
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
-        let mac = mac?;
-        let route_options = self
-            .sent
-            .iter()
-            .rev()
-            .flat_map(|(seq, (_, m))| {
-                let seq = *seq;
-                m.iter().map(move |(mac, route)| (seq, mac, route))
-            })
-            .filter(|(_, smac, _)| &&mac == smac)
-            .flat_map(|(seq, mac, route)| route.iter().map(move |r| (seq, mac, r)))
-            .fold(
-                IndexMap::default(),
-                |mut hm: IndexMap<u32, (usize, u32, Vec<_>, Vec<_>)>, (seq, _, route)| {
-                    hm.entry(route.hops)
-                        .and_modify(|(e, _, next, latency)| {
-                            next.push(route.mac);
-                            latency.push(route.latency.as_micros());
-                            *e += 1;
-                        })
-                        .or_insert((1, seq, vec![route.mac], vec![route.latency.as_micros()]));
-                    hm
-                },
-            );
+        let target = mac?;
 
-        let (min_hops, _) = route_options.first()?;
+        // Collect all observed candidates for the target: (hops, next_hop_mac, latency_us)
+        let mut candidates: Vec<(u32, MacAddress, u128)> = Vec::new();
+        for (_seq, (_dur, m)) in self.sent.iter().rev() {
+            if let Some(routes) = m.get(&target) {
+                for r in routes {
+                    candidates.push((r.hops, r.mac, r.latency.as_micros()));
+                }
+            }
+        }
+        if candidates.is_empty() {
+            return None;
+        }
 
-        // Compute deterministic integer-based metrics for latency in microseconds.
-        // For each candidate MAC, compute min and average latency in microseconds and
-        // use (min + avg) as a deterministic integer score for selection. This avoids
-        // floating point rounding differences and is easier to test.
-        let route_options: IndexMap<_, _> = route_options
-            .iter()
-            .filter(|(h, _)| h == &min_hops)
-            .flat_map(|(hops, (_count, _min_seq, next, latency))| {
-                let hops_val = *hops;
-                latency.iter().zip(next).fold(
-                    HashMap::default(),
-                    |mut hm: HashMap<MacAddress, (u128, u128, u32, u32)>, (val, mac)| {
-                        // here val: &u128
-                        let micros = *val;
-                        let entry = hm.entry(*mac).or_insert((u128::MAX, 0u128, 0u32, hops_val));
-                        if entry.0 > micros {
-                            entry.0 = micros;
-                        }
-                        entry.1 += micros;
-                        entry.2 += 1;
-                        hm
-                    },
-                )
-            })
-            .map(|(mac, (min_us, sum_us, n, hops_val))| {
-                let avg_us = if n > 0 {
-                    sum_us / (n as u128)
-                } else {
-                    u128::MAX
-                };
-                let score = if min_us == u128::MAX || avg_us == u128::MAX {
-                    u128::MAX
-                } else {
-                    min_us + avg_us
-                };
-                (score as usize, (mac, hops_val, avg_us))
-            })
-            .collect();
+        // Determine the true minimum hop count across candidates
+        let min_hops = candidates.iter().map(|(h, _, _)| *h).min().unwrap();
 
-        route_options
-            .first()
-            .map(|(_, (mac, hops, latency))| Route {
-                hops: *hops,
-                mac: *mac,
-                latency: Some(Duration::from_micros(*latency as u64)),
-            })
+        // Aggregate per-next-hop metrics for candidates at min_hops
+        let mut per_next: HashMap<MacAddress, (u128, u128, u32)> = HashMap::new(); // (min_us, sum_us, count)
+        for (_hops, mac, us) in candidates.into_iter().filter(|(h, _, _)| *h == min_hops) {
+            let e = per_next.entry(mac).or_insert((u128::MAX, 0, 0));
+            if us < e.0 {
+                e.0 = us;
+            }
+            e.1 += us;
+            e.2 += 1;
+        }
+
+        // Choose best next hop by (score=min+avg, tie-break by MAC bytes)
+        let mut best: Option<(u128, MacAddress, u128)> = None; // (score, mac, avg)
+        for (mac, (min_us, sum_us, cnt)) in per_next.into_iter() {
+            let avg_us = if cnt > 0 {
+                sum_us / (cnt as u128)
+            } else {
+                u128::MAX
+            };
+            let score = if min_us == u128::MAX || avg_us == u128::MAX {
+                u128::MAX
+            } else {
+                min_us + avg_us
+            };
+            match &mut best {
+                None => best = Some((score, mac, avg_us)),
+                Some((bscore, bmac, bavg)) => {
+                    if score < *bscore || (score == *bscore && mac.bytes() < bmac.bytes()) {
+                        *bscore = score;
+                        *bmac = mac;
+                        *bavg = avg_us;
+                    }
+                }
+            }
+        }
+
+        let (_score, mac, avg) = best?;
+        Some(Route {
+            hops: min_hops,
+            mac,
+            latency: Some(Duration::from_micros(avg as u64)),
+        })
     }
 
     pub fn iter_next_hops(&self) -> impl Iterator<Item = &MacAddress> {
