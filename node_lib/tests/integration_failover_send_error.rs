@@ -4,8 +4,7 @@ use node_lib::control::rsu::Rsu;
 use node_lib::test_helpers::hub::UpstreamMatchCheck;
 use node_lib::test_helpers::util::mk_shim_pairs;
 use node_lib::test_helpers::util::{
-    mk_args, mk_device_from_fd, mk_hub_with_checks, poll_until,
-    repeat_async_send,
+    mk_args, mk_device_from_fd, mk_hub_with_checks, poll_until, repeat_async_send,
 };
 use std::sync::{atomic::AtomicBool, Arc};
 

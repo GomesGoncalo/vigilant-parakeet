@@ -201,8 +201,12 @@ impl Hub {
                             let delay = Duration::from_millis(delay_ms);
                             let data = buf.clone();
 
-                            tracing::debug!("Hub spawning delivery task from {} to {} with delay {:?}", 
-                                          i, j, delay);
+                            tracing::debug!(
+                                "Hub spawning delivery task from {} to {} with delay {:?}",
+                                i,
+                                j,
+                                delay
+                            );
 
                             tokio::spawn(async move {
                                 if delay.as_millis() > 0 {
