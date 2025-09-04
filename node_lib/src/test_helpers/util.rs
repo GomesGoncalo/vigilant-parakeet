@@ -95,7 +95,7 @@ pub async fn poll_tun_recv_with_timeout_mocked(
             Ok(n) => return Some(n),
             Err(_) => {
                 // No data available, advance time a bit and try again
-                let advance_ms = (timeout_ms / 10).max(1).min(10); // Small increments
+                let advance_ms = (timeout_ms / 10).clamp(1, 10); // Small increments
                 tokio::time::advance(Duration::from_millis(advance_ms)).await;
             }
         }
