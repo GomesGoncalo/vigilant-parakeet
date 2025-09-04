@@ -271,13 +271,15 @@ impl Hub {
                 
                 // Deliver ready packets
                 for packet in packets_to_deliver {
-                    tracing::debug!("Hub delivering packet with {} bytes to fd {}", packet.data.len(), packet.target_fd);
+                    tracing::debug!("Hub delivering packet at time {:?} (delivery time was {:?})", 
+                                  now, packet.delivery_time);
                     let _ = unsafe {
                         libc::send(packet.target_fd, packet.data.as_ptr() as *const _, packet.data.len(), 0)
                     };
                 }
                 
-                tokio::task::yield_now().await;
+                // Use a smaller sleep interval to allow more precise delivery timing
+                tokio::time::sleep(Duration::from_micros(100)).await;
             }
         });
     }

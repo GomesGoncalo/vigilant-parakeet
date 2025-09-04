@@ -46,6 +46,7 @@ where
 
 /// Mocked-time version of poll_until that uses tokio::time::advance instead of sleep.
 /// This works with tokio::time::pause() for deterministic, fast tests.
+/// Uses smaller time increments to allow Hub delay simulation to work correctly.
 pub async fn poll_until_mocked<T, F>(mut check: F, attempts: u32, delay_ms: u64) -> Option<T>
 where
     F: FnMut() -> Option<T>,
@@ -54,7 +55,9 @@ where
         if let Some(v) = check() {
             return Some(v);
         }
-        tokio::time::advance(Duration::from_millis(delay_ms)).await;
+        // Use smaller increments (10ms max) to allow Hub packet delivery to work correctly
+        let increment = delay_ms.min(10);
+        tokio::time::advance(Duration::from_millis(increment)).await;
     }
     None
 }
@@ -78,6 +81,28 @@ pub async fn poll_tun_recv_with_timeout(
     None
 }
 
+/// Mocked-time version of poll_tun_recv_with_timeout that works with tokio::time::pause().
+/// Instead of using timeouts, uses small time advances to allow data to arrive.
+pub async fn poll_tun_recv_with_timeout_mocked(
+    tun: &tun::Tun,
+    buf: &mut [u8],
+    timeout_ms: u64,
+    attempts: u32,
+) -> Option<usize> {
+    for _ in 0..attempts {
+        // Try to receive immediately (non-blocking)
+        match tun.recv(buf).await {
+            Ok(n) => return Some(n),
+            Err(_) => {
+                // No data available, advance time a bit and try again
+                let advance_ms = (timeout_ms / 10).max(1).min(10); // Small increments
+                tokio::time::advance(Duration::from_millis(advance_ms)).await;
+            }
+        }
+    }
+    None
+}
+
 /// Poll until a specific expected payload is observed on `tun` within the
 /// attempt/time budget. Uses an internal 256-byte buffer for reads.
 pub async fn poll_tun_recv_expected(
@@ -89,6 +114,24 @@ pub async fn poll_tun_recv_expected(
     let mut buf = vec![0u8; 256];
     for _ in 0..attempts {
         if let Some(n) = poll_tun_recv_with_timeout(tun, &mut buf, timeout_ms, 1).await {
+            if n >= expected.len() && buf[..expected.len()] == expected[..] {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Mocked-time version of poll_tun_recv_expected that works with tokio::time::pause().
+pub async fn poll_tun_recv_expected_mocked(
+    tun: &tun::Tun,
+    expected: &[u8],
+    timeout_ms: u64,
+    attempts: u32,
+) -> bool {
+    let mut buf = vec![0u8; 256];
+    for _ in 0..attempts {
+        if let Some(n) = poll_tun_recv_with_timeout_mocked(tun, &mut buf, timeout_ms, 1).await {
             if n >= expected.len() && buf[..expected.len()] == expected[..] {
                 return true;
             }
