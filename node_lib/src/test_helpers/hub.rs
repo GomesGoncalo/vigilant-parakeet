@@ -204,11 +204,14 @@ impl Hub {
         let pending_for_receiver = pending_packets.clone();
         tokio::spawn(async move {
             loop {
+                let mut found_packet = false;
                 for i in 0..hub_fds.len() {
                     let mut buf = vec![0u8; 2048];
-                    let n =
-                        unsafe { libc::recv(hub_fds[i], buf.as_mut_ptr() as *mut _, buf.len(), 0) };
+                    let n = unsafe { 
+                        libc::recv(hub_fds[i], buf.as_mut_ptr() as *mut _, buf.len(), libc::MSG_DONTWAIT) 
+                    };
                     if n > 0 {
+                        found_packet = true;
                         let n = n as usize;
                         buf.truncate(n);
                         // Invoke user-provided checks
@@ -241,7 +244,11 @@ impl Hub {
                         }
                     }
                 }
-                tokio::task::yield_now().await;
+                
+                // Only yield if we didn't find packets to process
+                if !found_packet {
+                    tokio::task::yield_now().await;
+                }
             }
         });
 
