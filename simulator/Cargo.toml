@@ -20,7 +20,7 @@ mac_address = "*"
 tokio-timerfd = "*"
 node_lib = { path = "../node_lib/" }
 itertools = "*"
-warp = {version = "*", optional = true}
+warp = {version = "*", features = ["server"], optional = true}
 serde = { version = "*", features = ["derive"]}
 common = { path = "../common/" }
 
