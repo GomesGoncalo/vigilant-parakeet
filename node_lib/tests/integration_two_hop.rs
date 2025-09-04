@@ -63,13 +63,13 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     let obu2 = Obu::new(args_obu2, tun_obu2_arc, Arc::new(dev_obu2)).expect("obu2 new");
 
     // Wait for OBU2 to cache upstream route; expect it to be OBU1 (two-hop path)
-    let cached = node_lib::test_helpers::util::poll_until(
-        || obu2.cached_upstream_mac(),
-        100,
-        100,
-    )
-    .await;
-    assert_eq!(cached, Some(mac_obu1), "OBU2 should prefer two-hop path via OBU1");
+    let cached =
+        node_lib::test_helpers::util::poll_until(|| obu2.cached_upstream_mac(), 100, 100).await;
+    assert_eq!(
+        cached,
+        Some(mac_obu1),
+        "OBU2 should prefer two-hop path via OBU1"
+    );
 
     // Trigger an upstream send by writing on the peer end of OBU2's TUN; the session task should forward it.
     let _ = tun_obu2_peer.send_all(payload).await;
@@ -87,7 +87,10 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
         100,
     )
     .await;
-    assert!(saw.is_some(), "hub did not observe upstream forwarded to OBU1");
+    assert!(
+        saw.is_some(),
+        "hub did not observe upstream forwarded to OBU1"
+    );
 }
 
 /// End-to-end: OBU2 "pings" RSU two hops away. We inject a request frame into
@@ -143,7 +146,8 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let obu2 = Obu::new(args_obu, Arc::new(tun_obu2), Arc::new(dev_obu2)).expect("obu2 new");
 
     // Wait for OBU2 to cache upstream via OBU1 (two-hop path preferred)
-    let cached = node_lib::test_helpers::util::poll_until(|| obu2.cached_upstream_mac(), 100, 100).await;
+    let cached =
+        node_lib::test_helpers::util::poll_until(|| obu2.cached_upstream_mac(), 100, 100).await;
     assert_eq!(cached, Some(mac_obu1), "OBU2 should pick OBU1 as upstream");
 
     // Prime RSU's client cache with a mapping for RSU's own MAC -> RSU node MAC
@@ -173,13 +177,8 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
         .expect("send ping req to OBU2 tun");
 
     // Expect RSU's TUN to receive the full upstream request frame (to+from+payload)
-    let got_req_at_rsu = node_lib::test_helpers::util::poll_tun_recv_expected(
-        &tun_rsu_peer,
-        &req,
-        100,
-        100,
-    )
-    .await;
+    let got_req_at_rsu =
+        node_lib::test_helpers::util::poll_tun_recv_expected(&tun_rsu_peer, &req, 100, 100).await;
     assert!(got_req_at_rsu, "RSU did not receive ping request on TUN");
 
     // Give RSU additional time to ensure it has a route to OBU2
@@ -223,6 +222,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     println!("hub saw downstream from RSU: {}", saw.is_some());
 
     // Expect OBU2's TUN to receive the full downstream reply frame (to+from+payload)
-    let got_rep_at_obu2 = node_lib::test_helpers::util::poll_tun_recv_expected(&tun_obu2_peer, &rep, 100, 150).await;
+    let got_rep_at_obu2 =
+        node_lib::test_helpers::util::poll_tun_recv_expected(&tun_obu2_peer, &rep, 100, 150).await;
     assert!(got_rep_at_obu2, "OBU2 did not receive ping reply on TUN");
 }
