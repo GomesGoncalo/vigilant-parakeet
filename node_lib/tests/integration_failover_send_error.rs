@@ -5,7 +5,6 @@ use node_lib::test_helpers::hub::UpstreamMatchCheck;
 use node_lib::test_helpers::util::mk_shim_pairs;
 use node_lib::test_helpers::util::{mk_args, mk_device_from_fd, poll_until};
 use std::sync::{atomic::AtomicBool, Arc};
-use std::time::Duration;
 
 /// Integration test: build RSU, OBU1, OBU2 connected by a hub. OBU2 should
 /// prefer OBU1 as upstream (two-hop) given the delay matrix. Then close OBU1's
@@ -97,11 +96,13 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() {
     }
 
     // Repeatedly trigger upstream sends to force send errors and eventual failover
-    let _ = tun_obu2_peer.send_all(b"trigger after close").await;
-    for _ in 0..5 {
-        let _ = tun_obu2_peer.send_all(b"trigger after close").await;
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    // Repeatedly trigger upstream sends to force send errors and eventual failover
+    node_lib::test_helpers::util::repeat_async_send(
+        || tun_obu2_peer.send_all(b"trigger after close"),
+        6,
+        20,
+    )
+    .await;
 
     // Wait for OBU2 to promote to the next candidate (not OBU1)
     let promoted = poll_until(
