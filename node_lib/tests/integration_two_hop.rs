@@ -2,7 +2,9 @@ use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
 use node_lib::test_helpers::hub::{DownstreamFromIdxCheck, UpstreamMatchCheck};
-use node_lib::test_helpers::util::{mk_args, mk_device_from_fd, mk_shim_pairs, mk_hub_with_checks_mocked_time};
+use node_lib::test_helpers::util::{
+    mk_args, mk_device_from_fd, mk_hub_with_checks_mocked_time, mk_shim_pairs,
+};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -22,7 +24,8 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
     // Create 3 node<->hub links as socketpairs: (node_fd[i], hub_fd[i])
-    let (node_fds_v, hub_fds_v) = node_lib::test_helpers::util::mk_socketpairs(3).expect("mk_socketpairs failed");
+    let (node_fds_v, hub_fds_v) =
+        node_lib::test_helpers::util::mk_socketpairs(3).expect("mk_socketpairs failed");
     let node_fds = [node_fds_v[0], node_fds_v[1], node_fds_v[2]];
     let hub_fds = [hub_fds_v[0], hub_fds_v[1], hub_fds_v[2]];
 
@@ -61,18 +64,21 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
 
     // Construct nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).expect("Rsu::new failed");
-    let _obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1)).expect("Obu::new failed");
+    let _obu1 =
+        Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1)).expect("Obu::new failed");
     let tun_obu2_arc = Arc::new(tun_obu2);
     let obu2 = Obu::new(args_obu2, tun_obu2_arc, Arc::new(dev_obu2)).expect("Obu::new failed");
 
     // Wait for OBU2 to cache upstream route using mocked time
-    // RSU sends heartbeats every 50ms, advance time in small increments 
+    // RSU sends heartbeats every 50ms, advance time in small increments
     // to allow Hub to deliver packets at their intended delay times
     let mut cached = None;
-    for i in 0..1000 { // up to 10s worth, checking every 10ms
+    for i in 0..1000 {
+        // up to 10s worth, checking every 10ms
         tokio::time::advance(Duration::from_millis(10)).await;
         cached = obu2.cached_upstream_mac();
-        if i % 10 == 0 { // Log every 100ms
+        if i % 10 == 0 {
+            // Log every 100ms
             tracing::debug!(poll = i, cached_upstream = ?cached, "polling for upstream selection");
         }
         if cached == Some(mac_obu1) {
@@ -87,10 +93,14 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     );
 
     // Trigger an upstream send by writing on the peer end of OBU2's TUN; the session task should forward it.
-    tun_obu2_peer.send_all(payload).await.expect("tun_obu2_peer.send_all failed");
+    tun_obu2_peer
+        .send_all(payload)
+        .await
+        .expect("tun_obu2_peer.send_all failed");
 
     // Wait up to equivalent time for the hub to observe the upstream packet
-    for _i in 0..200 { // equivalent to ~2s
+    for _i in 0..200 {
+        // equivalent to ~2s
         tokio::time::advance(Duration::from_millis(10)).await;
         if saw_forward_to_obu1.load(Ordering::SeqCst) {
             break;
@@ -119,7 +129,8 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
     // Create 3 node<->hub links as socketpairs: (node_fd[i], hub_fd[i])
-    let (node_fds_v, hub_fds_v) = node_lib::test_helpers::util::mk_socketpairs(3).expect("mk_socketpairs failed");
+    let (node_fds_v, hub_fds_v) =
+        node_lib::test_helpers::util::mk_socketpairs(3).expect("mk_socketpairs failed");
     let node_fds = [node_fds_v[0], node_fds_v[1], node_fds_v[2]];
     let hub_fds = [hub_fds_v[0], hub_fds_v[1], hub_fds_v[2]];
 
@@ -152,15 +163,18 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
 
     // Construct nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).expect("Rsu::new failed");
-    let _obu1 = Obu::new(args_obu.clone(), Arc::new(tun_obu1), Arc::new(dev_obu1)).expect("Obu::new failed");
+    let _obu1 = Obu::new(args_obu.clone(), Arc::new(tun_obu1), Arc::new(dev_obu1))
+        .expect("Obu::new failed");
     let obu2 = Obu::new(args_obu, Arc::new(tun_obu2), Arc::new(dev_obu2)).expect("Obu::new failed");
 
     // Wait for OBU2 to cache upstream via OBU1 (two-hop path preferred)
     let mut cached = None;
-    for i in 0..2000 { // equivalent to 20s, checking every 10ms
+    for i in 0..2000 {
+        // equivalent to 20s, checking every 10ms
         tokio::time::advance(Duration::from_millis(10)).await;
         cached = obu2.cached_upstream_mac();
-        if i % 10 == 0 { // Log every 100ms
+        if i % 10 == 0 {
+            // Log every 100ms
             tracing::debug!(poll = i, cached_upstream = ?cached, "polling for upstream selection");
         }
         if cached == Some(mac_obu1) {
@@ -180,7 +194,10 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     prime.extend_from_slice(&[255u8; 6]); // dest broadcast
     prime.extend_from_slice(&mac_rsu.bytes()); // from = RSU
     prime.extend_from_slice(b"prime");
-    tun_rsu_peer.send_all(&prime).await.expect("tun_rsu_peer.send_all failed");
+    tun_rsu_peer
+        .send_all(&prime)
+        .await
+        .expect("tun_rsu_peer.send_all failed");
     // Give a moment for RSU to process and store mapping
     tokio::time::advance(Duration::from_millis(10)).await;
 
@@ -192,11 +209,15 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     req.extend_from_slice(payload_req); // body
 
     // Send request into OBU2's TUN (session will forward upstream over two hops)
-    tun_obu2_peer.send_all(&req).await.expect("tun_obu2_peer.send_all failed");
+    tun_obu2_peer
+        .send_all(&req)
+        .await
+        .expect("tun_obu2_peer.send_all failed");
 
     // Expect RSU's TUN to receive the full upstream request frame (to+from+payload)
     let got_req_at_rsu =
-        node_lib::test_helpers::util::poll_tun_recv_expected_mocked(&tun_rsu_peer, &req, 100, 100).await;
+        node_lib::test_helpers::util::poll_tun_recv_expected_mocked(&tun_rsu_peer, &req, 100, 100)
+            .await;
     assert!(got_req_at_rsu, "RSU did not receive ping request on TUN");
 
     // Give RSU additional time to ensure it has a route to OBU2
@@ -208,7 +229,10 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     rep.extend_from_slice(&mac_obu2.bytes()); // to
     rep.extend_from_slice(&mac_rsu.bytes()); // from
     rep.extend_from_slice(payload_rep);
-    tun_rsu_peer.send_all(&rep).await.expect("tun_rsu_peer.send_all failed");
+    tun_rsu_peer
+        .send_all(&rep)
+        .await
+        .expect("tun_rsu_peer.send_all failed");
 
     // Wait for hub to observe a Downstream packet from RSU
     for _ in 0..50 {
@@ -232,6 +256,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
 
     // Expect OBU2's TUN to receive the full downstream reply frame (to+from+payload)
     let got_rep_at_obu2 =
-        node_lib::test_helpers::util::poll_tun_recv_expected_mocked(&tun_obu2_peer, &rep, 100, 150).await;
+        node_lib::test_helpers::util::poll_tun_recv_expected_mocked(&tun_obu2_peer, &rep, 100, 150)
+            .await;
     assert!(got_rep_at_obu2, "OBU2 did not receive ping reply on TUN");
 }

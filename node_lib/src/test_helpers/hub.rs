@@ -196,7 +196,7 @@ impl Hub {
 
     fn spawn_with_mocked_time(self) {
         let pending_packets = self.pending_packets.clone();
-        
+
         // Spawn the packet receiver task
         let hub_fds = self.hub_fds.clone();
         let delays = self.delays_ms;
@@ -207,8 +207,13 @@ impl Hub {
                 let mut found_packet = false;
                 for i in 0..hub_fds.len() {
                     let mut buf = vec![0u8; 2048];
-                    let n = unsafe { 
-                        libc::recv(hub_fds[i], buf.as_mut_ptr() as *mut _, buf.len(), libc::MSG_DONTWAIT) 
+                    let n = unsafe {
+                        libc::recv(
+                            hub_fds[i],
+                            buf.as_mut_ptr() as *mut _,
+                            buf.len(),
+                            libc::MSG_DONTWAIT,
+                        )
                     };
                     if n > 0 {
                         found_packet = true;
@@ -218,8 +223,12 @@ impl Hub {
                         for check in &checks {
                             check.on_packet(i, &buf);
                         }
-                        
-                        tracing::debug!("Hub received packet from index {} with {} bytes", i, buf.len());
+
+                        tracing::debug!(
+                            "Hub received packet from index {} with {} bytes",
+                            i,
+                            buf.len()
+                        );
 
                         // Queue packets with their delivery times
                         let now = tokio::time::Instant::now();
@@ -234,17 +243,17 @@ impl Hub {
                                 target_fd: out_fd,
                                 delivery_time,
                             };
-                            
+
                             tracing::debug!("Hub queuing packet from {} to {} with delay {:?}, delivery at {:?}", 
                                           i, j, delay, delivery_time);
-                            
+
                             if let Ok(mut queue) = pending_for_receiver.lock() {
                                 queue.push(packet);
                             }
                         }
                     }
                 }
-                
+
                 // Only yield if we didn't find packets to process
                 if !found_packet {
                     tokio::task::yield_now().await;
@@ -258,7 +267,7 @@ impl Hub {
                 // Check for packets ready to be delivered
                 let mut packets_to_deliver = Vec::new();
                 let now = tokio::time::Instant::now();
-                
+
                 if let Ok(mut queue) = pending_packets.lock() {
                     while let Some(packet) = queue.peek() {
                         if packet.delivery_time <= now {
@@ -268,16 +277,24 @@ impl Hub {
                         }
                     }
                 }
-                
+
                 // Deliver ready packets
                 for packet in packets_to_deliver {
-                    tracing::debug!("Hub delivering packet at time {:?} (delivery time was {:?})", 
-                                  now, packet.delivery_time);
+                    tracing::debug!(
+                        "Hub delivering packet at time {:?} (delivery time was {:?})",
+                        now,
+                        packet.delivery_time
+                    );
                     let _ = unsafe {
-                        libc::send(packet.target_fd, packet.data.as_ptr() as *const _, packet.data.len(), 0)
+                        libc::send(
+                            packet.target_fd,
+                            packet.data.as_ptr() as *const _,
+                            packet.data.len(),
+                            0,
+                        )
                     };
                 }
-                
+
                 // Use a smaller sleep interval to allow more precise delivery timing
                 tokio::time::sleep(Duration::from_micros(100)).await;
             }

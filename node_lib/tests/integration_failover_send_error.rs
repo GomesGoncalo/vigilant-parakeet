@@ -3,7 +3,10 @@ use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
 use node_lib::test_helpers::hub::UpstreamMatchCheck;
 use node_lib::test_helpers::util::mk_shim_pairs;
-use node_lib::test_helpers::util::{mk_args, mk_device_from_fd, poll_until_mocked, repeat_async_send_mocked, mk_hub_with_checks_mocked_time};
+use node_lib::test_helpers::util::{
+    mk_args, mk_device_from_fd, mk_hub_with_checks_mocked_time, poll_until_mocked,
+    repeat_async_send_mocked,
+};
 use std::sync::{atomic::AtomicBool, Arc};
 
 /// Integration test: build RSU, OBU1, OBU2 connected by a hub. OBU2 should
@@ -98,12 +101,7 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Resul
     node_lib::test_helpers::util::shutdown_read(hub_fds[2]);
 
     // Repeatedly trigger upstream sends to force send errors and eventual failover
-    repeat_async_send_mocked(
-        || tun_obu2_peer.send_all(b"trigger after close"),
-        6,
-        20,
-    )
-    .await;
+    repeat_async_send_mocked(|| tun_obu2_peer.send_all(b"trigger after close"), 6, 20).await;
 
     // Wait for OBU2 to promote to the next candidate (not OBU1)
     let promoted = poll_until_mocked(
