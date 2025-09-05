@@ -131,8 +131,30 @@ impl Rsu {
                 let bcast_or_mcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
                 let mut target = self.cache.get(to);
                 let mut messages = Vec::with_capacity(1);
+                
+                // For sending to TUN, decrypt the payload if encryption is enabled
                 if bcast_or_mcast || target.is_some_and(|x| x == self.device.mac_address()) {
-                    messages.push(ReplyType::Tap(vec![buf.data().to_vec()]));
+                    let tun_data = if self.args.node_params.enable_encryption {
+                        // Extract the payload part (after to+from MACs) and decrypt it
+                        let encrypted_payload = buf.data().get(12..).unwrap_or(&[]);
+                        match crate::crypto::decrypt_payload(encrypted_payload) {
+                            Ok(decrypted) => {
+                                // Reconstruct: to + from + decrypted_payload
+                                let mut result = Vec::with_capacity(12 + decrypted.len());
+                                result.extend_from_slice(&to.bytes());
+                                result.extend_from_slice(&from.bytes());
+                                result.extend_from_slice(&decrypted);
+                                result
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to decrypt upstream payload: {}", e);
+                                return Ok(None);
+                            }
+                        }
+                    } else {
+                        buf.data().to_vec()
+                    };
+                    messages.push(ReplyType::Tap(vec![tun_data]));
                     target = None;
                 }
 
@@ -236,6 +258,7 @@ impl Rsu {
         let device = self.device.clone();
         let cache = self.cache.clone();
         let routing = self.routing.clone();
+        let enable_encryption = self.args.node_params.enable_encryption;
         tokio::task::spawn(async move {
             loop {
                 let devicec = device.clone();
@@ -250,6 +273,28 @@ impl Rsu {
                     let from: MacAddress = from.into();
                     let source_mac = devicec.mac_address().bytes();
                     cache.store_mac(from, devicec.mac_address());
+                    
+                    // Encrypt payload if encryption is enabled
+                    let downstream_data = if enable_encryption {
+                        let payload = data.get(12..).unwrap_or(&[]);
+                        match crate::crypto::encrypt_payload(payload) {
+                            Ok(encrypted) => {
+                                // Reconstruct: to + from + encrypted_payload
+                                let mut result = Vec::with_capacity(12 + encrypted.len());
+                                result.extend_from_slice(&to.bytes());
+                                result.extend_from_slice(&from.bytes());
+                                result.extend_from_slice(&encrypted);
+                                result
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to encrypt downstream payload: {}", e);
+                                return Ok(None);
+                            }
+                        }
+                    } else {
+                        data.to_vec()
+                    };
+                    
                     let routing = routing.read().unwrap();
                     let outgoing = if let Some(target) = target {
                         if let Some(hop) = routing.get_route_to(Some(target)) {
@@ -260,7 +305,7 @@ impl Rsu {
                                     PacketType::Data(Data::Downstream(ToDownstream::new(
                                         &source_mac,
                                         target,
-                                        data,
+                                        &downstream_data,
                                     ))),
                                 ))
                                     .into(),
@@ -276,7 +321,7 @@ impl Rsu {
                                         PacketType::Data(Data::Downstream(ToDownstream::new(
                                             &source_mac,
                                             target,
-                                            data,
+                                            &downstream_data,
                                         ))),
                                     ))
                                         .into(),
@@ -298,7 +343,7 @@ impl Rsu {
                                                 devicec.mac_address(),
                                                 next_hop,
                                                 PacketType::Data(Data::Downstream(
-                                                    ToDownstream::new(&source_mac, target, data),
+                                                    ToDownstream::new(&source_mac, target, &downstream_data),
                                                 )),
                                             );
                                         ReplyType::Wire((&msg).into())
@@ -325,7 +370,7 @@ impl Rsu {
                                     PacketType::Data(Data::Downstream(ToDownstream::new(
                                         &source_mac,
                                         to,
-                                        data,
+                                        &downstream_data,
                                     ))),
                                 );
                                 ReplyType::Wire((&msg).into())
