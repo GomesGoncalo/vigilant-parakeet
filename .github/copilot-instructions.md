@@ -242,10 +242,56 @@ wasm-pack test --headless --firefox  # WASM tests
 trunk build --release  # Build frontend
 ```
 
+## Commit Message Guidelines
+
+**REQUIRED**: All commits must follow Conventional Commits format and include comprehensive testing validation.
+
+**Format**: `<type>(<scope>): <description>`
+
+**Types**:
+- `feat`: New features or functionality
+- `fix`: Bug fixes  
+- `docs`: Documentation changes
+- `test`: Adding or updating tests
+- `refactor`: Code refactoring without behavior changes
+- `perf`: Performance improvements
+- `chore`: Maintenance tasks, dependency updates
+
+**Required elements in commit message**:
+1. **What**: Clear description of the change made
+2. **Why**: Reason for the change (in body if not obvious)
+3. **How**: Brief explanation of implementation approach
+4. **Testing**: Validation steps performed
+
+**Example commit message**:
+```
+feat(node_lib): add heartbeat retry mechanism for RSU nodes
+
+- What: Implement exponential backoff retry for failed heartbeat transmissions
+- Why: Improve reliability in lossy network conditions
+- How: Add RetryConfig struct with configurable max_attempts and backoff_factor
+- Testing: Added unit tests for retry logic, integration test with 50% packet loss
+
+Validation performed:
+- cargo test --workspace (passed in 22s)
+- cargo clippy --workspace --all-targets -- -D warnings (passed in 43s)
+- cargo build --workspace --release (passed in 90s)
+- Manual testing with simulator under high loss conditions
+```
+
+**Testing validation required for every commit**:
+- Run relevant unit tests: `cargo test -p <affected_crate>`
+- Run full test suite: `cargo test --workspace` 
+- Verify linting: `cargo clippy --workspace --all-targets -- -D warnings`
+- Check formatting: `cargo fmt --all --check`
+- Build verification: `cargo build --workspace`
+
+Git hooks automatically enforce format compliance and will reject commits that don't follow these guidelines.
+
 ## Configuration Notes
 
 - The project uses `.cargo/config.toml` with `rustflags = ["--cfg", "tokio_unstable"]`
-- Git hooks enforce Conventional Commits format for commit messages
+- Git hooks enforce Conventional Commits format for commit messages (see guidelines above)
 - Network namespace creation requires sudo on Linux
 - HTTP API runs on port 3030 when simulator is active
 
