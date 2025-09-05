@@ -135,21 +135,28 @@ impl Rsu {
                 // For sending to TUN, decrypt the payload if encryption is enabled
                 if bcast_or_mcast || target.is_some_and(|x| x == self.device.mac_address()) {
                     let tun_data = if self.args.node_params.enable_encryption {
-                        // Extract the payload part (after to+from MACs) and decrypt it
+                        // Extract the payload part (after to+from MACs)
                         let encrypted_payload = buf.data().get(12..).unwrap_or(&[]);
-                        match crate::crypto::decrypt_payload(encrypted_payload) {
-                            Ok(decrypted) => {
-                                // Reconstruct: to + from + decrypted_payload
-                                let mut result = Vec::with_capacity(12 + decrypted.len());
-                                result.extend_from_slice(&to.bytes());
-                                result.extend_from_slice(&from.bytes());
-                                result.extend_from_slice(&decrypted);
-                                result
+
+                        // Only attempt decryption if the data appears to be encrypted
+                        if crate::crypto::is_likely_encrypted(encrypted_payload) {
+                            match crate::crypto::decrypt_payload(encrypted_payload) {
+                                Ok(decrypted) => {
+                                    // Reconstruct: to + from + decrypted_payload
+                                    let mut result = Vec::with_capacity(12 + decrypted.len());
+                                    result.extend_from_slice(&to.bytes());
+                                    result.extend_from_slice(&from.bytes());
+                                    result.extend_from_slice(&decrypted);
+                                    result
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to decrypt upstream payload: {}", e);
+                                    return Ok(None);
+                                }
                             }
-                            Err(e) => {
-                                tracing::error!("Failed to decrypt upstream payload: {}", e);
-                                return Ok(None);
-                            }
+                        } else {
+                            // Data doesn't appear encrypted, pass through as-is
+                            buf.data().to_vec()
                         }
                     } else {
                         buf.data().to_vec()

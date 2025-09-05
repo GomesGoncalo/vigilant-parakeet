@@ -222,12 +222,18 @@ impl Obu {
                 if destination == self.device.mac_address() {
                     // This downstream packet is for us - decrypt if encryption is enabled
                     let payload_data = if self.args.node_params.enable_encryption {
-                        match crate::crypto::decrypt_payload(buf.data()) {
-                            Ok(decrypted) => decrypted,
-                            Err(e) => {
-                                tracing::error!("Failed to decrypt downstream payload: {}", e);
-                                return Ok(None);
+                        // Only attempt decryption if the data appears to be encrypted
+                        if crate::crypto::is_likely_encrypted(buf.data()) {
+                            match crate::crypto::decrypt_payload(buf.data()) {
+                                Ok(decrypted) => decrypted,
+                                Err(e) => {
+                                    tracing::error!("Failed to decrypt downstream payload: {}", e);
+                                    return Ok(None);
+                                }
                             }
+                        } else {
+                            // Data doesn't appear encrypted, pass through as-is
+                            buf.data().to_vec()
                         }
                     } else {
                         buf.data().to_vec()
