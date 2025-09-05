@@ -1,7 +1,9 @@
 use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
-use node_lib::test_helpers::util::{await_with_timeout, mk_args, mk_device_from_fd, mk_shim_pair};
+use node_lib::test_helpers::util::{
+    await_condition_with_time_advance, mk_args, mk_device_from_fd, mk_shim_pair,
+};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,15 +36,9 @@ async fn rsu_and_obu_topology_discovery() -> anyhow::Result<()> {
 
     // Instead of polling, await for the OBU to discover an upstream with timeout.
     // RSU sends heartbeats every 100ms, allow up to 5 seconds.
-    let result = await_with_timeout(
-        async {
-            loop {
-                tokio::time::advance(Duration::from_millis(10)).await;
-                if let Some(mac) = obu.cached_upstream_mac() {
-                    return mac;
-                }
-            }
-        },
+    let result = await_condition_with_time_advance(
+        Duration::from_millis(10),
+        || obu.cached_upstream_mac(),
         Duration::from_secs(5),
     )
     .await;
