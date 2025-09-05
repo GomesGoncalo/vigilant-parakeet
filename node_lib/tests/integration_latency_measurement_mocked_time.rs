@@ -12,13 +12,13 @@ use std::time::Duration;
 /// This test should verify that latency-based routing decisions work correctly
 /// with mocked time, but currently fails due to timing measurement issues.
 ///
-/// Issue: https://github.com/GomesGoncalo/vigilant-parakeet/issues/XXX
+/// Issue: https://github.com/GomesGoncalo/vigilant-parakeet/issues/21
 ///
 /// The problem is that with `tokio::time::pause()` and discrete time advancement,
 /// the latency measurement system used by the routing algorithm doesn't work
 /// correctly, affecting the core latency-aware route selection functionality.
 #[tokio::test]
-#[ignore = "Latency measurement doesn't work correctly with mocked time - Issue #XXX"]
+#[ignore = "Latency measurement doesn't work correctly with mocked time - Issue #21"]
 async fn test_latency_measurement_with_mocked_time() {
     node_lib::init_test_tracing();
 
