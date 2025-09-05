@@ -21,6 +21,7 @@ fn obu_and_rsu_choose_same_next_hop_for_same_messages() {
             hello_history: 2,
             hello_periodicity: None,
             cached_candidates: 3,
+            enable_encryption: false,
         },
     };
     let args_rsu = Args {
@@ -33,6 +34,7 @@ fn obu_and_rsu_choose_same_next_hop_for_same_messages() {
             hello_history: 2,
             hello_periodicity: None,
             cached_candidates: 3,
+            enable_encryption: false,
         },
     };
 
