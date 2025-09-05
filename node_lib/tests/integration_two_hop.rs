@@ -3,7 +3,8 @@ use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
 use node_lib::test_helpers::hub::{DownstreamFromIdxExpectation, UpstreamExpectation};
 use node_lib::test_helpers::util::{
-    await_with_timeout, mk_args, mk_device_from_fd, mk_hub_with_checks_mocked_time, mk_shim_pairs,
+    await_condition_with_time_advance, await_with_timeout, mk_args, mk_device_from_fd,
+    mk_hub_with_checks_mocked_time, mk_shim_pairs,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,16 +66,15 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
 
     // Wait for OBU2 to cache upstream route using await/timeout pattern
     // RSU sends heartbeats every 50ms, allow up to 10 seconds
-    let result = await_with_timeout(
-        async {
-            loop {
-                tokio::time::advance(Duration::from_millis(10)).await;
-                if let Some(mac) = obu2.cached_upstream_mac() {
-                    if mac == mac_obu1 {
-                        return mac;
-                    }
+    let result = await_condition_with_time_advance(
+        Duration::from_millis(10),
+        || {
+            if let Some(mac) = obu2.cached_upstream_mac() {
+                if mac == mac_obu1 {
+                    return Some(mac);
                 }
             }
+            None
         },
         Duration::from_secs(10),
     )
@@ -161,16 +161,15 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let obu2 = Obu::new(args_obu, Arc::new(tun_obu2), Arc::new(dev_obu2)).expect("Obu::new failed");
 
     // Wait for OBU2 to cache upstream via OBU1 (two-hop path preferred) using await/timeout
-    let result = await_with_timeout(
-        async {
-            loop {
-                tokio::time::advance(Duration::from_millis(10)).await;
-                if let Some(mac) = obu2.cached_upstream_mac() {
-                    if mac == mac_obu1 {
-                        return mac;
-                    }
+    let result = await_condition_with_time_advance(
+        Duration::from_millis(10),
+        || {
+            if let Some(mac) = obu2.cached_upstream_mac() {
+                if mac == mac_obu1 {
+                    return Some(mac);
                 }
             }
+            None
         },
         Duration::from_secs(20),
     )

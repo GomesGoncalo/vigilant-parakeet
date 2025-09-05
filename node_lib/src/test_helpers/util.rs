@@ -336,3 +336,36 @@ pub async fn await_with_timeout<T>(
         _ = tokio::time::sleep(timeout) => Err("timeout"),
     }
 }
+
+/// Helper function for polling a condition with time advancement until it succeeds or times out.
+/// This replaces the common pattern of manually advancing time in a loop.
+///
+/// # Arguments
+/// * `step` - Duration to advance time on each iteration
+/// * `check` - Closure that returns Some(T) when condition is met, None otherwise
+/// * `timeout` - Maximum duration to wait before timing out
+///
+/// # Returns
+/// * `Ok(T)` when condition is met
+/// * `Err("timeout")` when timeout is reached
+pub async fn await_condition_with_time_advance<T, F>(
+    step: Duration,
+    mut check: F,
+    timeout: Duration,
+) -> Result<T, &'static str>
+where
+    F: FnMut() -> Option<T>,
+{
+    await_with_timeout(
+        async {
+            loop {
+                tokio::time::advance(step).await;
+                if let Some(result) = check() {
+                    return result;
+                }
+            }
+        },
+        timeout,
+    )
+    .await
+}

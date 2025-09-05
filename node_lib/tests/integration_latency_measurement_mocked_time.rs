@@ -2,7 +2,8 @@ use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
 use node_lib::test_helpers::util::{
-    mk_args, mk_device_from_fd, mk_hub_with_checks_mocked_time, mk_shim_pairs,
+    await_condition_with_time_advance, mk_args, mk_device_from_fd, mk_hub_with_checks_mocked_time,
+    mk_shim_pairs,
 };
 use std::time::Duration;
 
@@ -60,44 +61,38 @@ async fn test_latency_measurement_with_mocked_time() {
 
     // Wait for OBU to receive heartbeats and cache an upstream route with latency measurement
     // With working latency measurement, the OBU should cache a route with latency info
-    let mut route_found = false;
-    for i in 0..500 {
-        // up to 5s worth, checking every 10ms
-        tokio::time::advance(Duration::from_millis(10)).await;
+    let result = await_condition_with_time_advance(
+        Duration::from_millis(10),
+        || {
+            // Check if the OBU has cached an upstream route with latency measurement
+            if let Some(cached_route) = obu.cached_upstream_route() {
+                tracing::debug!(
+                    cached_upstream = ?cached_route.mac,
+                    route_latency = ?cached_route.latency,
+                    "Found cached upstream route"
+                );
 
-        // Check if the OBU has cached an upstream route with latency measurement
-        if let Some(cached_route) = obu.cached_upstream_route() {
-            tracing::debug!(
-                iteration = i,
-                cached_upstream = ?cached_route.mac,
-                route_latency = ?cached_route.latency,
-                "Found cached upstream route"
-            );
-
-            // Check if latency measurement is working correctly
-            if cached_route.latency.is_some() {
-                // With the 20ms delay set in the hub, we should see meaningful latency measurements
-                route_found = true;
-                break;
+                // Check if latency measurement is working correctly
+                if cached_route.latency.is_some() {
+                    // With the 20ms delay set in the hub, we should see meaningful latency measurements
+                    return Some(cached_route);
+                }
             }
-        }
-
-        if i % 10 == 0 {
-            tracing::debug!(
-                iteration = i,
-                "Polling for cached upstream route with latency measurement"
-            );
-        }
-    }
+            None
+        },
+        Duration::from_secs(5), // 5 seconds total timeout
+    )
+    .await;
 
     // This assertion should pass if latency measurement works correctly with mocked time
+    let route_found = result.is_ok();
     assert!(
         route_found,
         "OBU should cache upstream route with latency measurement"
     );
 
     // Additional verification: check that the measured latency is reasonable
-    if let Some(cached_route) = obu.cached_upstream_route() {
+    if let Ok(cached_route) = result {
         if let Some(latency) = cached_route.latency {
             // The measured latency should reflect the 20ms delay set in the hub
             // With mocked time, this might not work correctly
