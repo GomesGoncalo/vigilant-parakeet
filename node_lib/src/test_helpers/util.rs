@@ -218,20 +218,6 @@ pub fn mk_socketpairs(n: usize) -> io::Result<(Vec<i32>, Vec<i32>)> {
     Ok((node_fds, hub_fds))
 }
 
-/// Convenience wrapper: spawn a `Hub` with given hub_fds, delays, and checks.
-///
-/// - `hub_fds` -- vector of hub endpoint fds (one per node)
-/// - `delays_ms` -- square matrix of per-link delays in milliseconds (size must match hub_fds.len())
-/// - `checks` -- vector of Arc<dyn HubCheck> to be invoked for observed packets
-pub fn mk_hub_with_checks(
-    hub_fds: Vec<i32>,
-    delays_ms: Vec<Vec<u64>>,
-    checks: Vec<std::sync::Arc<dyn crate::test_helpers::hub::HubCheck>>,
-) {
-    let hub = crate::test_helpers::hub::Hub::new(hub_fds, delays_ms).with_checks(checks);
-    hub.spawn();
-}
-
 /// Mocked-time version of mk_hub_with_checks that creates a Hub compatible with tokio::time::pause().
 /// This Hub will properly deliver packets when tokio::time::advance() is called.
 pub fn mk_hub_with_checks_mocked_time(
@@ -249,33 +235,6 @@ pub fn mk_hub_with_checks_mocked_time(
 ///
 /// Panics if `delays_flat.len() != hub_fds.len() * hub_fds.len()`.
 use anyhow::Result;
-
-pub fn mk_hub_with_checks_flat(
-    hub_fds: Vec<i32>,
-    delays_flat: Vec<u64>,
-    checks: Vec<std::sync::Arc<dyn crate::test_helpers::hub::HubCheck>>,
-) -> Result<()> {
-    let n = hub_fds.len();
-    let expected_len = n
-        .checked_mul(n)
-        .ok_or_else(|| anyhow::anyhow!("overflow computing n*n for hub_fds length={}", n))?;
-    if delays_flat.len() != expected_len {
-        return Err(anyhow::anyhow!(
-            "delays_flat length must be n*n (got {} expected {})",
-            delays_flat.len(),
-            expected_len
-        ));
-    }
-    let mut delays_ms: Vec<Vec<u64>> = Vec::with_capacity(n);
-    for i in 0..n {
-        let start = i * n;
-        let end = start + n;
-        delays_ms.push(delays_flat[start..end].to_vec());
-    }
-
-    mk_hub_with_checks(hub_fds, delays_ms, checks);
-    Ok(())
-}
 
 /// Safely shutdown the read side of a socket/file descriptor.
 /// This wraps the unsafe libc call and documents intent at call sites.

@@ -2,10 +2,8 @@ use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
 use node_lib::test_helpers::hub::UpstreamMatchCheck;
-use node_lib::test_helpers::util::mk_shim_pairs;
-use node_lib::test_helpers::util::{
-    mk_args, mk_device_from_fd, mk_hub_with_checks, poll_until, repeat_async_send,
-};
+use node_lib::test_helpers::util::{mk_args, mk_device_from_fd, poll_until, repeat_async_send};
+use node_lib::test_helpers::util::{mk_hub_with_checks_mocked_time, mk_shim_pairs};
 use std::sync::{atomic::AtomicBool, Arc};
 
 /// Integration test: build RSU, OBU1, OBU2 connected by a hub. OBU2 should
@@ -36,7 +34,7 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Resul
     let delays: Vec<Vec<u64>> = vec![vec![0, 2, 50], vec![2, 0, 2], vec![50, 2, 0]];
     let saw_upstream = Arc::new(AtomicBool::new(false));
 
-    mk_hub_with_checks(
+    mk_hub_with_checks_mocked_time(
         hub_fds.to_vec(),
         delays,
         vec![Arc::new(UpstreamMatchCheck {
