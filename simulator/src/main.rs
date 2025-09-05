@@ -137,6 +137,7 @@ async fn main() -> Result<()> {
                     .ok()
                     .flatten(),
                 cached_candidates,
+                enable_encryption: settings.get_bool("enable_encryption").unwrap_or(false),
             },
         };
 
