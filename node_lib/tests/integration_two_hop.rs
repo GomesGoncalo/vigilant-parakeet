@@ -1,14 +1,11 @@
 use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
-use node_lib::test_helpers::hub::{DownstreamFromIdxCheck, UpstreamMatchCheck};
+use node_lib::test_helpers::hub::{DownstreamFromIdxExpectation, UpstreamExpectation};
 use node_lib::test_helpers::util::{
-    mk_args, mk_device_from_fd, mk_hub_with_checks_mocked_time, mk_shim_pairs,
+    await_with_timeout, mk_args, mk_device_from_fd, mk_hub_with_checks_mocked_time, mk_shim_pairs,
 };
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::test]
@@ -37,20 +34,17 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     // Spawn the hub with delay matrix: index 0=RSU, 1=OBU1, 2=OBU2
     // Make direct path RSU->OBU2 high latency (50ms), RSU<->OBU1 and OBU1<->OBU2 low (2ms)
     let delays: Vec<Vec<u64>> = vec![vec![0, 2, 50], vec![2, 0, 2], vec![50, 2, 0]];
-    let saw_forward_to_obu1 = Arc::new(AtomicBool::new(false));
-    // Payload we'll inject later; verify via hub check as well
+    // Payload we'll inject later; verify via hub expectation as well
     let payload: &[u8] = b"test payload";
+
+    // Create a future-based expectation instead of atomic flag
+    let (upstream_expectation, upstream_future) =
+        UpstreamExpectation::new(2, mac_obu2, mac_obu1, Some(payload.to_vec()));
 
     mk_hub_with_checks_mocked_time(
         hub_fds.to_vec(),
         delays,
-        vec![Arc::new(UpstreamMatchCheck {
-            idx: 2,
-            from: mac_obu2,
-            to: mac_obu1,
-            expected_payload: Some(payload.to_vec()),
-            flag: saw_forward_to_obu1.clone(),
-        }) as Arc<dyn node_lib::test_helpers::hub::HubCheck>],
+        vec![Arc::new(upstream_expectation)],
     );
 
     let dev_rsu = mk_device_from_fd(mac_rsu, node_fds[0]);
@@ -69,22 +63,28 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     let tun_obu2_arc = Arc::new(tun_obu2);
     let obu2 = Obu::new(args_obu2, tun_obu2_arc, Arc::new(dev_obu2)).expect("Obu::new failed");
 
-    // Wait for OBU2 to cache upstream route using mocked time
-    // RSU sends heartbeats every 50ms, advance time in small increments
-    // to allow Hub to deliver packets at their intended delay times
-    let mut cached = None;
-    for i in 0..1000 {
-        // up to 10s worth, checking every 10ms
-        tokio::time::advance(Duration::from_millis(10)).await;
-        cached = obu2.cached_upstream_mac();
-        if i % 10 == 0 {
-            // Log every 100ms
-            tracing::debug!(poll = i, cached_upstream = ?cached, "polling for upstream selection");
-        }
-        if cached == Some(mac_obu1) {
-            break;
-        }
-    }
+    // Wait for OBU2 to cache upstream route using await/timeout pattern
+    // RSU sends heartbeats every 50ms, allow up to 10 seconds
+    let result = await_with_timeout(
+        async {
+            loop {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                if let Some(mac) = obu2.cached_upstream_mac() {
+                    if mac == mac_obu1 {
+                        return mac;
+                    }
+                }
+            }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let cached = match result {
+        Ok(mac) => Some(mac),
+        Err(_) => panic!("OBU2 did not cache upstream within timeout"),
+    };
+
     assert!(cached.is_some(), "OBU2 did not cache an upstream");
     assert_eq!(
         cached,
@@ -98,16 +98,10 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
         .await
         .expect("tun_obu2_peer.send_all failed");
 
-    // Wait up to equivalent time for the hub to observe the upstream packet
-    for _i in 0..200 {
-        // equivalent to ~2s
-        tokio::time::advance(Duration::from_millis(10)).await;
-        if saw_forward_to_obu1.load(Ordering::SeqCst) {
-            break;
-        }
-    }
-    // This assertion is soft; the primary assertion is the cached upstream.
-    assert!(saw_forward_to_obu1.load(Ordering::SeqCst));
+    // Wait for the hub to observe the expected upstream packet using future-based expectation
+    let _ = await_with_timeout(upstream_future, Duration::from_secs(2))
+        .await
+        .expect("Hub did not observe expected upstream packet within timeout");
 }
 
 /// End-to-end: OBU2 "pings" RSU two hops away. We inject a request frame into
@@ -141,15 +135,14 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
 
     // Hub delays: prefer RSU<->OBU1 and OBU1<->OBU2 (2ms) over direct RSU<->OBU2 (50ms).
     let delays: Vec<Vec<u64>> = vec![vec![0, 2, 50], vec![2, 0, 2], vec![50, 2, 0]];
-    let saw_downstream_from_rsu = Arc::new(AtomicBool::new(false));
+
+    // Create a future-based expectation instead of atomic flag
+    let (downstream_expectation, downstream_future) = DownstreamFromIdxExpectation::new(0);
 
     mk_hub_with_checks_mocked_time(
         hub_fds.to_vec(),
         delays,
-        vec![Arc::new(DownstreamFromIdxCheck {
-            idx: 0,
-            flag: saw_downstream_from_rsu.clone(),
-        }) as Arc<dyn node_lib::test_helpers::hub::HubCheck>],
+        vec![Arc::new(downstream_expectation)],
     );
 
     // Wrap node ends as Devices using shared helper
@@ -167,20 +160,27 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
         .expect("Obu::new failed");
     let obu2 = Obu::new(args_obu, Arc::new(tun_obu2), Arc::new(dev_obu2)).expect("Obu::new failed");
 
-    // Wait for OBU2 to cache upstream via OBU1 (two-hop path preferred)
-    let mut cached = None;
-    for i in 0..2000 {
-        // equivalent to 20s, checking every 10ms
-        tokio::time::advance(Duration::from_millis(10)).await;
-        cached = obu2.cached_upstream_mac();
-        if i % 10 == 0 {
-            // Log every 100ms
-            tracing::debug!(poll = i, cached_upstream = ?cached, "polling for upstream selection");
-        }
-        if cached == Some(mac_obu1) {
-            break;
-        }
-    }
+    // Wait for OBU2 to cache upstream via OBU1 (two-hop path preferred) using await/timeout
+    let result = await_with_timeout(
+        async {
+            loop {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                if let Some(mac) = obu2.cached_upstream_mac() {
+                    if mac == mac_obu1 {
+                        return mac;
+                    }
+                }
+            }
+        },
+        Duration::from_secs(20),
+    )
+    .await;
+
+    let cached = match result {
+        Ok(mac) => Some(mac),
+        Err(_) => panic!("OBU2 did not cache upstream within timeout"),
+    };
+
     assert!(cached.is_some(), "OBU2 did not cache an upstream");
     assert_eq!(
         cached.unwrap(),
@@ -234,25 +234,10 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
         .await
         .expect("tun_rsu_peer.send_all failed");
 
-    // Wait for hub to observe a Downstream packet from RSU
-    for _ in 0..50 {
-        if saw_downstream_from_rsu.load(Ordering::SeqCst) {
-            break;
-        }
-        tokio::time::advance(Duration::from_millis(10)).await;
-    }
-    println!(
-        "hub saw downstream from RSU: {}",
-        saw_downstream_from_rsu.load(Ordering::SeqCst)
-    );
-
-    // Wait for the hub to observe a Downstream frame emitted from RSU before expecting OBU2's TUN
-    for _ in 0..50 {
-        if saw_downstream_from_rsu.load(Ordering::SeqCst) {
-            break;
-        }
-        tokio::time::advance(Duration::from_millis(10)).await;
-    }
+    // Wait for hub to observe a Downstream packet from RSU using future-based expectation
+    let _ = await_with_timeout(downstream_future, Duration::from_millis(500))
+        .await
+        .expect("Hub did not observe downstream from RSU within timeout");
 
     // Expect OBU2's TUN to receive the full downstream reply frame (to+from+payload)
     let got_rep_at_obu2 =

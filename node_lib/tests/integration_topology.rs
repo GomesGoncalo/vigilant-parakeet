@@ -1,7 +1,7 @@
 use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
-use node_lib::test_helpers::util::{mk_args, mk_device_from_fd, mk_shim_pair};
+use node_lib::test_helpers::util::{await_with_timeout, mk_args, mk_device_from_fd, mk_shim_pair};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,22 +32,30 @@ async fn rsu_and_obu_topology_discovery() -> anyhow::Result<()> {
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_a), Arc::new(dev_a))?;
     let obu = Obu::new(args_obu, Arc::new(tun_b), Arc::new(dev_b))?;
 
-    // Instead of polling with sleep, advance time in controlled increments.
-    // RSU sends heartbeats every 100ms, so advance time by that amount and check.
-    // Allow up to 5 seconds worth of time advancement (50 × 100ms).
-    let mut cached = None;
-    for i in 0..50 {
-        tokio::time::advance(Duration::from_millis(100)).await;
-        cached = obu.cached_upstream_mac();
-        tracing::debug!(poll = i, cached_upstream = ?cached, "test poll progress");
-        if cached.is_some() {
-            break;
-        }
-    }
+    // Instead of polling, await for the OBU to discover an upstream with timeout.
+    // RSU sends heartbeats every 100ms, allow up to 5 seconds.
+    let result = await_with_timeout(
+        async {
+            loop {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                if let Some(mac) = obu.cached_upstream_mac() {
+                    return mac;
+                }
+            }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
 
     // The OBU should have discovered the RSU as its upstream
-    assert!(cached.is_some(), "OBU did not discover an upstream");
-    assert_eq!(cached.unwrap(), mac_a);
+    match result {
+        Ok(mac) => {
+            assert_eq!(mac, mac_a, "OBU discovered wrong upstream MAC");
+        }
+        Err(_) => {
+            panic!("OBU did not discover an upstream within timeout");
+        }
+    }
 
     Ok(())
 }

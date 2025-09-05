@@ -227,3 +227,102 @@ impl Hub {
         });
     }
 }
+
+/// Future-based Hub checker that completes when a specific upstream packet is observed.
+/// Instead of using atomic flags, this provides a future that can be awaited.
+pub struct UpstreamExpectation {
+    idx: usize,
+    from: MacAddress,
+    to: MacAddress,
+    expected_payload: Option<Vec<u8>>,
+    sender: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+impl UpstreamExpectation {
+    pub fn new(
+        idx: usize,
+        from: MacAddress,
+        to: MacAddress,
+        expected_payload: Option<Vec<u8>>,
+    ) -> (Self, tokio::sync::oneshot::Receiver<()>) {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        (
+            Self {
+                idx,
+                from,
+                to,
+                expected_payload,
+                sender: std::sync::Mutex::new(Some(sender)),
+            },
+            receiver,
+        )
+    }
+}
+
+impl HubCheck for UpstreamExpectation {
+    fn on_packet(&self, from_idx: usize, data: &[u8]) {
+        if from_idx != self.idx {
+            return;
+        }
+        if let Ok(msg) = crate::messages::message::Message::try_from(data) {
+            if let crate::messages::packet_type::PacketType::Data(
+                crate::messages::data::Data::Upstream(u),
+            ) = msg.get_packet_type()
+            {
+                if msg.from().ok() == Some(self.from) && msg.to().ok() == Some(self.to) {
+                    if let Some(exp) = &self.expected_payload {
+                        if u.data().as_ref() != &exp[..] {
+                            return;
+                        }
+                    }
+                    // Signal that the expected packet was observed
+                    if let Ok(mut sender_opt) = self.sender.lock() {
+                        if let Some(sender) = sender_opt.take() {
+                            let _ = sender.send(());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Future-based Hub checker that completes when any downstream packet is observed from a given index.
+pub struct DownstreamFromIdxExpectation {
+    idx: usize,
+    sender: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+impl DownstreamFromIdxExpectation {
+    pub fn new(idx: usize) -> (Self, tokio::sync::oneshot::Receiver<()>) {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        (
+            Self {
+                idx,
+                sender: std::sync::Mutex::new(Some(sender)),
+            },
+            receiver,
+        )
+    }
+}
+
+impl HubCheck for DownstreamFromIdxExpectation {
+    fn on_packet(&self, from_idx: usize, data: &[u8]) {
+        if from_idx != self.idx {
+            return;
+        }
+        if let Ok(msg) = crate::messages::message::Message::try_from(data) {
+            if let crate::messages::packet_type::PacketType::Data(
+                crate::messages::data::Data::Downstream(_),
+            ) = msg.get_packet_type()
+            {
+                // Signal that a downstream packet was observed
+                if let Ok(mut sender_opt) = self.sender.lock() {
+                    if let Some(sender) = sender_opt.take() {
+                        let _ = sender.send(());
+                    }
+                }
+            }
+        }
+    }
+}
