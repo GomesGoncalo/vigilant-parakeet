@@ -74,10 +74,6 @@ impl Obu {
         tokio::task::spawn(async move {
             loop {
                 let obu_c = obu.clone();
-                
-                // Add periodic yield for mocked time compatibility
-                tokio::task::yield_now().await;
-                
                 let messages = node::wire_traffic(&device, |pkt, size| {
                     let obu = obu_c.clone();
                     async move {
@@ -92,11 +88,11 @@ impl Obu {
                                     let response = obu.handle_msg(&msg).await;
                                     let has_response = response.as_ref().map(|r| r.is_some()).unwrap_or(false);
                                     tracing::trace!(has_response = has_response, incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
-                                    
+
                                     if let Ok(Some(responses)) = response {
                                         all_responses.extend(responses);
                                     }
-                                    
+
                                     // Calculate message size to advance offset  
                                     let msg_bytes: Vec<Vec<u8>> = (&msg).into();
                                     let msg_size: usize = msg_bytes.iter().map(|chunk| chunk.len()).sum();
@@ -127,9 +123,6 @@ impl Obu {
                     )
                     .await;
                 }
-                
-                // Small delay to prevent busy-waiting and allow other tasks to run
-                tokio::time::sleep(std::time::Duration::from_micros(100)).await;
             }
         });
         Ok(())

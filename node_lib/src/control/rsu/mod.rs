@@ -48,6 +48,11 @@ impl Rsu {
         Ok(rsu)
     }
 
+    /// Get route to a specific MAC address. Used for testing latency measurement.
+    pub fn get_route_to(&self, mac: MacAddress) -> Option<crate::control::route::Route> {
+        self.routing.read().unwrap().get_route_to(Some(mac))
+    }
+
     fn wire_traffic_task(rsu: Arc<Self>) -> Result<()> {
         let device = rsu.device.clone();
         let tun = rsu.tun.clone();
@@ -55,11 +60,6 @@ impl Rsu {
         tokio::task::spawn(async move {
             loop {
                 let rsu = rsu.clone();
-                
-                // Add periodic yield for mocked time compatibility
-                // This ensures the task yields control when time is paused
-                tokio::task::yield_now().await;
-                
                 let messages = node::wire_traffic(&device, |pkt, size| {
                     async move {
                         // Try to parse multiple messages from the packet
@@ -74,11 +74,11 @@ impl Rsu {
                                     let response = rsu.handle_msg(&msg).await;
                                     let has_response = response.as_ref().map(|r| r.is_some()).unwrap_or(false);
                                     tracing::trace!(has_response = has_response, incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
-                                    
+
                                     if let Ok(Some(responses)) = response {
                                         all_responses.extend(responses);
                                     }
-                                    
+
                                     // Calculate message size to advance offset
                                     let msg_bytes: Vec<Vec<u8>> = (&msg).into();
                                     let msg_size: usize = msg_bytes.iter().map(|chunk| chunk.len()).sum();
@@ -101,10 +101,6 @@ impl Rsu {
                 if let Ok(Some(messages)) = messages {
                     let _ = node::handle_messages(messages, &tun, &device, None).await;
                 }
-                
-                // Small delay to prevent busy-waiting and allow other tasks to run
-                // This is especially important for mocked time scenarios
-                tokio::time::sleep(Duration::from_micros(100)).await;
             }
         });
         Ok(())

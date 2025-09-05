@@ -1097,7 +1097,7 @@ mod more_tests {
             .handle_heartbeat_reply(&reply_fast, our_mac)
             .unwrap_or(None);
 
-        // Heartbeat via slow path (will have 30ms latency) 
+        // Heartbeat via slow path (will have 30ms latency)
         let mut hb_slow_bytes = Vec::new();
         hb_slow_bytes.extend_from_slice(&0u128.to_be_bytes());
         hb_slow_bytes.extend_from_slice(&2u32.to_be_bytes()); // different sequence id
@@ -1131,7 +1131,10 @@ mod more_tests {
 
         // OBU should prefer the fast path due to latency (since hop counts are equal)
         let route = obu_routing.get_route_to(Some(rsu)).expect("OBU route");
-        assert_eq!(route.mac, via_fast, "OBU should prefer fast path based on latency measurement");
+        assert_eq!(
+            route.mac, via_fast,
+            "OBU should prefer fast path based on latency measurement"
+        );
         assert!(
             route.latency.is_some(),
             "OBU route should have latency measurement"
@@ -1142,15 +1145,16 @@ mod more_tests {
         );
 
         // Test that hysteresis works: slightly better latency shouldn't switch
-        // Create a new candidate that's only 5% better (9.5ms vs 10ms) 
+        // Create a new candidate that's only 5% better (9.5ms vs 10ms)
         let via_slightly_better: MacAddress = [30u8; 6].into();
         let mut hb_slightly_bytes = Vec::new();
         hb_slightly_bytes.extend_from_slice(&0u128.to_be_bytes());
         hb_slightly_bytes.extend_from_slice(&3u32.to_be_bytes());
         hb_slightly_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
         hb_slightly_bytes.extend_from_slice(&rsu.bytes());
-        let hb_slightly = crate::messages::control::heartbeat::Heartbeat::try_from(&hb_slightly_bytes[..])
-            .expect("hb_slightly");
+        let hb_slightly =
+            crate::messages::control::heartbeat::Heartbeat::try_from(&hb_slightly_bytes[..])
+                .expect("hb_slightly");
         let msg_slightly = crate::messages::message::Message::new(
             via_slightly_better,
             [255u8; 6].into(),
@@ -1158,7 +1162,9 @@ mod more_tests {
                 crate::messages::control::Control::Heartbeat(hb_slightly.clone()),
             ),
         );
-        let _ = obu_routing.handle_heartbeat(&msg_slightly, our_mac).unwrap();
+        let _ = obu_routing
+            .handle_heartbeat(&msg_slightly, our_mac)
+            .unwrap();
 
         // Cache the current best route first
         obu_routing.select_and_cache_upstream(rsu).expect("cached");
@@ -1179,7 +1185,9 @@ mod more_tests {
             .unwrap_or(None);
 
         // Should keep cached route due to hysteresis (improvement < 10%)
-        let hysteresis_route = obu_routing.get_route_to(Some(rsu)).expect("hysteresis route");
+        let hysteresis_route = obu_routing
+            .get_route_to(Some(rsu))
+            .expect("hysteresis route");
         assert_eq!(
             hysteresis_route.mac, via_fast,
             "Should keep cached route when improvement < 10% (hysteresis)"
@@ -1228,7 +1236,8 @@ mod more_tests {
         // Verify mocked time worked as expected (total: 10 + 30 + 9.5 + 8 = 57.5ms)
         let total_advance = Duration::from_millis(57) + Duration::from_micros(500);
         assert!(
-            tokio::time::Instant::now().duration_since(tokio::time::Instant::now() - total_advance) >= total_advance,
+            tokio::time::Instant::now().duration_since(tokio::time::Instant::now() - total_advance)
+                >= total_advance,
             "Mocked time should have advanced correctly"
         );
     }
