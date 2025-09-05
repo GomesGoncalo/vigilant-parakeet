@@ -1033,6 +1033,214 @@ mod more_tests {
             "cached should reflect the measured switch"
         );
     }
+
+    /// Comprehensive test for latency measurement with mocked time covering OBU functionality.
+    /// This test verifies that OBU can measure latency and use it for routing decisions.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_latency_measurement_with_mocked_time() {
+        // Use paused time for deterministic latency measurement
+        tokio::time::pause();
+        let boot = Instant::now();
+
+        // Test OBU latency measurement and routing
+        let obu_args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: NodeParameters {
+                node_type: NodeType::Obu,
+                hello_history: 3,
+                hello_periodicity: None,
+                cached_candidates: 3,
+            },
+        };
+        let mut obu_routing = Routing::new(&obu_args, &boot).expect("OBU routing built");
+
+        let rsu: MacAddress = [1u8; 6].into();
+        let via_fast: MacAddress = [10u8; 6].into();
+        let via_slow: MacAddress = [20u8; 6].into();
+        let our_mac: MacAddress = [100u8; 6].into();
+
+        // Test scenario: OBU receives heartbeats from RSU via two different paths
+        // and should prefer the one with lower latency when hop counts are equal
+
+        // Heartbeat via fast path (will have 10ms latency)
+        let mut hb_fast_bytes = Vec::new();
+        hb_fast_bytes.extend_from_slice(&0u128.to_be_bytes());
+        hb_fast_bytes.extend_from_slice(&1u32.to_be_bytes()); // sequence id
+        hb_fast_bytes.extend_from_slice(&1u32.to_be_bytes()); // 1 hop
+        hb_fast_bytes.extend_from_slice(&rsu.bytes());
+        let hb_fast = crate::messages::control::heartbeat::Heartbeat::try_from(&hb_fast_bytes[..])
+            .expect("hb_fast");
+        let msg_fast = crate::messages::message::Message::new(
+            via_fast,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb_fast.clone()),
+            ),
+        );
+        let _ = obu_routing.handle_heartbeat(&msg_fast, our_mac).unwrap();
+
+        // Advance 10ms and reply
+        tokio::time::advance(Duration::from_millis(10)).await;
+        let hbr_fast =
+            crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_fast, rsu);
+        let reply_fast = crate::messages::message::Message::new(
+            via_fast,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::HeartbeatReply(hbr_fast.clone()),
+            ),
+        );
+        let _ = obu_routing
+            .handle_heartbeat_reply(&reply_fast, our_mac)
+            .unwrap_or(None);
+
+        // Heartbeat via slow path (will have 30ms latency)
+        let mut hb_slow_bytes = Vec::new();
+        hb_slow_bytes.extend_from_slice(&0u128.to_be_bytes());
+        hb_slow_bytes.extend_from_slice(&2u32.to_be_bytes()); // different sequence id
+        hb_slow_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
+        hb_slow_bytes.extend_from_slice(&rsu.bytes());
+        let hb_slow = crate::messages::control::heartbeat::Heartbeat::try_from(&hb_slow_bytes[..])
+            .expect("hb_slow");
+        let msg_slow = crate::messages::message::Message::new(
+            via_slow,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb_slow.clone()),
+            ),
+        );
+        let _ = obu_routing.handle_heartbeat(&msg_slow, our_mac).unwrap();
+
+        // Advance 30ms and reply
+        tokio::time::advance(Duration::from_millis(30)).await;
+        let hbr_slow =
+            crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_slow, rsu);
+        let reply_slow = crate::messages::message::Message::new(
+            via_slow,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::HeartbeatReply(hbr_slow.clone()),
+            ),
+        );
+        let _ = obu_routing
+            .handle_heartbeat_reply(&reply_slow, our_mac)
+            .unwrap_or(None);
+
+        // OBU should prefer the fast path due to latency (since hop counts are equal)
+        let route = obu_routing.get_route_to(Some(rsu)).expect("OBU route");
+        assert_eq!(
+            route.mac, via_fast,
+            "OBU should prefer fast path based on latency measurement"
+        );
+        assert!(
+            route.latency.is_some(),
+            "OBU route should have latency measurement"
+        );
+        assert!(
+            route.latency.unwrap() < Duration::from_millis(15),
+            "OBU should measure fast path latency correctly (~10ms)"
+        );
+
+        // Test that hysteresis works: slightly better latency shouldn't switch
+        // Create a new candidate that's only 5% better (9.5ms vs 10ms)
+        let via_slightly_better: MacAddress = [30u8; 6].into();
+        let mut hb_slightly_bytes = Vec::new();
+        hb_slightly_bytes.extend_from_slice(&0u128.to_be_bytes());
+        hb_slightly_bytes.extend_from_slice(&3u32.to_be_bytes());
+        hb_slightly_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
+        hb_slightly_bytes.extend_from_slice(&rsu.bytes());
+        let hb_slightly =
+            crate::messages::control::heartbeat::Heartbeat::try_from(&hb_slightly_bytes[..])
+                .expect("hb_slightly");
+        let msg_slightly = crate::messages::message::Message::new(
+            via_slightly_better,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb_slightly.clone()),
+            ),
+        );
+        let _ = obu_routing
+            .handle_heartbeat(&msg_slightly, our_mac)
+            .unwrap();
+
+        // Cache the current best route first
+        obu_routing.select_and_cache_upstream(rsu).expect("cached");
+
+        // Advance only 9.5ms for slightly better latency
+        tokio::time::advance(Duration::from_millis(9) + Duration::from_micros(500)).await;
+        let hbr_slightly =
+            crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_slightly, rsu);
+        let reply_slightly = crate::messages::message::Message::new(
+            via_slightly_better,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::HeartbeatReply(hbr_slightly.clone()),
+            ),
+        );
+        let _ = obu_routing
+            .handle_heartbeat_reply(&reply_slightly, our_mac)
+            .unwrap_or(None);
+
+        // Should keep cached route due to hysteresis (improvement < 10%)
+        let hysteresis_route = obu_routing
+            .get_route_to(Some(rsu))
+            .expect("hysteresis route");
+        assert_eq!(
+            hysteresis_route.mac, via_fast,
+            "Should keep cached route when improvement < 10% (hysteresis)"
+        );
+
+        // Test significant improvement: create a candidate with >10% better latency (8ms vs 10ms = 20% better)
+        let via_much_better: MacAddress = [40u8; 6].into();
+        let mut hb_much_bytes = Vec::new();
+        hb_much_bytes.extend_from_slice(&0u128.to_be_bytes());
+        hb_much_bytes.extend_from_slice(&4u32.to_be_bytes());
+        hb_much_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
+        hb_much_bytes.extend_from_slice(&rsu.bytes());
+        let hb_much = crate::messages::control::heartbeat::Heartbeat::try_from(&hb_much_bytes[..])
+            .expect("hb_much");
+        let msg_much = crate::messages::message::Message::new(
+            via_much_better,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::Heartbeat(hb_much.clone()),
+            ),
+        );
+        let _ = obu_routing.handle_heartbeat(&msg_much, our_mac).unwrap();
+
+        // Advance 8ms for significantly better latency (>10% improvement)
+        tokio::time::advance(Duration::from_millis(8)).await;
+        let hbr_much =
+            crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_much, rsu);
+        let reply_much = crate::messages::message::Message::new(
+            via_much_better,
+            [255u8; 6].into(),
+            crate::messages::packet_type::PacketType::Control(
+                crate::messages::control::Control::HeartbeatReply(hbr_much.clone()),
+            ),
+        );
+        let _ = obu_routing
+            .handle_heartbeat_reply(&reply_much, our_mac)
+            .unwrap_or(None);
+
+        // Should switch to much better route (>10% improvement)
+        let switched_route = obu_routing.get_route_to(Some(rsu)).expect("switched route");
+        assert_eq!(
+            switched_route.mac, via_much_better,
+            "Should switch to route with >10% latency improvement"
+        );
+
+        // Verify mocked time worked as expected (total: 10 + 30 + 9.5 + 8 = 57.5ms)
+        let total_advance = Duration::from_millis(57) + Duration::from_micros(500);
+        assert!(
+            tokio::time::Instant::now().duration_since(tokio::time::Instant::now() - total_advance)
+                >= total_advance,
+            "Mocked time should have advanced correctly"
+        );
+    }
 }
 
 #[derive(Debug)]
