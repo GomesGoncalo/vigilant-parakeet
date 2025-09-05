@@ -323,3 +323,16 @@ pub fn close_fd(fd: i32) -> std::io::Result<()> {
         Ok(())
     }
 }
+
+/// Helper function that implements timeout pattern with tokio::select!
+/// Either awaits the future or times out after the specified duration.
+/// Uses mocked time advancement for timeouts.
+pub async fn await_with_timeout<T>(
+    future: impl std::future::Future<Output = T>,
+    timeout: Duration,
+) -> Result<T, &'static str> {
+    tokio::select! {
+        result = future => Ok(result),
+        _ = tokio::time::sleep(timeout) => Err("timeout"),
+    }
+}
