@@ -160,47 +160,36 @@ impl Routing {
         // Determine the true minimum hop count across candidates
         let min_hops = candidates.iter().map(|(h, _, _)| *h).min().unwrap();
 
-        // Aggregate per-next-hop metrics for candidates at min_hops
-        let mut per_next: HashMap<MacAddress, (u128, u128, u32)> = HashMap::new(); // (min_us, sum_us, count)
-        for (_hops, mac, us) in candidates.into_iter().filter(|(h, _, _)| *h == min_hops) {
-            let e = per_next.entry(mac).or_insert((u128::MAX, 0, 0));
-            if us < e.0 {
-                e.0 = us;
+        // Aggregate per-next-hop metrics into latency_candidates and pick the best
+        // using the shared helper for parity with OBU.
+        let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> = HashMap::new();
+        for (_hops, next_hop_mac, latency_us) in
+            candidates.into_iter().filter(|(h, _, _)| *h == min_hops)
+        {
+            let entry = latency_candidates.entry(next_hop_mac).or_insert((
+                u128::MAX,
+                0u128,
+                0u32,
+                min_hops,
+            ));
+            if latency_us < entry.0 {
+                entry.0 = latency_us;
             }
-            e.1 += us;
-            e.2 += 1;
+            entry.1 += latency_us;
+            entry.2 += 1;
+            entry.3 = min_hops;
         }
 
-        // Choose best next hop by (score=min+avg, tie-break by MAC bytes)
-        let mut best: Option<(u128, MacAddress, u128)> = None; // (score, mac, avg)
-        for (mac, (min_us, sum_us, cnt)) in per_next.into_iter() {
-            let avg_us = if cnt > 0 {
-                sum_us / (cnt as u128)
-            } else {
-                u128::MAX
-            };
-            let score = if min_us == u128::MAX || avg_us == u128::MAX {
-                u128::MAX
-            } else {
-                min_us + avg_us
-            };
-            match &mut best {
-                None => best = Some((score, mac, avg_us)),
-                Some((bscore, bmac, bavg)) => {
-                    if score < *bscore || (score == *bscore && mac.bytes() < bmac.bytes()) {
-                        *bscore = score;
-                        *bmac = mac;
-                        *bavg = avg_us;
-                    }
-                }
-            }
-        }
-
-        let (_score, mac, avg) = best?;
+        let (mac, avg_us) =
+            crate::control::routing_utils::pick_best_from_latency_candidates(latency_candidates)?;
         Some(Route {
             hops: min_hops,
             mac,
-            latency: Some(Duration::from_micros(avg as u64)),
+            latency: if avg_us == u128::MAX {
+                None
+            } else {
+                Some(Duration::from_micros(avg_us as u64))
+            },
         })
     }
 
