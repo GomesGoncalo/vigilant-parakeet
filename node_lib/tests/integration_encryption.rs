@@ -1,13 +1,56 @@
 use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
-use node_lib::test_helpers::util::{
-    await_condition_with_time_advance, mk_device_from_fd, mk_shim_pairs, mk_node_params,
-};
 use node_lib::test_helpers::hub::HubCheck;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use std::time::Duration;
+use node_lib::test_helpers::util::{
+    await_condition_with_time_advance, mk_device_from_fd, mk_node_params, mk_shim_pairs,
+};
 use node_lib::Args;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Duration;
+
+/// Common payload checker that can be used to inspect packets for test payloads
+struct PayloadChecker {
+    payload_found: Arc<AtomicBool>,
+    test_payload: Vec<u8>,
+    search_anywhere: bool, // If true, search anywhere in data; if false, search at offset 12
+}
+
+impl HubCheck for PayloadChecker {
+    fn on_packet(&self, from_idx: usize, data: &[u8]) {
+        // Check packets from OBU1 (index 1)
+        if from_idx == 1 {
+            if let Ok(msg) = node_lib::messages::message::Message::try_from(data) {
+                if let node_lib::messages::packet_type::PacketType::Data(
+                    node_lib::messages::data::Data::Upstream(upstream),
+                ) = msg.get_packet_type()
+                {
+                    if self.search_anywhere {
+                        // Search anywhere in the data for the payload (used for encryption tests)
+                        if upstream
+                            .data()
+                            .windows(self.test_payload.len())
+                            .any(|window| window == self.test_payload)
+                        {
+                            self.payload_found.store(true, Ordering::SeqCst);
+                        }
+                    } else {
+                        // Search at specific offset 12 (used for plaintext tests)
+                        if upstream.data().len() >= 12 + self.test_payload.len() {
+                            let payload_part = &upstream.data()[12..];
+                            if payload_part.starts_with(&self.test_payload) {
+                                self.payload_found.store(true, Ordering::SeqCst);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// Test that payload encryption prevents intermediate OBUs from reading data.
 /// Creates RSU -> OBU1 -> OBU2 topology with encryption enabled.
@@ -40,40 +83,17 @@ async fn test_payload_encryption_prevents_inspection() {
 
     // Setup hub with low latency
     let delays: Vec<Vec<u64>> = vec![vec![0, 2, 4], vec![2, 0, 2], vec![4, 2, 0]];
-    
+
     // Create a custom checker to inspect packets going through the intermediate OBU1
     let payload_inspected = Arc::new(AtomicBool::new(false));
     let payload_inspected_clone = payload_inspected.clone();
     let test_payload = b"secret data should not be readable by OBU1";
     let test_payload_vec = test_payload.to_vec();
-    
-    struct PayloadInspector {
-        payload_inspected: Arc<AtomicBool>,
-        test_payload: Vec<u8>,
-    }
-    
-    impl HubCheck for PayloadInspector {
-        fn on_packet(&self, from_idx: usize, data: &[u8]) {
-            // Check if this is from OBU1 (index 1) forwarding data
-            if from_idx == 1 {
-                // Try to parse as message and look for the plaintext payload
-                if let Ok(msg) = node_lib::messages::message::Message::try_from(data) {
-                    if let node_lib::messages::packet_type::PacketType::Data(
-                        node_lib::messages::data::Data::Upstream(upstream)
-                    ) = msg.get_packet_type() {
-                        // Check if the raw payload contains our test data (it shouldn't if encrypted)
-                        if upstream.data().windows(self.test_payload.len()).any(|window| window == self.test_payload) {
-                            self.payload_inspected.store(true, Ordering::SeqCst);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    let inspector = Arc::new(PayloadInspector {
-        payload_inspected: payload_inspected_clone,
+
+    let inspector = Arc::new(PayloadChecker {
+        payload_found: payload_inspected_clone,
         test_payload: test_payload_vec.clone(),
+        search_anywhere: true, // Search anywhere in the data for encrypted payloads
     });
 
     // Create hub with our custom inspector
@@ -118,7 +138,7 @@ async fn test_payload_encryption_prevents_inspection() {
 
     // Wait for topology discovery
     tokio::time::advance(Duration::from_millis(500)).await;
-    
+
     // Wait for OBU2 to discover upstream through OBU1
     let result = await_condition_with_time_advance(
         Duration::from_millis(10),
@@ -132,7 +152,7 @@ async fn test_payload_encryption_prevents_inspection() {
     // Send test payload from OBU2 to RSU
     let mut frame = Vec::new();
     frame.extend_from_slice(&mac_rsu.bytes()); // to
-    frame.extend_from_slice(&mac_obu2.bytes()); // from  
+    frame.extend_from_slice(&mac_obu2.bytes()); // from
     frame.extend_from_slice(&test_payload_vec); // payload
 
     tun_obu2_peer
@@ -144,8 +164,10 @@ async fn test_payload_encryption_prevents_inspection() {
     tokio::time::advance(Duration::from_millis(100)).await;
 
     // Verify that OBU1 did not see the plaintext payload
-    assert!(!payload_inspected.load(Ordering::SeqCst), 
-            "Intermediate OBU1 should not be able to read the encrypted payload");
+    assert!(
+        !payload_inspected.load(Ordering::SeqCst),
+        "Intermediate OBU1 should not be able to read the encrypted payload"
+    );
 
     // TODO: Verify that RSU received and decrypted the payload correctly
     // This would require capturing what RSU sends to its TUN interface
@@ -174,43 +196,16 @@ async fn test_encryption_disabled_allows_inspection() {
     let dev_obu1 = mk_device_from_fd(mac_obu1, node_fds[1]);
 
     let delays: Vec<Vec<u64>> = vec![vec![0, 2], vec![2, 0]];
-    
+
     let payload_seen = Arc::new(AtomicBool::new(false));
     let payload_seen_clone = payload_seen.clone();
     let test_payload = b"readable data";
     let test_payload_vec = test_payload.to_vec();
-    
-    // Custom checker to look for plaintext payload in upstream data
-    struct PlaintextChecker {
-        payload_seen: Arc<AtomicBool>,
-        test_payload: Vec<u8>,
-    }
-    
-    impl HubCheck for PlaintextChecker {
-        fn on_packet(&self, from_idx: usize, data: &[u8]) {
-            // Check all packets from OBU1 (index 1)
-            if from_idx == 1 {
-                if let Ok(msg) = node_lib::messages::message::Message::try_from(data) {
-                    if let node_lib::messages::packet_type::PacketType::Data(
-                        node_lib::messages::data::Data::Upstream(upstream)
-                    ) = msg.get_packet_type() {
-                        // The upstream data should contain to+from+payload
-                        // Check if we can find our payload starting at offset 12
-                        if upstream.data().len() >= 12 + self.test_payload.len() {
-                            let payload_part = &upstream.data()[12..];
-                            if payload_part.starts_with(&self.test_payload) {
-                                self.payload_seen.store(true, Ordering::SeqCst);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    let checker = Arc::new(PlaintextChecker {
-        payload_seen: payload_seen_clone,
+
+    let checker = Arc::new(PayloadChecker {
+        payload_found: payload_seen_clone,
         test_payload: test_payload_vec.clone(),
+        search_anywhere: false, // Search at offset 12 for plaintext payloads
     });
 
     node_lib::test_helpers::util::mk_hub_with_checks_mocked_time(
@@ -241,7 +236,7 @@ async fn test_encryption_disabled_allows_inspection() {
 
     // Wait for topology discovery
     tokio::time::advance(Duration::from_millis(200)).await;
-    
+
     let result = await_condition_with_time_advance(
         Duration::from_millis(10),
         || obu1.cached_upstream_mac(),
@@ -256,7 +251,7 @@ async fn test_encryption_disabled_allows_inspection() {
     frame.extend_from_slice(&mac_rsu.bytes());
     frame.extend_from_slice(&mac_obu1.bytes());
     frame.extend_from_slice(&test_payload_vec);
-    
+
     tun_obu1_peer
         .send_all(&frame)
         .await
@@ -271,6 +266,8 @@ async fn test_encryption_disabled_allows_inspection() {
     }
 
     // When encryption is disabled, the payload should be readable
-    assert!(payload_seen.load(Ordering::SeqCst), 
-            "With encryption disabled, payload should be readable in transit");
+    assert!(
+        payload_seen.load(Ordering::SeqCst),
+        "With encryption disabled, payload should be readable in transit"
+    );
 }

@@ -222,7 +222,7 @@ mod tests {
                 hello_history: 1,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -268,7 +268,7 @@ mod tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -321,7 +321,7 @@ mod more_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 

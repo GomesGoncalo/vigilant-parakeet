@@ -12,11 +12,11 @@ const FIXED_KEY: &[u8; 32] = b"vigilant_parakeet_fixed_key_256!";
 pub fn encrypt_payload(plaintext: &[u8]) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(FIXED_KEY));
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-    
+
     let ciphertext = cipher
         .encrypt(&nonce, plaintext)
         .map_err(|e| anyhow!("Encryption failed: {}", e))?;
-    
+
     // Prepend nonce to ciphertext for transmission
     let mut result = nonce.to_vec();
     result.extend_from_slice(&ciphertext);
@@ -29,15 +29,15 @@ pub fn decrypt_payload(encrypted_data: &[u8]) -> Result<Vec<u8>> {
     if encrypted_data.len() < 12 {
         return Err(anyhow!("Encrypted data too short (missing nonce)"));
     }
-    
+
     let (nonce_bytes, ciphertext) = encrypted_data.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
-    
+
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(FIXED_KEY));
     let plaintext = cipher
         .decrypt(nonce, ciphertext)
         .map_err(|e| anyhow!("Decryption failed: {}", e))?;
-    
+
     Ok(plaintext)
 }
 
@@ -79,11 +79,11 @@ mod tests {
     fn decrypt_wrong_key_fails() {
         let plaintext = b"test data";
         let encrypted = encrypt_payload(plaintext).expect("encryption failed");
-        
+
         // Modify the ciphertext to simulate wrong key/corruption
         let mut corrupted = encrypted;
         corrupted[15] ^= 0x01; // Flip a bit in the ciphertext
-        
+
         assert!(decrypt_payload(&corrupted).is_err());
     }
 
@@ -91,7 +91,7 @@ mod tests {
     fn is_likely_encrypted_detects_encrypted_data() {
         let plaintext = b"test payload";
         let encrypted = encrypt_payload(plaintext).expect("encryption failed");
-        
+
         assert!(is_likely_encrypted(&encrypted));
         assert!(!is_likely_encrypted(plaintext));
         assert!(!is_likely_encrypted(b"short"));

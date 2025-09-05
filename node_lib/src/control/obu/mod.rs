@@ -149,7 +149,7 @@ impl Obu {
                         else {
                             return Ok(None);
                         };
-                        
+
                         // Encrypt payload if encryption is enabled
                         let payload_data = if enable_encryption {
                             match crate::crypto::encrypt_payload(y) {
@@ -162,7 +162,7 @@ impl Obu {
                         } else {
                             y.to_vec()
                         };
-                        
+
                         let outgoing = vec![ReplyType::Wire(
                             (&Message::new(
                                 devicec.mac_address(),
@@ -357,7 +357,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
@@ -387,7 +387,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
@@ -429,7 +429,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
@@ -483,7 +483,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
@@ -522,7 +522,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
@@ -576,7 +576,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
@@ -632,7 +632,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();

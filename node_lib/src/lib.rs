@@ -141,7 +141,7 @@ mod tests {
                 hello_history: 10,
                 hello_periodicity: Some(100),
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let args_obu = Args {
@@ -154,7 +154,7 @@ mod tests {
                 hello_history: 10,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -179,7 +179,7 @@ mod tests {
                 hello_history: 1,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let res = crate::create(args);
