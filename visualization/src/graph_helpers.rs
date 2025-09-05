@@ -20,9 +20,10 @@ pub fn compute_edge_width(up: f64, down: f64) -> usize {
     let lv = total.log10();
     let frac = (lv / scale_log).clamp(0.0, 1.0);
     let min_w = 1.0f64;
-    let max_w = 20.0f64;
+    // Cap width at 12 to match wasm test expectations
+    let max_w = 12.0f64;
     let w = min_w + (frac * (max_w - min_w)).round();
-    (w as usize).clamp(1, 20)
+    (w as usize).clamp(1, 12)
 }
 
 /// Determine route kind for an edge from `from` to `to` using node_info shape.
