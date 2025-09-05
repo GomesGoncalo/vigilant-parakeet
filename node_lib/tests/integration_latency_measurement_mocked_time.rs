@@ -18,7 +18,8 @@ use std::time::Duration;
 /// the latency measurement system used by the routing algorithm doesn't work
 /// correctly, affecting the core latency-aware route selection functionality.
 #[tokio::test]
-#[ignore = "Latency measurement doesn't work correctly with mocked time - Issue #21"]
+// Temporarily removed ignore to debug the issue
+// #[ignore = "Latency measurement doesn't work correctly with mocked time - Issue #21"]
 async fn test_latency_measurement_with_mocked_time() {
     node_lib::init_test_tracing();
 
@@ -61,12 +62,19 @@ async fn test_latency_measurement_with_mocked_time() {
 
     // Wait for OBU to receive heartbeats and cache an upstream route with latency measurement
     // With working latency measurement, the OBU should cache a route with latency info
+    // The latency measurement cycle is: RSU → HB → OBU → HBR → RSU (measures latency) → HB → OBU (gets route with latency)
+    // With 20ms delays, this needs at least 40ms + some buffer for RSU heartbeat periodicity (50ms)
+    let mut attempt_count = 0;
     let result = await_condition_with_time_advance(
-        Duration::from_millis(10),
+        Duration::from_millis(25), // Larger steps to ensure we cover the full latency measurement cycle
         || {
+            attempt_count += 1;
+            tracing::debug!(attempt = attempt_count, "Checking for cached route with latency");
+            
             // Check if the OBU has cached an upstream route with latency measurement
             if let Some(cached_route) = obu.cached_upstream_route() {
                 tracing::debug!(
+                    attempt = attempt_count,
                     cached_upstream = ?cached_route.mac,
                     route_latency = ?cached_route.latency,
                     "Found cached upstream route"
@@ -75,12 +83,19 @@ async fn test_latency_measurement_with_mocked_time() {
                 // Check if latency measurement is working correctly
                 if cached_route.latency.is_some() {
                     // With the 20ms delay set in the hub, we should see meaningful latency measurements
+                    tracing::info!(
+                        attempt = attempt_count,
+                        measured_latency = ?cached_route.latency,
+                        "SUCCESS: Found route with latency measurement"
+                    );
                     return Some(cached_route);
                 }
+            } else {
+                tracing::debug!(attempt = attempt_count, "No cached route found yet");
             }
             None
         },
-        Duration::from_secs(5), // 5 seconds total timeout
+        Duration::from_secs(10), // Increase timeout to allow for full latency measurement cycle
     )
     .await;
 
