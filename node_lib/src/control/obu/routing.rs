@@ -384,6 +384,7 @@ mod regression_tests {
 #[cfg(test)]
 mod more_tests {
     use super::Routing;
+    use super::Target;
     use crate::args::{NodeParameters, NodeType};
     use crate::Args;
     use mac_address::MacAddress;
@@ -412,6 +413,132 @@ mod more_tests {
         assert!(routing.get_route_to(Some(unknown)).is_none());
         // No cached upstream
         assert!(routing.get_route_to(None).is_none());
+    }
+
+    #[test]
+    fn tie_break_prefers_lower_mac_when_scores_equal() {
+        // Build args and routing
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: crate::args::NodeParameters {
+                node_type: crate::args::NodeType::Obu,
+                hello_history: 2,
+                hello_periodicity: None,
+                cached_candidates: 3,
+            },
+        };
+        let boot = Instant::now() - Duration::from_secs(1);
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        // We'll manually populate routes to create two candidates with equal score
+        // Candidate A: MAC [1,0,0,0,0,1], Candidate B: MAC [2,0,0,0,0,2]
+        let target: MacAddress = [9u8; 6].into();
+        let candidate_a: MacAddress = [1u8, 0, 0, 0, 0, 1].into();
+        let candidate_b: MacAddress = [2u8, 0, 0, 0, 0, 2].into();
+
+        // Populate `routes` with downstream observations for a single RSU/seq
+        let rsu_mac: MacAddress = [100u8; 6].into();
+        let seq = 0u32;
+        let mut seqmap = indexmap::IndexMap::new();
+        let mut downstream_map: std::collections::HashMap<MacAddress, Vec<Target>> =
+            std::collections::HashMap::new();
+
+        // Both candidates have same hops and same latency values so score equal
+        downstream_map.insert(
+            target,
+            vec![
+                Target {
+                    hops: 2,
+                    mac: candidate_a,
+                    latency: Some(Duration::from_millis(10)),
+                },
+                Target {
+                    hops: 2,
+                    mac: candidate_b,
+                    latency: Some(Duration::from_millis(10)),
+                },
+            ],
+        );
+
+        seqmap.insert(
+            seq,
+            (
+                Duration::from_millis(0),
+                rsu_mac,
+                1u32,
+                indexmap::IndexMap::new(),
+                downstream_map,
+            ),
+        );
+        routing.routes.insert(rsu_mac, seqmap);
+
+        // Now ask for route to target; since scores tie, the lower MAC should win
+        let route = routing.get_route_to(Some(target)).expect("route present");
+        assert!(route.mac.bytes() < candidate_b.bytes());
+    }
+
+    #[test]
+    fn none_latency_handling_prefers_min_and_none_ignored_in_avg() {
+        let args = Args {
+            bind: String::default(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            node_params: crate::args::NodeParameters {
+                node_type: crate::args::NodeType::Obu,
+                hello_history: 2,
+                hello_periodicity: None,
+                cached_candidates: 3,
+            },
+        };
+        let boot = Instant::now() - Duration::from_secs(1);
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        let target: MacAddress = [9u8; 6].into();
+        let candidate_with_none: MacAddress = [5u8; 6].into();
+        let candidate_with_val: MacAddress = [6u8; 6].into();
+
+        let rsu_mac: MacAddress = [101u8; 6].into();
+        let seq = 0u32;
+        let mut seqmap = indexmap::IndexMap::new();
+        let mut downstream_map: std::collections::HashMap<MacAddress, Vec<Target>> =
+            std::collections::HashMap::new();
+
+        // Candidate A has None latency (unmeasured), Candidate B has concrete latencies
+        downstream_map.insert(
+            target,
+            vec![
+                Target {
+                    hops: 1,
+                    mac: candidate_with_none,
+                    latency: None,
+                },
+                Target {
+                    hops: 1,
+                    mac: candidate_with_val,
+                    latency: Some(Duration::from_millis(50)),
+                },
+            ],
+        );
+
+        seqmap.insert(
+            seq,
+            (
+                Duration::from_millis(0),
+                rsu_mac,
+                1u32,
+                indexmap::IndexMap::new(),
+                downstream_map,
+            ),
+        );
+        routing.routes.insert(rsu_mac, seqmap);
+
+        // Candidate with measured latency should be preferred since None is treated as MAX
+        let route = routing.get_route_to(Some(target)).expect("route present");
+        assert_eq!(route.mac, candidate_with_val);
     }
 
     #[test]
@@ -1330,7 +1457,6 @@ impl Routing {
                     .unwrap_or(3)
                     .max(1);
                 // Compute latency-based candidates first
-                let mut scored: Vec<(u128, u32, MacAddress)> = Vec::new();
                 let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> =
                     HashMap::default();
                 for (_rsu, seqs) in self.routes.iter() {
@@ -1356,23 +1482,14 @@ impl Routing {
                     }
                 }
                 if !latency_candidates.is_empty() {
-                    for (macaddr, (min_us, sum_us, n, hops_val)) in latency_candidates.into_iter() {
-                        let avg_us = if n > 0 {
-                            sum_us / (n as u128)
-                        } else {
-                            u128::MAX
-                        };
-                        let score = if min_us == u128::MAX || avg_us == u128::MAX {
-                            u128::MAX
-                        } else {
-                            min_us + avg_us
-                        };
-                        scored.push((score, hops_val, macaddr));
-                    }
-                    scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-                    cands = scored
+                    // Use the shared helper to score and sort candidates deterministically.
+                    let scored_full =
+                        crate::control::routing_utils::score_and_sort_latency_candidates(
+                            latency_candidates,
+                        );
+                    cands = scored_full
                         .into_iter()
-                        .map(|(_s, _h, m)| m)
+                        .map(|(_score, _hops, mac, _avg)| mac)
                         .take(n_best)
                         .collect();
                 }
@@ -1820,43 +1937,26 @@ impl Routing {
                 return None;
             }
             let min_hops = candidates.iter().map(|(h, _, _)| *h).min().unwrap();
-            let mut per_next: std::collections::HashMap<MacAddress, (u128, u128, u32)> =
+            use crate::control::routing_utils::{pick_best_next_hop, NextHopStats};
+
+            let mut per_next: std::collections::HashMap<MacAddress, NextHopStats> =
                 std::collections::HashMap::new();
             for (_h, mac, us) in candidates.into_iter().filter(|(h, _, _)| *h == min_hops) {
-                let e = per_next.entry(mac).or_insert((u128::MAX, 0, 0));
-                if us < e.0 {
-                    e.0 = us;
+                let e = per_next.entry(mac).or_insert(NextHopStats {
+                    min_us: u128::MAX,
+                    sum_us: 0,
+                    count: 0,
+                });
+                if us < e.min_us {
+                    e.min_us = us;
                 }
                 if us != u128::MAX {
-                    e.1 += us;
-                    e.2 += 1;
-                }
-            }
-            let mut best: Option<(u128, MacAddress, u128)> = None; // (score, mac, avg)
-            for (mac, (min_us, sum_us, cnt)) in per_next.into_iter() {
-                let avg_us = if cnt > 0 {
-                    sum_us / (cnt as u128)
-                } else {
-                    u128::MAX
-                };
-                let score = if min_us == u128::MAX || avg_us == u128::MAX {
-                    u128::MAX
-                } else {
-                    min_us + avg_us
-                };
-                match &mut best {
-                    None => best = Some((score, mac, avg_us)),
-                    Some((bscore, bmac, bavg)) => {
-                        if score < *bscore || (score == *bscore && mac.bytes() < bmac.bytes()) {
-                            *bscore = score;
-                            *bmac = mac;
-                            *bavg = avg_us;
-                        }
-                    }
+                    e.sum_us += us;
+                    e.count += 1;
                 }
             }
 
-            let (_score, mac, avg) = best?;
+            let (mac, avg) = pick_best_next_hop(per_next)?;
             return Some(Route {
                 hops: min_hops,
                 mac,
@@ -1914,25 +2014,20 @@ impl Routing {
         }
 
         if !latency_candidates.is_empty() {
-            // Select by (score = min + avg), then by hops
-            let mut scored: Vec<_> = latency_candidates
-                .iter()
-                .map(|(mac, (min_us, sum_us, n, hops_val))| {
-                    let avg_us = if *n > 0 {
-                        *sum_us / (*n as u128)
-                    } else {
-                        u128::MAX
-                    };
-                    let score = if *min_us == u128::MAX || avg_us == u128::MAX {
-                        u128::MAX
-                    } else {
-                        *min_us + avg_us
-                    };
-                    (score, *hops_val, *mac, avg_us)
-                })
-                .collect();
-            scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-            let (best_score, best_hops, best_mac, best_avg) = scored[0];
+            // Use helper to pick the best candidate; clone the map so we can still
+            // inspect it below for cached membership/hops.
+            let (best_mac, best_avg) =
+                crate::control::routing_utils::pick_best_from_latency_candidates(
+                    latency_candidates.clone(),
+                )
+                .expect("latency_candidates non-empty");
+            let (best_min, _best_sum, _best_n, best_hops) =
+                latency_candidates.get(&best_mac).copied().unwrap();
+            let best_score = if best_min == u128::MAX || best_avg == u128::MAX {
+                u128::MAX
+            } else {
+                best_min + best_avg
+            };
 
             // If cached is set but isn't in latency candidates (no latency observed yet),
             // prefer a measured candidate when available. The previous behavior kept
@@ -2117,7 +2212,6 @@ impl Routing {
             // compute candidates deterministically by copying the logic here.
             // For simplicity, compute from latency and hops collected across
             // observed routes.
-            let mut scored: Vec<(u128, u32, MacAddress)> = Vec::new();
             // Recreate the latency_candidates map used by get_route_to.
             let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> =
                 HashMap::default();
@@ -2144,23 +2238,12 @@ impl Routing {
                 }
             }
             if !latency_candidates.is_empty() {
-                for (macaddr, (min_us, sum_us, n, hops_val)) in latency_candidates.into_iter() {
-                    let avg_us = if n > 0 {
-                        sum_us / (n as u128)
-                    } else {
-                        u128::MAX
-                    };
-                    let score = if min_us == u128::MAX || avg_us == u128::MAX {
-                        u128::MAX
-                    } else {
-                        min_us + avg_us
-                    };
-                    scored.push((score, hops_val, macaddr));
-                }
-                scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-                let mut out: Vec<MacAddress> = scored
+                let scored_full = crate::control::routing_utils::score_and_sort_latency_candidates(
+                    latency_candidates,
+                );
+                let mut out: Vec<MacAddress> = scored_full
                     .into_iter()
-                    .map(|(_s, _h, m)| m)
+                    .map(|(_score, _hops, mac, _avg)| mac)
                     .take(n_best)
                     .collect();
                 // If we still have capacity, backfill with hop-based candidates not already present
