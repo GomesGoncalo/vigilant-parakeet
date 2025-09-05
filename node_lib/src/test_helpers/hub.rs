@@ -69,19 +69,9 @@ pub struct Hub {
     hub_fds: Vec<i32>,
     delays_ms: Vec<Vec<u64>>,
     checks: Vec<Arc<dyn HubCheck>>,
-    use_mocked_time: bool,
 }
 
 impl Hub {
-    pub fn new(hub_fds: Vec<i32>, delays_ms: Vec<Vec<u64>>) -> Self {
-        Self {
-            hub_fds,
-            delays_ms,
-            checks: Vec::new(),
-            use_mocked_time: false,
-        }
-    }
-
     /// Create a Hub that works properly with mocked Tokio time.
     /// When mocked time is used, delays are simulated using tokio::time::sleep
     /// which respects mocked time advancement.
@@ -90,7 +80,6 @@ impl Hub {
             hub_fds,
             delays_ms,
             checks: Vec::new(),
-            use_mocked_time: true,
         }
     }
 
@@ -107,62 +96,6 @@ impl Hub {
     }
 
     pub fn spawn(self) {
-        if self.use_mocked_time {
-            self.spawn_with_mocked_time();
-        } else {
-            self.spawn_with_real_time();
-        }
-    }
-
-    fn spawn_with_real_time(self) {
-        tokio::spawn(async move {
-            let hub_fds = self.hub_fds;
-            let delays = self.delays_ms;
-            let checks = self.checks;
-            loop {
-                for i in 0..hub_fds.len() {
-                    let mut buf = vec![0u8; 2048];
-                    let n =
-                        unsafe { libc::recv(hub_fds[i], buf.as_mut_ptr() as *mut _, buf.len(), 0) };
-                    if n > 0 {
-                        let n = n as usize;
-                        buf.truncate(n);
-                        // Invoke user-provided checks
-                        for check in &checks {
-                            check.on_packet(i, &buf);
-                        }
-
-                        for (j, out_fd) in hub_fds.iter().copied().enumerate() {
-                            if j == i {
-                                continue;
-                            }
-                            // Safely index into the delays matrix; default to 0ms when absent.
-                            let delay_ms = delays
-                                .get(i)
-                                .and_then(|r| r.get(j))
-                                .copied()
-                                .unwrap_or(0u64);
-                            let delay = Duration::from_millis(delay_ms);
-                            let data = buf.clone();
-                            tokio::spawn(async move {
-                                if delay.as_millis() > 0 {
-                                    tokio::time::sleep(delay).await;
-                                }
-                                let _ = unsafe {
-                                    libc::send(out_fd, data.as_ptr() as *const _, data.len(), 0)
-                                };
-                            });
-                        }
-                    }
-                }
-                tokio::task::yield_now().await;
-            }
-        });
-    }
-
-    fn spawn_with_mocked_time(self) {
-        // In mocked time mode, we use tokio::time::sleep directly with the delay
-        // instead of trying to track absolute delivery times
         tokio::spawn(async move {
             let hub_fds = self.hub_fds;
             let delays = self.delays_ms;
