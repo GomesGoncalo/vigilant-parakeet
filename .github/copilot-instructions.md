@@ -1,59 +1,265 @@
-# Copilot instructions for vigilant-parakeet
+# GitHub Copilot Instructions for vigilant-parakeet
 
-Purpose: Help AI coding agents be productive quickly in this Rust workspace by capturing the project’s architecture, workflows, and conventions specific to this repo.
+**ALWAYS follow these instructions first and fallback to additional search and context gathering ONLY if the information here is incomplete or found to be in error.**
 
-## Architecture at a glance
-- Workspace crates:
-  - `common/`: Tun and Device abstractions used by all crates. Key: `common/src/tun.rs` exposes a test shim (`test_tun::TokioTun`) plus a wrapper `Tun` with `new_shim`/`new_real` and async `send_all/recv`.
-  - `node_lib/`: Core node logic (control plane, data plane, wire formats). Control plane lives in `node_lib/src/control/{obu,rsu}/` and manages routing from Heartbeat/HeartbeatReply. Data plane in `node_lib/src/data/`. Wire messages in `node_lib/src/messages/`.
-  - `node/`: Thin binary wiring `node_lib` and `common` to run a single node.
-  - `simulator/`: Orchestrates multi-node simulations (netns, topology, HTTP API). See `simulator/src/` and `simulator/ARCHITECTURE.md`.
-  - `visualization/`: Browser UI consuming simulator state.
-- Data flow:
-  - RSU emits periodic Heartbeat control messages.
-  - OBUs and RSUs forward and reply, populating routing state; `Routing::get_route_to(Some(mac))` selects routes (prefers lower observed latency; ties by hop count). `select_and_cache_upstream(mac)` stores the chosen next hop.
-  - Upstream data from an OBU uses the cached upstream route; downstream is forwarded per-route.
+Vigilant-parakeet is a Rust workspace that simulates and visualizes vehicular network nodes (OBU/RSU) and their routing protocols. The project consists of multiple crates in a Cargo workspace for building simulation tools and network components.
 
-## Key files and patterns
-- `common/src/tun.rs`: Unified `Tun` wrapper with a built-in test shim. In tests, create pairs via `TokioTun::new_pair()` and wrap with `Tun::new_shim`. Methods are async: `send_all`, `send_vectored`, `recv`.
-- `common/src/device.rs`: `Device::from_asyncfd_for_bench(mac, AsyncFd<DeviceIo>)` creates a device around a raw fd (e.g., a socketpair end) used in integration tests.
-- `node_lib/src/control/obu/routing.rs`:
-  - Pure selection: `get_route_to(Some(target_mac)) -> Option<Route>` computes best route without mutating state.
-  - Cache API: `select_and_cache_upstream(mac) -> Option<Route>` updates `cached_upstream`. `get_route_to(None)` returns the cached route.
-  - Heartbeat handlers: `handle_heartbeat` inserts/forwards and may trigger cache selection; `handle_heartbeat_reply` updates downstream observations and may forward unless it would bounce.
-- Logging: Uses `tracing`. Tests initialize with `node_lib::init_test_tracing()` (idempotent) to see logs under `RUST_LOG`.
+## Prerequisites and Setup
 
-## Tests and dev workflows
-- Run all workspace tests:
-  - `cargo test --workspace`
-- Focused crate tests:
-  - `cargo test -p node_lib --lib --tests`
-- Code coverage (used here):
-  - `cargo tarpaulin -p common -p node_lib --out Lcov --features test_helpers` (produces `lcov.info`).
-- Integration tests exercising real tasks under Tokio:
-  - `node_lib/tests/integration_topology.rs`: RSU+OBU over a socketpair; OBU discovers RSU as upstream. Uses Tun shim and `Device::from_asyncfd_for_bench`.
-  - `node_lib/tests/integration_two_hop.rs`: RSU + 2 OBUs via a programmable hub injecting per-link delays. Verifies OBU2 prefers two-hop via OBU1 when direct link is higher latency; injects upstream via OBU2’s TUN peer.
+Install Rust toolchain:
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+```
 
-## Conventions and gotchas
-- Prefer the Tun shim over OS TUN in tests. Construct with `TokioTun::new_pair()` and wrap with `Tun::new_shim`. Avoid test-only feature gates in downstream tests; the shim is exposed in `common::tun::test_tun`.
-- Routing API contract:
-  - Do not mutate caches inside `get_route_to(Some(_))`; use `select_and_cache_upstream` for writes.
-  - When handling HeartbeatReply, avoid forwarding back to `pkt.from` if it equals the recorded next hop (bounce prevention).
-- Latency-aware selection: `get_route_to(Some(mac))` prefers observed lower latency across hops (score by min+avg). Falls back to fewest hops if no latency is known. Keep tie-breaking deterministic in changes.
-- Async I/O building blocks: `tokio::io::unix::AsyncFd` over a nonblocking socketpair stands in for L2 devices in tests. Mark FDs `O_NONBLOCK`.
-- Tracing over prints: Use `tracing` macros; tests can view logs via `init_test_tracing()` and `RUST_LOG` env.
+Clone and setup:
+```bash
+git clone <repo-url>
+cd vigilant-parakeet
+```
 
-## Extending or debugging
-- Add routes tests in `node_lib/src/control/obu/routing.rs` alongside existing ones; mirror message sequences in unit tests using the `messages` module to build frames.
-- For new end-to-end tests, prefer the device/socketpair + Tun shim pattern seen in existing integration tests. If you need to inject per-link latency, copy the simple `Hub` used in `integration_two_hop.rs`.
-- When changing routing heuristics, update or add tests that assert the selection and caching behavior. Use `node_lib::init_test_tracing()` to get detailed logs during runs.
+Install git hooks (recommended for commit message format compliance):
+```bash
+./scripts/install-hooks.sh
+```
 
-## Examples from the repo
-- Creating devices for tests:
-  - `let dev = Device::from_asyncfd_for_bench(mac, AsyncFd::new(DeviceIo::from_raw_fd(fd))?)` (ensure `O_NONBLOCK`).
-- Tun shim pair:
-  - `let (a, b) = node_lib::test_helpers::util::mk_shim_pair(); // returns (Tun, Tun) shim pair`
-- Selecting and caching a route:
-  - `if let Some(route) = routing.select_and_cache_upstream(target_mac) { /* use route.next_hop */ }`
+## Building the Project
 
-If anything here is unclear or you discover a pattern worth documenting (e.g., additional features or simulators’ HTTP endpoints), please comment so we can refine these instructions.
+**CRITICAL TIMING**: NEVER CANCEL builds or long-running commands. Set timeout to 120+ minutes for safety.
+
+Build entire workspace (takes ~1 minute 40 seconds):
+```bash
+cargo build --workspace
+```
+
+Build release version (takes ~1 minute 30 seconds):
+```bash
+cargo build --workspace --release
+```
+
+Build specific components:
+```bash
+# Simulator with webview feature (takes ~1 minute 40 seconds)
+cargo build -p simulator --release --features webview
+
+# Single node binary only
+cargo build --bin node --release
+
+# With stats/metrics feature enabled
+cargo build --features stats
+```
+
+**NEVER CANCEL**: All builds may take 90+ seconds. Wait for completion.
+
+## Testing
+
+Run full test suite (takes ~22 seconds):
+```bash
+cargo test --workspace
+```
+
+Run specific crate tests:
+```bash
+# Node library tests only (fastest iteration)
+cargo test -p node_lib
+
+# With stats feature enabled (adds 2 additional metric tests)
+cargo test -p node_lib --features stats
+
+# Specific test with logs
+RUST_LOG=trace cargo test -p node_lib -- tests::integration_two_hop -- --nocapture
+```
+
+**Test timing**: Full test suite completes in ~22 seconds. NEVER CANCEL.
+
+## Code Quality and Linting
+
+Format code (takes ~1 second):
+```bash
+cargo fmt --all --check
+```
+
+Apply formatting:
+```bash
+cargo fmt
+```
+
+Run clippy linting (takes ~43 seconds):
+```bash
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+**CRITICAL**: Always run both `cargo fmt` and `cargo clippy` before committing. CI will fail if these checks don't pass.
+
+## Code Coverage
+
+Generate coverage report (takes ~1 minute 20 seconds):
+```bash
+# Install tarpaulin if needed (takes ~3 minutes 20 seconds first time)
+cargo install cargo-tarpaulin --locked
+
+# Run coverage (NEVER CANCEL - takes 80+ seconds)
+cargo tarpaulin -p common -p node_lib --out Lcov --features test_helpers --timeout 120
+```
+
+**NEVER CANCEL**: Coverage generation takes 80+ seconds. Set timeout to 180+ seconds.
+
+## Running the Application
+
+### Simulator (Multi-node simulation)
+
+**REQUIRES SUDO**: The simulator creates network namespaces and requires root privileges.
+
+Create example configuration files:
+```yaml
+# simulator-example.yaml
+nodes:
+  n1:
+    config_path: n1.yaml
+  n2:
+    config_path: n2.yaml
+topology:
+  n1:
+    n2:
+      latency: 0
+      loss: 0
+  n2:
+    n1:
+      latency: 0
+      loss: 0
+```
+
+```yaml
+# n1.yaml (RSU node)
+node_type: Rsu
+hello_history: 10
+hello_periodicity: 5000
+ip: 10.0.0.1
+```
+
+```yaml
+# n2.yaml (OBU node)
+node_type: Obu
+hello_history: 10
+ip: 10.0.0.2
+```
+
+Run simulator:
+```bash
+# Build first
+cargo build -p simulator --release --features webview
+
+# Run with sudo (requires Linux with network namespace support)
+sudo RUST_LOG="node=debug" ./target/release/simulator --config-file simulator-example.yaml --pretty
+```
+
+The simulator starts an HTTP API on port 3030 for runtime stats and control.
+
+### Single Node
+
+Run individual node:
+```bash
+./target/release/node --help
+# See help output for required parameters (bind interface, node type, etc.)
+```
+
+## Validation Scenarios
+
+**ALWAYS test these scenarios after making changes:**
+
+1. **Build and test validation**:
+   ```bash
+   cargo build --workspace
+   cargo test --workspace
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo fmt --all --check
+   ```
+
+2. **Feature build validation**:
+   ```bash
+   cargo test -p node_lib --features stats
+   cargo build -p simulator --release --features webview
+   ```
+
+3. **Coverage validation**:
+   ```bash
+   cargo tarpaulin -p common -p node_lib --out Lcov --features test_helpers --timeout 120
+   ```
+
+## Project Structure
+
+- `common/` — Shared data types and utilities (Device, Tun abstractions)
+- `node_lib/` — Core node logic (routing, control plane, wire protocols)
+- `node/` — Single node binary for real hardware or testing
+- `simulator/` — Multi-node simulation with network namespaces and HTTP API
+- `visualization/` — Browser-based visualization frontend (Yew/WASM)
+
+## Key Development Workflows
+
+**Feature development**:
+1. Make changes to relevant crate
+2. Run `cargo test -p <crate>` for quick iteration
+3. Run full test suite: `cargo test --workspace`
+4. Run linting: `cargo clippy --workspace --all-targets -- -D warnings`
+5. Format: `cargo fmt`
+
+**Stats/metrics development**:
+```bash
+# Always test with stats feature enabled
+cargo test -p node_lib --features stats
+cargo build --features stats
+```
+
+**Debugging with logs**:
+```bash
+RUST_LOG=trace cargo test -p node_lib -- <test_name> -- --nocapture
+```
+
+## Critical Timing Expectations
+
+- **Build workspace**: 90-120 seconds - NEVER CANCEL, set timeout 180+ seconds
+- **Test suite**: 22 seconds - NEVER CANCEL, set timeout 60+ seconds  
+- **Clippy linting**: 43 seconds - NEVER CANCEL, set timeout 90+ seconds
+- **Coverage**: 80 seconds - NEVER CANCEL, set timeout 180+ seconds
+- **Release build**: 90 seconds - NEVER CANCEL, set timeout 180+ seconds
+
+## Additional Tools (Optional)
+
+For visualization development:
+```bash
+# Install wasm tools (optional)
+rustup target add wasm32-unknown-unknown
+cargo install wasm-pack trunk
+```
+
+Test visualization:
+```bash
+cd visualization
+cargo test  # Host tests
+wasm-pack test --headless --firefox  # WASM tests
+trunk build --release  # Build frontend
+```
+
+## Configuration Notes
+
+- The project uses `.cargo/config.toml` with `rustflags = ["--cfg", "tokio_unstable"]`
+- Git hooks enforce Conventional Commits format for commit messages
+- Network namespace creation requires sudo on Linux
+- HTTP API runs on port 3030 when simulator is active
+
+## Architecture Overview
+
+**Workspace crates:**
+- `common/`: Tun and Device abstractions with test shims
+- `node_lib/`: Core routing logic (OBU/RSU control planes, wire formats)  
+- `node/`: Single node binary
+- `simulator/`: Multi-node orchestration with netns
+- `visualization/`: Browser UI
+
+**Data flow:**
+- RSU emits periodic Heartbeat control messages
+- OBUs/RSUs forward and reply, building routing tables
+- Routing prefers lower observed latency, falls back to hop count
+- Test helpers provide in-memory device pairs for unit tests
+
+**ALWAYS refer to these instructions first. Only search for additional context if commands fail or behavior doesn't match these documented expectations.**
