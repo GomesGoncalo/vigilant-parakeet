@@ -62,11 +62,14 @@ async fn test_latency_measurement_with_mocked_time() {
 
     // Wait for OBU to receive heartbeats and cache an upstream route with latency measurement
     // With working latency measurement, the OBU should cache a route with latency info
-    // The latency measurement cycle is: RSU → HB → OBU → HBR → RSU (measures latency) → HB → OBU (gets route with latency)
-    // With 20ms delays, this needs at least 40ms + some buffer for RSU heartbeat periodicity (50ms)
+    // The latency measurement cycle is: 
+    // 1. RSU → HB → OBU (creates route with no latency)
+    // 2. OBU → HBR → RSU (RSU measures latency) 
+    // 3. RSU → HB (with timing context) → OBU (OBU gets route with latency)
+    // With 20ms delays + 50ms RSU heartbeat period, this needs more time
     let mut attempt_count = 0;
     let result = await_condition_with_time_advance(
-        Duration::from_millis(25), // Larger steps to ensure we cover the full latency measurement cycle
+        Duration::from_millis(30), // Larger steps to ensure we cover multiple heartbeat cycles
         || {
             attempt_count += 1;
             tracing::debug!(attempt = attempt_count, "Checking for cached route with latency");
@@ -95,7 +98,7 @@ async fn test_latency_measurement_with_mocked_time() {
             }
             None
         },
-        Duration::from_secs(10), // Increase timeout to allow for full latency measurement cycle
+        Duration::from_secs(15), // Longer timeout to allow for multiple heartbeat cycles
     )
     .await;
 

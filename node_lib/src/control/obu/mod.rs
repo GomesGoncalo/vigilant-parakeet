@@ -74,20 +74,45 @@ impl Obu {
         tokio::task::spawn(async move {
             loop {
                 let obu_c = obu.clone();
+                
+                // Add periodic yield for mocked time compatibility
+                tokio::task::yield_now().await;
+                
                 let messages = node::wire_traffic(&device, |pkt, size| {
                     let obu = obu_c.clone();
                     async move {
-                        match Message::try_from(&pkt[..size]) {
-                            Ok(msg) => {
-                                let response = obu.handle_msg(&msg).await;
-                                let has_response = response.as_ref().map(|r| r.is_some()).unwrap_or(false);
-                                tracing::trace!(has_response = has_response, incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
-                                response
+                        // Try to parse multiple messages from the packet
+                        let data = &pkt[..size];
+                        let mut all_responses = Vec::new();
+                        let mut offset = 0;
+
+                        while offset < data.len() {
+                            match Message::try_from(&data[offset..]) {
+                                Ok(msg) => {
+                                    let response = obu.handle_msg(&msg).await;
+                                    let has_response = response.as_ref().map(|r| r.is_some()).unwrap_or(false);
+                                    tracing::trace!(has_response = has_response, incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
+                                    
+                                    if let Ok(Some(responses)) = response {
+                                        all_responses.extend(responses);
+                                    }
+                                    
+                                    // Calculate message size to advance offset  
+                                    let msg_bytes: Vec<Vec<u8>> = (&msg).into();
+                                    let msg_size: usize = msg_bytes.iter().map(|chunk| chunk.len()).sum();
+                                    offset += msg_size;
+                                }
+                                Err(e) => {
+                                    tracing::trace!(offset = offset, remaining = data.len() - offset, error = ?e, "could not parse message at offset");
+                                    break;
+                                }
                             }
-                            Err(e) => {
-                                tracing::trace!(error = ?e, raw = %crate::control::node::bytes_to_hex(&pkt[..size]), "obu wire_traffic failed to parse message");
-                                Ok(None)
-                            }
+                        }
+
+                        if all_responses.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some(all_responses))
                         }
                     }
                 }).await;
@@ -102,6 +127,9 @@ impl Obu {
                     )
                     .await;
                 }
+                
+                // Small delay to prevent busy-waiting and allow other tasks to run
+                tokio::time::sleep(std::time::Duration::from_micros(100)).await;
             }
         });
         Ok(())
