@@ -51,7 +51,7 @@ mod tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -92,7 +92,7 @@ mod tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -156,7 +156,7 @@ mod cache_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -206,7 +206,7 @@ mod cache_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -287,7 +287,7 @@ mod regression_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -344,7 +344,7 @@ mod regression_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -408,7 +408,7 @@ mod more_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -435,7 +435,7 @@ mod more_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now() - Duration::from_secs(1);
@@ -500,7 +500,7 @@ mod more_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now() - Duration::from_secs(1);
@@ -562,7 +562,7 @@ mod more_tests {
                 hello_history: 4,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -603,7 +603,7 @@ mod more_tests {
                 hello_history: 1,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -661,7 +661,7 @@ mod more_tests {
                 hello_history: 4,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -720,7 +720,7 @@ mod more_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -743,7 +743,7 @@ mod more_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -784,7 +784,7 @@ mod more_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -846,7 +846,7 @@ mod more_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
 
@@ -911,7 +911,7 @@ mod more_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         // Use paused time so we can deterministically advance time
@@ -1003,7 +1003,7 @@ mod more_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         // Use paused time so we can deterministically advance time
@@ -1100,7 +1100,7 @@ mod more_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         // Use paused time for deterministic latency measurement
@@ -1199,7 +1199,7 @@ mod more_tests {
                 hello_history: 3,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let mut obu_routing = Routing::new(&obu_args, &boot).expect("OBU routing built");

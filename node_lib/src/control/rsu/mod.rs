@@ -131,7 +131,7 @@ impl Rsu {
                 let bcast_or_mcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
                 let mut target = self.cache.get(to);
                 let mut messages = Vec::with_capacity(1);
-                
+
                 // For sending to TUN, decrypt the payload if encryption is enabled
                 if bcast_or_mcast || target.is_some_and(|x| x == self.device.mac_address()) {
                     let tun_data = if self.args.node_params.enable_encryption {
@@ -273,7 +273,7 @@ impl Rsu {
                     let from: MacAddress = from.into();
                     let source_mac = devicec.mac_address().bytes();
                     cache.store_mac(from, devicec.mac_address());
-                    
+
                     // Encrypt payload if encryption is enabled
                     let downstream_data = if enable_encryption {
                         let payload = data.get(12..).unwrap_or(&[]);
@@ -294,7 +294,7 @@ impl Rsu {
                     } else {
                         data.to_vec()
                     };
-                    
+
                     let routing = routing.read().unwrap();
                     let outgoing = if let Some(target) = target {
                         if let Some(hop) = routing.get_route_to(Some(target)) {
@@ -338,14 +338,15 @@ impl Rsu {
                                     .map(|(x, y)| (x, y.mac))
                                     .unique_by(|(x, _)| *x)
                                     .map(|(_x, next_hop)| {
-                                        let msg =
-                                            Message::new(
-                                                devicec.mac_address(),
-                                                next_hop,
-                                                PacketType::Data(Data::Downstream(
-                                                    ToDownstream::new(&source_mac, target, &downstream_data),
-                                                )),
-                                            );
+                                        let msg = Message::new(
+                                            devicec.mac_address(),
+                                            next_hop,
+                                            PacketType::Data(Data::Downstream(ToDownstream::new(
+                                                &source_mac,
+                                                target,
+                                                &downstream_data,
+                                            ))),
+                                        );
                                         ReplyType::Wire((&msg).into())
                                     })
                                     .collect_vec()
@@ -522,7 +523,7 @@ mod rsu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -565,7 +566,7 @@ mod rsu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -606,7 +607,7 @@ mod rsu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -656,7 +657,7 @@ mod rsu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
-            enable_encryption: false,
+                enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
