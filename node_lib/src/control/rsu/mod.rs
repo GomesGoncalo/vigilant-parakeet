@@ -477,6 +477,7 @@ mod rsu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+            enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -519,6 +520,7 @@ mod rsu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+            enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -559,6 +561,7 @@ mod rsu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+            enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -608,6 +611,7 @@ mod rsu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+            enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
