@@ -110,7 +110,7 @@ cargo tarpaulin -p common -p node_lib --out Lcov --features test_helpers --timeo
 
 **REQUIRES SUDO**: The simulator creates network namespaces and requires root privileges.
 
-Create example configuration files:
+Create example configuration files (not tracked in git due to .gitignore):
 ```yaml
 # simulator-example.yaml
 nodes:
@@ -143,6 +143,8 @@ node_type: Obu
 hello_history: 10
 ip: 10.0.0.2
 ```
+
+**Note**: .yaml files are ignored by .gitignore, so create these locally for testing.
 
 Run simulator:
 ```bash
