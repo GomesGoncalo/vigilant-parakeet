@@ -316,7 +316,35 @@ impl Rsu {
                     };
 
                     let routing = routing.read().unwrap();
-                    let outgoing = if let Some(target) = target {
+                    // Check if this is broadcast or multicast traffic
+                    let bcast_or_mcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
+
+                    let outgoing = if bcast_or_mcast {
+                        // For broadcast/multicast from RSU's TUN interface, send to all next hops
+                        routing
+                            .iter_next_hops()
+                            .filter(|x| x != &&devicec.mac_address())
+                            .filter_map(|x| {
+                                let dest = routing.get_route_to(Some(*x))?;
+                                Some((x, dest))
+                            })
+                            .map(|(x, y)| (x, y.mac))
+                            .unique_by(|(x, _)| *x)
+                            .map(|(_x, next_hop)| {
+                                let msg = Message::new(
+                                    devicec.mac_address(),
+                                    next_hop,
+                                    PacketType::Data(Data::Downstream(ToDownstream::new(
+                                        &source_mac,
+                                        *_x, // Use the actual target MAC for broadcast distribution
+                                        &downstream_data,
+                                    ))),
+                                );
+                                ReplyType::Wire((&msg).into())
+                            })
+                            .collect_vec()
+                    } else if let Some(target) = target {
+                        // Unicast traffic with known target
                         if let Some(hop) = routing.get_route_to(Some(target)) {
                             vec![ReplyType::Wire(
                                 (&Message::new(
