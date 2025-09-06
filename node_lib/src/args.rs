@@ -47,7 +47,7 @@ pub struct Args {
     pub ip: Option<Ipv4Addr>,
 
     /// MTU
-    #[arg(short, long, default_value_t = 1459)]
+    #[arg(short, long, default_value_t = 1472)]
     pub mtu: i32,
 
     /// Node Parameters
