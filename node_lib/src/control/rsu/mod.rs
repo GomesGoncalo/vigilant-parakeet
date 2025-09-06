@@ -133,19 +133,30 @@ impl Rsu {
                 let mut messages = Vec::with_capacity(1);
 
                 // For sending to TUN, decrypt the payload if encryption is enabled
-                if bcast_or_mcast || target.is_some_and(|x| x == self.device.mac_address()) {
-                    let tun_data = if self.args.node_params.enable_encryption {
-                        match crate::crypto::decrypt_payload(buf.data()) {
-                            Ok(decrypted) => decrypted,
-                            Err(e) => {
-                                tracing::error!("Failed to decrypt upstream payload: {}", e);
-                                return Ok(None);
-                            }
+                let decrypted_payload = if self.args.node_params.enable_encryption && buf.data().len() > 12 {
+                    let mac_headers = &buf.data()[0..12]; // Destination (6) + Source (6) MACs  
+                    let encrypted_payload = &buf.data()[12..]; // Encrypted portion
+                    
+                    match crate::crypto::decrypt_payload(encrypted_payload) {
+                        Ok(decrypted_payload_portion) => {
+                            // Reconstruct: plaintext MACs + decrypted payload
+                            let mut reconstructed = Vec::with_capacity(12 + decrypted_payload_portion.len());
+                            reconstructed.extend_from_slice(mac_headers);
+                            reconstructed.extend_from_slice(&decrypted_payload_portion);
+                            reconstructed
                         }
-                    } else {
-                        buf.data().to_vec()
-                    };
-                    messages.push(ReplyType::Tap(vec![tun_data]));
+                        Err(e) => {
+                            tracing::error!("Failed to decrypt upstream payload: {}", e);
+                            return Ok(None);
+                        }
+                    }
+                } else {
+                    // No encryption or frame too small
+                    buf.data().to_vec()
+                };
+
+                if bcast_or_mcast || target.is_some_and(|x| x == self.device.mac_address()) {
+                    messages.push(ReplyType::Tap(vec![decrypted_payload.clone()]));
                     target = None;
                 }
 
@@ -159,6 +170,28 @@ impl Rsu {
                             Some((*x, route.mac))
                         })
                         .map(|(target, next_hop)| {
+                            // For broadcast traffic, encrypt the decrypted payload individually for each recipient
+                            let downstream_data = if self.args.node_params.enable_encryption && decrypted_payload.len() > 12 {
+                                let mac_headers = &decrypted_payload[0..12]; // Destination (6) + Source (6) MACs
+                                let payload_portion = &decrypted_payload[12..]; // Payload to encrypt
+                                
+                                match crate::crypto::encrypt_payload(payload_portion) {
+                                    Ok(encrypted_payload) => {
+                                        // Reconstruct: plaintext MACs + encrypted payload
+                                        let mut reconstructed = Vec::with_capacity(12 + encrypted_payload.len());
+                                        reconstructed.extend_from_slice(mac_headers);
+                                        reconstructed.extend_from_slice(&encrypted_payload);
+                                        reconstructed
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to encrypt downstream broadcast payload: {}", e);
+                                        return ReplyType::Wire(vec![]); // Skip this recipient on encryption failure
+                                    }
+                                }
+                            } else {
+                                decrypted_payload.clone()
+                            };
+
                             ReplyType::Wire(
                                 (&Message::new(
                                     self.device.mac_address(),
@@ -166,7 +199,7 @@ impl Rsu {
                                     PacketType::Data(Data::Downstream(ToDownstream::new(
                                         buf.source(),
                                         target,
-                                        buf.data(),
+                                        &downstream_data,
                                     ))),
                                 ))
                                     .into(),
@@ -178,6 +211,28 @@ impl Rsu {
                         return Ok(None);
                     };
 
+                    // For unicast traffic, encrypt the decrypted payload for the specific recipient
+                    let downstream_data = if self.args.node_params.enable_encryption && decrypted_payload.len() > 12 {
+                        let mac_headers = &decrypted_payload[0..12]; // Destination (6) + Source (6) MACs
+                        let payload_portion = &decrypted_payload[12..]; // Payload to encrypt
+                        
+                        match crate::crypto::encrypt_payload(payload_portion) {
+                            Ok(encrypted_payload) => {
+                                // Reconstruct: plaintext MACs + encrypted payload
+                                let mut reconstructed = Vec::with_capacity(12 + encrypted_payload.len());
+                                reconstructed.extend_from_slice(mac_headers);
+                                reconstructed.extend_from_slice(&encrypted_payload);
+                                reconstructed
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to encrypt downstream unicast payload: {}", e);
+                                return Ok(None);
+                            }
+                        }
+                    } else {
+                        decrypted_payload.clone()
+                    };
+
                     vec![ReplyType::Wire(
                         (&Message::new(
                             self.device.mac_address(),
@@ -185,7 +240,7 @@ impl Rsu {
                             PacketType::Data(Data::Downstream(ToDownstream::new(
                                 buf.source(),
                                 target,
-                                buf.data(),
+                                &downstream_data,
                             ))),
                         ))
                             .into(),
@@ -265,10 +320,19 @@ impl Rsu {
                     let source_mac = devicec.mac_address().bytes();
                     cache.store_mac(from, devicec.mac_address());
 
-                    // Encrypt all payload data if encryption is enabled
-                    let downstream_data = if enable_encryption {
-                        match crate::crypto::encrypt_payload(data) {
-                            Ok(encrypted) => encrypted,
+                    // Encrypt payload data if encryption is enabled (preserve MAC headers)
+                    let downstream_data = if enable_encryption && data.len() > 12 {
+                        let mac_headers = &data[0..12]; // Destination (6) + Source (6) MACs
+                        let payload_portion = &data[12..]; // Payload to encrypt
+                        
+                        match crate::crypto::encrypt_payload(payload_portion) {
+                            Ok(encrypted_payload) => {
+                                // Reconstruct: plaintext MACs + encrypted payload
+                                let mut reconstructed = Vec::with_capacity(12 + encrypted_payload.len());
+                                reconstructed.extend_from_slice(mac_headers);
+                                reconstructed.extend_from_slice(&encrypted_payload);
+                                reconstructed
+                            }
                             Err(e) => {
                                 tracing::error!("Failed to encrypt downstream payload: {}", e);
                                 return Ok(None);
