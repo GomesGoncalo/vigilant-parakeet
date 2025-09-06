@@ -152,7 +152,7 @@ impl Obu {
 
                         // Encrypt entire frame when encryption is enabled
                         let payload_data = if enable_encryption {
-                            match crate::crypto::encrypt_payload(&y) {
+                            match crate::crypto::encrypt_payload(y) {
                                 Ok(encrypted_data) => encrypted_data,
                                 Err(e) => {
                                     tracing::error!("Failed to encrypt entire frame: {}", e);
