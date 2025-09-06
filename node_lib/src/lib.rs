@@ -1,6 +1,7 @@
 pub mod args;
 pub use args::Args;
 pub mod control;
+pub mod crypto;
 mod data;
 pub mod messages;
 pub mod metrics;
@@ -140,6 +141,7 @@ mod tests {
                 hello_history: 10,
                 hello_periodicity: Some(100),
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let args_obu = Args {
@@ -152,6 +154,7 @@ mod tests {
                 hello_history: 10,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
 
@@ -176,6 +179,7 @@ mod tests {
                 hello_history: 1,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let res = crate::create(args);

@@ -6,6 +6,17 @@ use std::os::unix::io::FromRawFd;
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 
+/// Create NodeParameters with sensible defaults for tests.
+pub fn mk_node_params(node_type: NodeType, hello_periodicity: Option<u32>) -> NodeParameters {
+    NodeParameters {
+        node_type,
+        hello_history: 10,
+        hello_periodicity,
+        cached_candidates: 3,
+        enable_encryption: false,
+    }
+}
+
 /// Create a Device from a raw fd and mac address. Intended for tests only.
 pub fn mk_device_from_fd(mac: MacAddress, fd: i32) -> Device {
     Device::from_asyncfd_for_bench(
@@ -21,12 +32,7 @@ pub fn mk_args(node_type: NodeType, hello_periodicity: Option<u32>) -> Args {
         tap_name: None,
         ip: None,
         mtu: 1500,
-        node_params: NodeParameters {
-            node_type,
-            hello_history: 10,
-            hello_periodicity,
-            cached_candidates: 3,
-        },
+        node_params: mk_node_params(node_type, hello_periodicity),
     }
 }
 

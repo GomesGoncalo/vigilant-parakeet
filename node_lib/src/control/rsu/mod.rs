@@ -53,6 +53,11 @@ impl Rsu {
         self.routing.read().unwrap().get_route_to(Some(mac))
     }
 
+    /// Get count of next hops in routing table. Used for testing.
+    pub fn next_hop_count(&self) -> usize {
+        self.routing.read().unwrap().iter_next_hops().count()
+    }
+
     fn wire_traffic_task(rsu: Arc<Self>) -> Result<()> {
         let device = rsu.device.clone();
         let tun = rsu.tun.clone();
@@ -109,30 +114,43 @@ impl Rsu {
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
         match msg.get_packet_type() {
             PacketType::Data(Data::Upstream(buf)) => {
-                let to: [u8; 6] = buf
-                    .data()
+                // First decrypt the entire frame if encryption is enabled, then extract MAC addresses
+                let decrypted_payload = if self.args.node_params.enable_encryption {
+                    match crate::crypto::decrypt_payload(buf.data()) {
+                        Ok(decrypted_data) => decrypted_data,
+                        Err(e) => {
+                            tracing::error!("Failed to decrypt upstream frame: {}", e);
+                            return Ok(None);
+                        }
+                    }
+                } else {
+                    buf.data().to_vec()
+                };
+
+                // Extract MAC addresses from decrypted data
+                let to: [u8; 6] = decrypted_payload
                     .get(0..6)
-                    .ok_or_else(|| anyhow!("error"))?
+                    .ok_or_else(|| anyhow!("decrypted frame too short for destination MAC"))?
                     .try_into()?;
                 let to: MacAddress = to.into();
-                let from: [u8; 6] = buf
-                    .data()
+                let from: [u8; 6] = decrypted_payload
                     .get(6..12)
-                    .ok_or_else(|| anyhow!("error"))?
+                    .ok_or_else(|| anyhow!("decrypted frame too short for source MAC"))?
                     .try_into()?;
                 let from: MacAddress = from.into();
                 let source: [u8; 6] = buf
                     .source()
                     .get(0..6)
-                    .ok_or_else(|| anyhow!("error"))?
+                    .ok_or_else(|| anyhow!("message source too short"))?
                     .try_into()?;
                 let source: MacAddress = source.into();
                 self.cache.store_mac(from, source);
                 let bcast_or_mcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
                 let mut target = self.cache.get(to);
                 let mut messages = Vec::with_capacity(1);
+
                 if bcast_or_mcast || target.is_some_and(|x| x == self.device.mac_address()) {
-                    messages.push(ReplyType::Tap(vec![buf.data().to_vec()]));
+                    messages.push(ReplyType::Tap(vec![decrypted_payload.clone()]));
                     target = None;
                 }
 
@@ -146,6 +164,22 @@ impl Rsu {
                             Some((*x, route.mac))
                         })
                         .map(|(target, next_hop)| {
+                            // For broadcast traffic, encrypt the entire decrypted frame individually for each recipient
+                            let downstream_data = if self.args.node_params.enable_encryption {
+                                match crate::crypto::encrypt_payload(&decrypted_payload) {
+                                    Ok(encrypted_data) => encrypted_data,
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to encrypt downstream broadcast frame: {}",
+                                            e
+                                        );
+                                        return ReplyType::Wire(vec![]); // Skip this recipient on encryption failure
+                                    }
+                                }
+                            } else {
+                                decrypted_payload.clone()
+                            };
+
                             ReplyType::Wire(
                                 (&Message::new(
                                     self.device.mac_address(),
@@ -153,7 +187,7 @@ impl Rsu {
                                     PacketType::Data(Data::Downstream(ToDownstream::new(
                                         buf.source(),
                                         target,
-                                        buf.data(),
+                                        &downstream_data,
                                     ))),
                                 ))
                                     .into(),
@@ -165,6 +199,22 @@ impl Rsu {
                         return Ok(None);
                     };
 
+                    // For unicast traffic, encrypt the entire decrypted frame for the specific recipient
+                    let downstream_data = if self.args.node_params.enable_encryption {
+                        match crate::crypto::encrypt_payload(&decrypted_payload) {
+                            Ok(encrypted_data) => encrypted_data,
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to encrypt downstream unicast frame: {}",
+                                    e
+                                );
+                                return Ok(None);
+                            }
+                        }
+                    } else {
+                        decrypted_payload.clone()
+                    };
+
                     vec![ReplyType::Wire(
                         (&Message::new(
                             self.device.mac_address(),
@@ -172,7 +222,7 @@ impl Rsu {
                             PacketType::Data(Data::Downstream(ToDownstream::new(
                                 buf.source(),
                                 target,
-                                buf.data(),
+                                &downstream_data,
                             ))),
                         ))
                             .into(),
@@ -236,6 +286,7 @@ impl Rsu {
         let device = self.device.clone();
         let cache = self.cache.clone();
         let routing = self.routing.clone();
+        let enable_encryption = self.args.node_params.enable_encryption;
         tokio::task::spawn(async move {
             loop {
                 let devicec = device.clone();
@@ -250,6 +301,20 @@ impl Rsu {
                     let from: MacAddress = from.into();
                     let source_mac = devicec.mac_address().bytes();
                     cache.store_mac(from, devicec.mac_address());
+
+                    // Encrypt entire frame if encryption is enabled
+                    let downstream_data = if enable_encryption {
+                        match crate::crypto::encrypt_payload(data) {
+                            Ok(encrypted_data) => encrypted_data,
+                            Err(e) => {
+                                tracing::error!("Failed to encrypt downstream frame: {}", e);
+                                return Ok(None);
+                            }
+                        }
+                    } else {
+                        data.to_vec()
+                    };
+
                     let routing = routing.read().unwrap();
                     let outgoing = if let Some(target) = target {
                         if let Some(hop) = routing.get_route_to(Some(target)) {
@@ -260,7 +325,7 @@ impl Rsu {
                                     PacketType::Data(Data::Downstream(ToDownstream::new(
                                         &source_mac,
                                         target,
-                                        data,
+                                        &downstream_data,
                                     ))),
                                 ))
                                     .into(),
@@ -276,7 +341,7 @@ impl Rsu {
                                         PacketType::Data(Data::Downstream(ToDownstream::new(
                                             &source_mac,
                                             target,
-                                            data,
+                                            &downstream_data,
                                         ))),
                                     ))
                                         .into(),
@@ -293,14 +358,15 @@ impl Rsu {
                                     .map(|(x, y)| (x, y.mac))
                                     .unique_by(|(x, _)| *x)
                                     .map(|(_x, next_hop)| {
-                                        let msg =
-                                            Message::new(
-                                                devicec.mac_address(),
-                                                next_hop,
-                                                PacketType::Data(Data::Downstream(
-                                                    ToDownstream::new(&source_mac, target, data),
-                                                )),
-                                            );
+                                        let msg = Message::new(
+                                            devicec.mac_address(),
+                                            next_hop,
+                                            PacketType::Data(Data::Downstream(ToDownstream::new(
+                                                &source_mac,
+                                                target,
+                                                &downstream_data,
+                                            ))),
+                                        );
                                         ReplyType::Wire((&msg).into())
                                     })
                                     .collect_vec()
@@ -325,7 +391,7 @@ impl Rsu {
                                     PacketType::Data(Data::Downstream(ToDownstream::new(
                                         &source_mac,
                                         to,
-                                        data,
+                                        &downstream_data,
                                     ))),
                                 );
                                 ReplyType::Wire((&msg).into())
@@ -477,6 +543,7 @@ mod rsu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -519,6 +586,7 @@ mod rsu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -559,6 +627,7 @@ mod rsu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -608,6 +677,7 @@ mod rsu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(

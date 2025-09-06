@@ -134,6 +134,7 @@ impl Obu {
         let device = self.device.clone();
         let tun = self.tun.clone();
         let routing_handle = routing.clone();
+        let enable_encryption = self.args.node_params.enable_encryption;
         tokio::task::spawn(async move {
             loop {
                 let devicec = device.clone();
@@ -148,13 +149,27 @@ impl Obu {
                         else {
                             return Ok(None);
                         };
+
+                        // Encrypt entire frame when encryption is enabled
+                        let payload_data = if enable_encryption {
+                            match crate::crypto::encrypt_payload(y) {
+                                Ok(encrypted_data) => encrypted_data,
+                                Err(e) => {
+                                    tracing::error!("Failed to encrypt entire frame: {}", e);
+                                    return Ok(None);
+                                }
+                            }
+                        } else {
+                            y.to_vec()
+                        };
+
                         let outgoing = vec![ReplyType::Wire(
                             (&Message::new(
                                 devicec.mac_address(),
                                 upstream.mac,
                                 PacketType::Data(Data::Upstream(ToUpstream::new(
                                     devicec.mac_address(),
-                                    y,
+                                    &payload_data,
                                 ))),
                             ))
                                 .into(),
@@ -205,7 +220,19 @@ impl Obu {
                     .try_into()?;
                 let destination: MacAddress = destination.into();
                 if destination == self.device.mac_address() {
-                    return Ok(Some(vec![ReplyType::Tap(vec![buf.data().to_vec()])]));
+                    // This downstream packet is for us - decrypt entire frame if encryption is enabled
+                    let payload_data = if self.args.node_params.enable_encryption {
+                        match crate::crypto::decrypt_payload(buf.data()) {
+                            Ok(decrypted_data) => decrypted_data,
+                            Err(e) => {
+                                tracing::error!("Failed to decrypt downstream frame: {}", e);
+                                return Ok(None);
+                            }
+                        }
+                    } else {
+                        buf.data().to_vec()
+                    };
+                    return Ok(Some(vec![ReplyType::Tap(vec![payload_data])]));
                 }
                 let target = destination;
                 let routing = self.routing.read().unwrap();
@@ -330,6 +357,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
@@ -359,6 +387,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
@@ -400,6 +429,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
@@ -453,6 +483,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
@@ -491,6 +522,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
@@ -544,6 +576,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
@@ -599,6 +632,7 @@ mod obu_tests {
                 hello_history: 2,
                 hello_periodicity: None,
                 cached_candidates: 3,
+                enable_encryption: false,
             },
         };
         let boot = Instant::now();
