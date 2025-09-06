@@ -11,23 +11,8 @@ const FIXED_KEY: &[u8; 32] = b"vigilant_parakeet_fixed_key_256!";
 /// Returns encrypted data with nonce prepended (12 bytes nonce + ciphertext).
 ///
 /// Note: Encryption adds 28 bytes of overhead (12-byte nonce + 16-byte auth tag).
-/// To ensure encrypted packets don't exceed MTU, input should be limited to MTU - 28 bytes.
+/// MTU is set to 1472 bytes at the interface level to account for this overhead.
 pub fn encrypt_payload(plaintext: &[u8]) -> Result<Vec<u8>> {
-    // AES-GCM adds 28 bytes overhead: 12-byte nonce + 16-byte authentication tag
-    const ENCRYPTION_OVERHEAD: usize = 12 + 16;
-    const MAX_MTU: usize = 1500;
-    const MAX_PLAINTEXT_SIZE: usize = MAX_MTU - ENCRYPTION_OVERHEAD;
-
-    if plaintext.len() > MAX_PLAINTEXT_SIZE {
-        return Err(anyhow!(
-            "Plaintext too large for encryption: {} bytes exceeds maximum {} bytes (MTU {} - overhead {})",
-            plaintext.len(),
-            MAX_PLAINTEXT_SIZE,
-            MAX_MTU,
-            ENCRYPTION_OVERHEAD
-        ));
-    }
-
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(FIXED_KEY));
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
@@ -99,30 +84,25 @@ mod tests {
     }
 
     #[test]
-    fn encrypt_large_payload_fails() {
-        // Create a payload that would exceed MTU after encryption
-        // Max plaintext size is 1500 - 28 = 1472 bytes
-        let large_plaintext = vec![0u8; 1473]; // 1 byte over the limit
-        let result = encrypt_payload(&large_plaintext);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Plaintext too large"));
-    }
-
-    #[test]
-    fn encrypt_max_size_payload_succeeds() {
-        // Create a payload at the maximum allowed size
-        // Max plaintext size is 1500 - 28 = 1472 bytes
-        let max_plaintext = vec![0u8; 1472];
-        let encrypted = encrypt_payload(&max_plaintext).expect("encryption should succeed");
-
-        // Verify the encrypted size doesn't exceed MTU
-        assert!(encrypted.len() <= 1500);
+    fn encrypt_large_payload_succeeds() {
+        // Test that we can encrypt large payloads now that interface MTU handles fragmentation
+        let large_plaintext = vec![0u8; 2000]; // Larger than previous 1472 limit
+        let encrypted = encrypt_payload(&large_plaintext).expect("encryption should succeed");
 
         // Verify round-trip decryption works
         let decrypted = decrypt_payload(&encrypted).expect("decryption should succeed");
-        assert_eq!(max_plaintext, decrypted);
+        assert_eq!(large_plaintext, decrypted);
+    }
+
+    #[test]
+    fn encrypt_payload_adds_overhead() {
+        // Verify encryption adds exactly 28 bytes of overhead (12 nonce + 16 tag)
+        let plaintext = vec![0u8; 100];
+        let encrypted = encrypt_payload(&plaintext).expect("encryption should succeed");
+        assert_eq!(encrypted.len(), plaintext.len() + 28);
+
+        // Verify round-trip works
+        let decrypted = decrypt_payload(&encrypted).expect("decryption should succeed");
+        assert_eq!(plaintext, decrypted);
     }
 }

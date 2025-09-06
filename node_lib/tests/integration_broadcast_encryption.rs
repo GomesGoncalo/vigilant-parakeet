@@ -12,10 +12,13 @@ use std::sync::{
 };
 use std::time::Duration;
 
+// Type alias to simplify complex type
+type CapturedPackets = Arc<Mutex<Vec<(usize, Vec<u8>)>>>;
+
 /// Captures broadcast traffic for testing
 struct BroadcastTrafficChecker {
     rsu_downstream_count: Arc<AtomicUsize>,
-    captured_packets: Arc<Mutex<Vec<(usize, Vec<u8>)>>>, // (from_idx, packet_data)
+    captured_packets: CapturedPackets, // (from_idx, packet_data)
 }
 
 impl HubCheck for BroadcastTrafficChecker {
@@ -321,14 +324,22 @@ async fn test_rsu_broadcast_individual_encryption() {
     );
 
     // Capture the downstream packets to verify they're individually encrypted
-    let captured = captured_packets.lock().unwrap();
-    if captured.len() >= 2 {
-        // With proper encryption, each downstream packet should be different
-        // due to different nonces in AES-GCM
-        let packet1_data = &captured[0].1;
-        let packet2_data = &captured[1].1;
+    let (packet1_data, packet2_data) = {
+        let captured = captured_packets.lock().unwrap();
+        if captured.len() >= 2 {
+            // With proper encryption, each downstream packet should be different
+            // due to different nonces in AES-GCM
+            let packet1_data = captured[0].1.clone();
+            let packet2_data = captured[1].1.clone();
+            (Some(packet1_data), Some(packet2_data))
+        } else {
+            (None, None)
+        }
+    }; // Guard is dropped here
+
+    if let (Some(packet1), Some(packet2)) = (packet1_data, packet2_data) {
         assert_ne!(
-            packet1_data, packet2_data,
+            packet1, packet2,
             "Individual downstream packets should be different due to encryption"
         );
     }
