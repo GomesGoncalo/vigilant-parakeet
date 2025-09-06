@@ -53,6 +53,11 @@ impl Rsu {
         self.routing.read().unwrap().get_route_to(Some(mac))
     }
 
+    /// Get count of next hops in routing table. Used for testing.
+    pub fn next_hop_count(&self) -> usize {
+        self.routing.read().unwrap().iter_next_hops().count()
+    }
+
     fn wire_traffic_task(rsu: Arc<Self>) -> Result<()> {
         let device = rsu.device.clone();
         let tun = rsu.tun.clone();
