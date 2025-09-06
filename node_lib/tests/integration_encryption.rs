@@ -364,14 +364,15 @@ async fn test_ping_encryption_prevents_inspection_but_rsu_receives_correctly() {
     let dev_obu1 = mk_device_from_fd(mac_obu1, node_fds[1]);
     let dev_obu2 = mk_device_from_fd(mac_obu2, node_fds[2]);
 
-    // Setup hub with low latency
-    let delays: Vec<Vec<u64>> = vec![vec![0, 2, 4], vec![2, 0, 2], vec![4, 2, 0]];
-
     // Create a ping packet
     let ping_payload = b"This is a ping payload that should be encrypted";
     let src_ip = [192, 168, 1, 10]; // OBU1 IP
     let dst_ip = [192, 168, 1, 1]; // RSU IP
     let ping_packet = create_ping_packet(src_ip, dst_ip, ping_payload);
+
+    // Setup hub with delays that force OBU1 to route through OBU2
+    // Make direct RSU->OBU1 path high latency (50ms) so OBU1 prefers two-hop via OBU2 (2+2=4ms)
+    let delays: Vec<Vec<u64>> = vec![vec![0, 50, 2], vec![50, 0, 2], vec![2, 2, 0]];
 
     // Create a custom checker to inspect packets going through the intermediate OBU2
     let ping_content_found = Arc::new(AtomicBool::new(false));
@@ -420,21 +421,28 @@ async fn test_ping_encryption_prevents_inspection_but_rsu_receives_correctly() {
 
     // Create nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();
-    let _obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1)).unwrap();
-    let obu2 = Obu::new(args_obu2, Arc::new(tun_obu2), Arc::new(dev_obu2)).unwrap();
+    let obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1)).unwrap();
+    let _obu2 = Obu::new(args_obu2, Arc::new(tun_obu2), Arc::new(dev_obu2)).unwrap();
 
-    // Wait for topology discovery
+    // Wait for topology discovery - OBU1 should route through OBU2 to reach RSU
     tokio::time::advance(Duration::from_millis(500)).await;
 
-    // Wait for OBU1 to discover upstream through OBU2
+    // Wait for OBU1 to discover upstream route through OBU2
     let result = await_condition_with_time_advance(
         Duration::from_millis(10),
-        || obu2.cached_upstream_mac(),
+        || {
+            if let Some(mac) = obu1.cached_upstream_mac() {
+                if mac == mac_obu2 {
+                    return Some(mac);
+                }
+            }
+            None
+        },
         Duration::from_secs(5),
     )
     .await;
 
-    assert!(result.is_ok(), "OBU2 should discover upstream");
+    assert!(result.is_ok(), "OBU1 should discover upstream through OBU2");
 
     // Create a frame with MAC headers to send the ping
     let mut frame = Vec::new();
@@ -458,7 +466,7 @@ async fn test_ping_encryption_prevents_inspection_but_rsu_receives_correctly() {
     );
 
     // Now verify that RSU received the ping correctly decrypted
-    // The RSU should forward the decrypted packet to its TUN interface
+    // The RSU should forward the decrypted payload to its TUN interface (without MAC headers)
     let mut rsu_recv_buf = vec![0u8; 1500];
     let received = node_lib::test_helpers::util::poll_tun_recv_with_timeout_mocked(
         &tun_rsu_peer,
@@ -475,10 +483,10 @@ async fn test_ping_encryption_prevents_inspection_but_rsu_receives_correctly() {
     let received_size = received.unwrap();
     let received_data = &rsu_recv_buf[..received_size];
 
-    // Verify the received packet matches the original ping packet
+    // The RSU forwards the full frame (including MAC headers) to TUN after decryption
     assert_eq!(
         received_data, &frame,
-        "RSU should receive the exact same ping packet that was sent (decrypted)"
+        "RSU should receive the decrypted frame (including MAC headers)"
     );
 
     // Additionally verify that the ping payload is present in what RSU received
