@@ -150,16 +150,27 @@ impl Obu {
                             return Ok(None);
                         };
 
-                        // Encrypt payload if encryption is enabled
-                        let payload_data = if enable_encryption {
-                            match crate::crypto::encrypt_payload(y) {
-                                Ok(encrypted) => encrypted,
+                        // Encrypt payload if encryption is enabled and data is application protocol
+                        let payload_data = if enable_encryption
+                            && crate::crypto::is_application_protocol_data(y)
+                        {
+                            // Only encrypt the payload part (bytes 12+) for application protocol data
+                            let payload_part = &y[12..];
+                            match crate::crypto::encrypt_payload(payload_part) {
+                                Ok(encrypted) => {
+                                    // Reconstruct: dest_mac + src_mac + encrypted_payload
+                                    let mut result = Vec::with_capacity(12 + encrypted.len());
+                                    result.extend_from_slice(&y[..12]); // Keep dest+src MACs unencrypted
+                                    result.extend_from_slice(&encrypted); // Encrypted payload
+                                    result
+                                }
                                 Err(e) => {
                                     tracing::error!("Failed to encrypt payload: {}", e);
                                     return Ok(None);
                                 }
                             }
                         } else {
+                            // Pass through unencrypted (IP packets, non-application data, or encryption disabled)
                             y.to_vec()
                         };
 
@@ -220,22 +231,27 @@ impl Obu {
                     .try_into()?;
                 let destination: MacAddress = destination.into();
                 if destination == self.device.mac_address() {
-                    // This downstream packet is for us - decrypt if encryption is enabled
-                    let payload_data = if self.args.node_params.enable_encryption {
-                        // Only attempt decryption if the data appears to be encrypted
-                        if crate::crypto::is_likely_encrypted(buf.data()) {
-                            match crate::crypto::decrypt_payload(buf.data()) {
-                                Ok(decrypted) => decrypted,
-                                Err(e) => {
-                                    tracing::error!("Failed to decrypt downstream payload: {}", e);
-                                    return Ok(None);
-                                }
+                    // This downstream packet is for us - decrypt if encryption is enabled and data is application protocol
+                    let payload_data = if self.args.node_params.enable_encryption
+                        && crate::crypto::is_application_protocol_data(buf.data())
+                    {
+                        // Extract the payload part (after dest+src MACs) and decrypt it
+                        let encrypted_payload = &buf.data()[12..];
+                        match crate::crypto::decrypt_payload(encrypted_payload) {
+                            Ok(decrypted) => {
+                                // Reconstruct: dest_mac + src_mac + decrypted_payload
+                                let mut result = Vec::with_capacity(12 + decrypted.len());
+                                result.extend_from_slice(&buf.data()[..12]); // Keep dest+src MACs
+                                result.extend_from_slice(&decrypted); // Decrypted payload
+                                result
                             }
-                        } else {
-                            // Data doesn't appear encrypted, pass through as-is
-                            buf.data().to_vec()
+                            Err(e) => {
+                                tracing::error!("Failed to decrypt downstream payload: {}", e);
+                                return Ok(None);
+                            }
                         }
                     } else {
+                        // Pass through unencrypted (IP packets, non-application data, or encryption disabled)
                         buf.data().to_vec()
                     };
                     return Ok(Some(vec![ReplyType::Tap(vec![payload_data])]));
