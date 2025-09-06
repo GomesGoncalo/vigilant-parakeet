@@ -132,29 +132,17 @@ impl Rsu {
                 let mut target = self.cache.get(to);
                 let mut messages = Vec::with_capacity(1);
 
-                // For sending to TUN, decrypt the payload if encryption is enabled and data is application protocol
+                // For sending to TUN, decrypt the payload if encryption is enabled
                 if bcast_or_mcast || target.is_some_and(|x| x == self.device.mac_address()) {
-                    let tun_data = if self.args.node_params.enable_encryption
-                        && crate::crypto::is_application_protocol_data(buf.data())
-                    {
-                        // Extract the payload part (after to+from MACs) and decrypt it
-                        let encrypted_payload = buf.data().get(12..).unwrap_or(&[]);
-                        match crate::crypto::decrypt_payload(encrypted_payload) {
-                            Ok(decrypted) => {
-                                // Reconstruct: to + from + decrypted_payload
-                                let mut result = Vec::with_capacity(12 + decrypted.len());
-                                result.extend_from_slice(&to.bytes());
-                                result.extend_from_slice(&from.bytes());
-                                result.extend_from_slice(&decrypted);
-                                result
-                            }
+                    let tun_data = if self.args.node_params.enable_encryption {
+                        match crate::crypto::decrypt_payload(buf.data()) {
+                            Ok(decrypted) => decrypted,
                             Err(e) => {
                                 tracing::error!("Failed to decrypt upstream payload: {}", e);
                                 return Ok(None);
                             }
                         }
                     } else {
-                        // Pass through unencrypted (IP packets, non-application data, or encryption disabled)
                         buf.data().to_vec()
                     };
                     messages.push(ReplyType::Tap(vec![tun_data]));
@@ -277,29 +265,18 @@ impl Rsu {
                     let source_mac = devicec.mac_address().bytes();
                     cache.store_mac(from, devicec.mac_address());
 
-                    // Encrypt payload if encryption is enabled and data is application protocol
-                    let downstream_data =
-                        if enable_encryption && crate::crypto::is_application_protocol_data(data) {
-                            // Only encrypt the payload part (bytes 12+) for application protocol data
-                            let payload = data.get(12..).unwrap_or(&[]);
-                            match crate::crypto::encrypt_payload(payload) {
-                                Ok(encrypted) => {
-                                    // Reconstruct: to + from + encrypted_payload
-                                    let mut result = Vec::with_capacity(12 + encrypted.len());
-                                    result.extend_from_slice(&to.bytes());
-                                    result.extend_from_slice(&from.bytes());
-                                    result.extend_from_slice(&encrypted);
-                                    result
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to encrypt downstream payload: {}", e);
-                                    return Ok(None);
-                                }
+                    // Encrypt all payload data if encryption is enabled
+                    let downstream_data = if enable_encryption {
+                        match crate::crypto::encrypt_payload(data) {
+                            Ok(encrypted) => encrypted,
+                            Err(e) => {
+                                tracing::error!("Failed to encrypt downstream payload: {}", e);
+                                return Ok(None);
                             }
-                        } else {
-                            // Pass through unencrypted (IP packets, non-application data, or encryption disabled)
-                            data.to_vec()
-                        };
+                        }
+                    } else {
+                        data.to_vec()
+                    };
 
                     let routing = routing.read().unwrap();
                     let outgoing = if let Some(target) = target {
