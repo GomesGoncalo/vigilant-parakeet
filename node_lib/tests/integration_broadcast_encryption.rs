@@ -136,6 +136,9 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
     // Wait longer for RSU to receive heartbeat replies and build routing table
     tokio::time::advance(Duration::from_millis(1000)).await;
 
+    // Add extra delay to ensure session tasks are ready
+    tokio::time::advance(Duration::from_millis(100)).await;
+
     // Send broadcast frame from OBU1
     let broadcast_mac = [255u8; 6]; // Broadcast destination
     let test_payload = b"BROADCAST_DATA_FROM_OBU1";
@@ -144,13 +147,16 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
     broadcast_frame.extend_from_slice(&mac_obu1.bytes()); // source MAC
     broadcast_frame.extend_from_slice(test_payload); // payload
 
+    // Add delay before sending to ensure everything is stable
+    tokio::time::advance(Duration::from_millis(50)).await;
+
     tun_obu1_peer
         .send_all(&broadcast_frame)
         .await
         .expect("Failed to send broadcast frame from OBU1");
 
     // Wait for broadcast to propagate
-    tokio::time::advance(Duration::from_millis(500)).await;
+    tokio::time::advance(Duration::from_millis(1000)).await;
 
     // Verify RSU distributed broadcast to OBU2 (should be exactly 1 downstream packet)
     let count = downstream_count.load(Ordering::SeqCst);

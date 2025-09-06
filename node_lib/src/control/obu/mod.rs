@@ -150,26 +150,16 @@ impl Obu {
                             return Ok(None);
                         };
 
-                        // Extract MAC addresses (first 12 bytes) and payload (remaining bytes)
-                        let payload_data = if enable_encryption && y.len() > 12 {
-                            let mac_headers = &y[0..12]; // Destination (6) + Source (6) MACs
-                            let payload_portion = &y[12..]; // Everything after MAC headers
-                            
-                            match crate::crypto::encrypt_payload(payload_portion) {
-                                Ok(encrypted_payload) => {
-                                    // Reconstruct: plaintext MACs + encrypted payload
-                                    let mut reconstructed = Vec::with_capacity(12 + encrypted_payload.len());
-                                    reconstructed.extend_from_slice(mac_headers);
-                                    reconstructed.extend_from_slice(&encrypted_payload);
-                                    reconstructed
-                                }
+                        // Encrypt entire frame when encryption is enabled
+                        let payload_data = if enable_encryption {
+                            match crate::crypto::encrypt_payload(&y) {
+                                Ok(encrypted_data) => encrypted_data,
                                 Err(e) => {
-                                    tracing::error!("Failed to encrypt payload: {}", e);
+                                    tracing::error!("Failed to encrypt entire frame: {}", e);
                                     return Ok(None);
                                 }
                             }
                         } else {
-                            // No encryption or frame too small to have MAC headers
                             y.to_vec()
                         };
 
@@ -230,21 +220,12 @@ impl Obu {
                     .try_into()?;
                 let destination: MacAddress = destination.into();
                 if destination == self.device.mac_address() {
-                    // This downstream packet is for us - decrypt if encryption is enabled
-                    let payload_data = if self.args.node_params.enable_encryption && buf.data().len() > 12 {
-                        let mac_headers = &buf.data()[0..12]; // Destination (6) + Source (6) MACs
-                        let encrypted_payload = &buf.data()[12..]; // Encrypted portion
-                        
-                        match crate::crypto::decrypt_payload(encrypted_payload) {
-                            Ok(decrypted_payload_portion) => {
-                                // Reconstruct: plaintext MACs + decrypted payload
-                                let mut reconstructed = Vec::with_capacity(12 + decrypted_payload_portion.len());
-                                reconstructed.extend_from_slice(mac_headers);
-                                reconstructed.extend_from_slice(&decrypted_payload_portion);
-                                reconstructed
-                            }
+                    // This downstream packet is for us - decrypt entire frame if encryption is enabled
+                    let payload_data = if self.args.node_params.enable_encryption {
+                        match crate::crypto::decrypt_payload(buf.data()) {
+                            Ok(decrypted_data) => decrypted_data,
                             Err(e) => {
-                                tracing::error!("Failed to decrypt downstream payload: {}", e);
+                                tracing::error!("Failed to decrypt downstream frame: {}", e);
                                 return Ok(None);
                             }
                         }
