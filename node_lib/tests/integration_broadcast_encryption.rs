@@ -214,9 +214,7 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
 
 /// Test RSU broadcast traffic is sent individually and encrypted to each node
 /// This addresses the second part of the user's request
-/// NOTE: Currently disabled due to decryption timing issues in test infrastructure
 #[tokio::test]
-#[ignore]
 async fn test_rsu_broadcast_individual_encryption() {
     node_lib::init_test_tracing();
     tokio::time::pause();
