@@ -164,7 +164,10 @@ impl Rsu {
                                 match crate::crypto::encrypt_payload(&decrypted_payload) {
                                     Ok(encrypted_data) => encrypted_data,
                                     Err(e) => {
-                                        tracing::error!("Failed to encrypt downstream broadcast frame: {}", e);
+                                        tracing::error!(
+                                            "Failed to encrypt downstream broadcast frame: {}",
+                                            e
+                                        );
                                         return ReplyType::Wire(vec![]); // Skip this recipient on encryption failure
                                     }
                                 }
@@ -196,7 +199,10 @@ impl Rsu {
                         match crate::crypto::encrypt_payload(&decrypted_payload) {
                             Ok(encrypted_data) => encrypted_data,
                             Err(e) => {
-                                tracing::error!("Failed to encrypt downstream unicast frame: {}", e);
+                                tracing::error!(
+                                    "Failed to encrypt downstream unicast frame: {}",
+                                    e
+                                );
                                 return Ok(None);
                             }
                         }

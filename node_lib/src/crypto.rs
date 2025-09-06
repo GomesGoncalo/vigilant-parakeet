@@ -9,7 +9,25 @@ const FIXED_KEY: &[u8; 32] = b"vigilant_parakeet_fixed_key_256!";
 
 /// Encrypt plaintext using AES-256-GCM with a random nonce.
 /// Returns encrypted data with nonce prepended (12 bytes nonce + ciphertext).
+///
+/// Note: Encryption adds 28 bytes of overhead (12-byte nonce + 16-byte auth tag).
+/// To ensure encrypted packets don't exceed MTU, input should be limited to MTU - 28 bytes.
 pub fn encrypt_payload(plaintext: &[u8]) -> Result<Vec<u8>> {
+    // AES-GCM adds 28 bytes overhead: 12-byte nonce + 16-byte authentication tag
+    const ENCRYPTION_OVERHEAD: usize = 12 + 16;
+    const MAX_MTU: usize = 1500;
+    const MAX_PLAINTEXT_SIZE: usize = MAX_MTU - ENCRYPTION_OVERHEAD;
+
+    if plaintext.len() > MAX_PLAINTEXT_SIZE {
+        return Err(anyhow!(
+            "Plaintext too large for encryption: {} bytes exceeds maximum {} bytes (MTU {} - overhead {})",
+            plaintext.len(),
+            MAX_PLAINTEXT_SIZE,
+            MAX_MTU,
+            ENCRYPTION_OVERHEAD
+        ));
+    }
+
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(FIXED_KEY));
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
@@ -78,5 +96,33 @@ mod tests {
         corrupted[15] ^= 0x01; // Flip a bit in the ciphertext
 
         assert!(decrypt_payload(&corrupted).is_err());
+    }
+
+    #[test]
+    fn encrypt_large_payload_fails() {
+        // Create a payload that would exceed MTU after encryption
+        // Max plaintext size is 1500 - 28 = 1472 bytes
+        let large_plaintext = vec![0u8; 1473]; // 1 byte over the limit
+        let result = encrypt_payload(&large_plaintext);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Plaintext too large"));
+    }
+
+    #[test]
+    fn encrypt_max_size_payload_succeeds() {
+        // Create a payload at the maximum allowed size
+        // Max plaintext size is 1500 - 28 = 1472 bytes
+        let max_plaintext = vec![0u8; 1472];
+        let encrypted = encrypt_payload(&max_plaintext).expect("encryption should succeed");
+
+        // Verify the encrypted size doesn't exceed MTU
+        assert!(encrypted.len() <= 1500);
+
+        // Verify round-trip decryption works
+        let decrypted = decrypt_payload(&encrypted).expect("decryption should succeed");
+        assert_eq!(max_plaintext, decrypted);
     }
 }
