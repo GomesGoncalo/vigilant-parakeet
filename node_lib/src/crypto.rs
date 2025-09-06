@@ -11,7 +11,7 @@ const FIXED_KEY: &[u8; 32] = b"vigilant_parakeet_fixed_key_256!";
 /// Returns encrypted data with nonce prepended (12 bytes nonce + ciphertext).
 ///
 /// Note: Encryption adds 28 bytes of overhead (12-byte nonce + 16-byte auth tag).
-/// MTU is set to 1472 bytes at the interface level to account for this overhead.
+/// MTU is set to 1436 bytes at the interface level to account for this overhead.
 pub fn encrypt_payload(plaintext: &[u8]) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(FIXED_KEY));
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn encrypt_large_payload_succeeds() {
         // Test that we can encrypt large payloads now that interface MTU handles fragmentation
-        let large_plaintext = vec![0u8; 2000]; // Larger than previous 1472 limit
+        let large_plaintext = vec![0u8; 2000]; // Larger than previous 1436 limit
         let encrypted = encrypt_payload(&large_plaintext).expect("encryption should succeed");
 
         // Verify round-trip decryption works
