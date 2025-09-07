@@ -61,23 +61,7 @@ pub async fn handle_messages(
     dev: &Arc<Device>,
     routing: Option<Arc<std::sync::RwLock<Routing>>>,
 ) -> Result<()> {
-    // For broadcast scenarios with multiple messages, send them sequentially to avoid concatenation
-    if messages.len() > 1 && messages.iter().all(|m| matches!(m, ReplyType::Wire(_))) {
-        for reply in messages.iter() {
-            if let ReplyType::Wire(reply) = reply {
-                let vec: Vec<IoSlice> = reply.iter().map(|x| IoSlice::new(x)).collect();
-                let send_res = dev.send_vectored(&vec).await;
-                if let Err(e) = send_res {
-                    tracing::error!(?e, "error sending to dev");
-                }
-                // Small delay to ensure message boundaries
-                tokio::time::sleep(std::time::Duration::from_micros(100)).await;
-            }
-        }
-        return Ok(());
-    }
-
-    // Original concurrent handling for single messages or mixed message types
+    // Original concurrent handling for all message types
     let future_vec = messages
         .iter()
         .map(|reply| {
