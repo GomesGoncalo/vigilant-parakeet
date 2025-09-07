@@ -172,19 +172,67 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
         .await
         .expect("Failed to send broadcast frame from OBU1");
 
-    // Wait for RSU to process and distribute broadcast traffic
-    tokio::time::advance(Duration::from_millis(200)).await;
-    tokio::task::yield_now().await;
+    // Use a more robust waiting mechanism that properly yields control
+    let mut attempts = 0;
+    loop {
+        tokio::time::advance(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        let count = downstream_count.load(Ordering::SeqCst);
+        if count > 0 {
+            break;
+        }
+
+        attempts += 1;
+        if attempts > 20 {
+            // 2 seconds total
+            break;
+        }
+    }
 
     // Verify RSU generated downstream packets for broadcast distribution
     let count = downstream_count.load(Ordering::SeqCst);
 
-    // For now, just verify that the test completes without hanging
-    // TODO: Fix the underlying broadcast encryption logic
-    println!(
-        "✅ OBU broadcast test completed without hanging (downstream count: {})",
-        count
+    // Should have generated exactly 1 downstream packet (for OBU2, since OBU1 is the sender)
+    assert_eq!(
+        count, 1,
+        "RSU should generate exactly 1 downstream packet for OBU2 when OBU1 sends broadcast"
     );
+
+    // Verify that captured packets contain properly encrypted broadcast data
+    let captured = captured_packets.lock().unwrap();
+    assert_eq!(
+        captured.len(),
+        1,
+        "Should have captured exactly 1 downstream packet"
+    );
+
+    let (from_idx, packet_data) = &captured[0];
+    assert_eq!(*from_idx, 0, "Packet should come from RSU (index 0)");
+
+    // Parse the downstream message to verify it contains encrypted data
+    let msg = node_lib::messages::message::Message::try_from(packet_data.as_slice())
+        .expect("Should be able to parse downstream message");
+
+    if let node_lib::messages::packet_type::PacketType::Data(
+        node_lib::messages::data::Data::Downstream(downstream),
+    ) = msg.get_packet_type()
+    {
+        // The downstream data should be encrypted (different from original)
+        assert_ne!(
+            downstream.data(),
+            &broadcast_frame,
+            "Downstream data should be encrypted (different from original broadcast frame)"
+        );
+
+        // Verify the data is at least the expected size (original + encryption overhead)
+        assert!(
+            downstream.data().len() >= broadcast_frame.len(),
+            "Encrypted data should be at least as large as original frame"
+        );
+    } else {
+        panic!("Expected downstream data packet");
+    }
 }
 
 /// Test RSU broadcast traffic is sent individually and encrypted to each node
@@ -318,14 +366,91 @@ async fn test_rsu_broadcast_individual_encryption() {
         .await
         .expect("Failed to send broadcast from RSU");
 
-    // Wait for RSU to process and generate downstream packets
-    tokio::time::advance(Duration::from_millis(200)).await;
-    tokio::task::yield_now().await;
+    // Use a more robust waiting mechanism that properly yields control
+    let mut attempts = 0;
+    loop {
+        tokio::time::advance(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
 
-    // Verify the test completes without hanging
+        let count = downstream_count.load(Ordering::SeqCst);
+        if count >= 2 {
+            break;
+        }
+
+        attempts += 1;
+        if attempts > 20 {
+            // 2 seconds total
+            break;
+        }
+    }
+
+    // Verify RSU generated individual downstream packets for each OBU
     let count = downstream_count.load(Ordering::SeqCst);
-    println!(
-        "✅ RSU broadcast test completed without hanging (downstream count: {})",
-        count
+
+    // Should have generated exactly 2 downstream packets (one for each OBU)
+    assert_eq!(
+        count, 2,
+        "RSU should generate exactly 2 downstream packets (one for each OBU) for RSU broadcast"
     );
+
+    // Verify that captured packets contain individually encrypted broadcast data
+    let captured = captured_packets.lock().unwrap();
+    assert_eq!(
+        captured.len(),
+        2,
+        "Should have captured exactly 2 downstream packets"
+    );
+
+    // All packets should come from RSU
+    for (from_idx, packet_data) in &*captured {
+        assert_eq!(*from_idx, 0, "All packets should come from RSU (index 0)");
+
+        // Parse each downstream message to verify it contains encrypted data
+        let msg = node_lib::messages::message::Message::try_from(packet_data.as_slice())
+            .expect("Should be able to parse downstream message");
+
+        if let node_lib::messages::packet_type::PacketType::Data(
+            node_lib::messages::data::Data::Downstream(downstream),
+        ) = msg.get_packet_type()
+        {
+            // The downstream data should be encrypted (different from original)
+            assert_ne!(
+                downstream.data(),
+                &rsu_broadcast_frame,
+                "Downstream data should be encrypted (different from original broadcast frame)"
+            );
+
+            // Verify the data is at least the expected size (original + encryption overhead)
+            assert!(
+                downstream.data().len() >= rsu_broadcast_frame.len(),
+                "Encrypted data should be at least as large as original frame"
+            );
+        } else {
+            panic!("Expected downstream data packet");
+        }
+    }
+
+    // Verify each packet is uniquely encrypted (they should be different from each other)
+    if captured.len() == 2 {
+        let msg1 = node_lib::messages::message::Message::try_from(captured[0].1.as_slice())
+            .expect("Should parse first message");
+        let msg2 = node_lib::messages::message::Message::try_from(captured[1].1.as_slice())
+            .expect("Should parse second message");
+
+        if let (
+            node_lib::messages::packet_type::PacketType::Data(
+                node_lib::messages::data::Data::Downstream(downstream1),
+            ),
+            node_lib::messages::packet_type::PacketType::Data(
+                node_lib::messages::data::Data::Downstream(downstream2),
+            ),
+        ) = (msg1.get_packet_type(), msg2.get_packet_type())
+        {
+            assert_ne!(
+                downstream1.data(),
+                downstream2.data(),
+                "Each recipient should receive uniquely encrypted data"
+            );
+        }
+    }
 }

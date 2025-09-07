@@ -326,7 +326,7 @@ impl Rsu {
                                     next_hop,
                                     PacketType::Data(Data::Downstream(ToDownstream::new(
                                         &source_mac,
-                                        *_x, // Use the actual target MAC for broadcast distribution
+                                        to, // Use original broadcast destination, not target OBU MAC
                                         &downstream_data,
                                     ))),
                                 );
