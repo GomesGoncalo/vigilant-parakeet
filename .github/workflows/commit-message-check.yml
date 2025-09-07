@@ -19,6 +19,7 @@ jobs:
 
       - name: Validate commit messages follow Conventional Commits and include a descriptive body
         shell: bash
+        timeout-minutes: 5
         run: |
           set -euo pipefail
 

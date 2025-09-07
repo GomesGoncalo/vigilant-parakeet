@@ -31,15 +31,19 @@ jobs:
 
       - name: fmt
         run: cargo fmt --all -- --check
+        timeout-minutes: 5
 
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+        timeout-minutes: 10
 
       - name: Build
         run: cargo build --workspace --locked
+        timeout-minutes: 15
 
       - name: Test
         run: cargo test --workspace --locked
+        timeout-minutes: 10
 
   pages-build:
     permissions:
@@ -58,6 +62,7 @@ jobs:
 
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin --locked
+        timeout-minutes: 20
 
       - name: Run coverage (common + node_lib)
         id: covrun
@@ -71,6 +76,7 @@ jobs:
           PCT=0.0
           if [ "$TOTAL_LF" -gt 0 ]; then PCT=$(awk "BEGIN { printf \"%.1f\", ($TOTAL_LH/$TOTAL_LF)*100 }"); fi
           echo "pct=$PCT" >> $GITHUB_OUTPUT
+        timeout-minutes: 15
       - name: Generate coverage JSON for Shields.io
         run: |
           mkdir -p public/badges
