@@ -108,7 +108,7 @@ impl Rsu {
                         }
                     }
                 }).await;
-                
+
                 match messages {
                     Ok(Some(messages)) => {
                         consecutive_errors = 0;
@@ -141,6 +141,27 @@ impl Rsu {
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
         match msg.get_packet_type() {
             PacketType::Data(Data::Upstream(buf)) => {
+                // Validate message structure before attempting decryption
+                if self.args.node_params.enable_encryption {
+                    // Basic sanity check on encrypted data length
+                    // Encrypted data should be at least 28 bytes (12 nonce + 16 tag)
+                    if buf.data().len() < 28 {
+                        tracing::warn!(
+                            "Upstream data too short for encryption: {} bytes",
+                            buf.data().len()
+                        );
+                        return Ok(None);
+                    }
+                    // Additional check: if data is suspiciously long, it might be corrupted
+                    if buf.data().len() > 2000 {
+                        tracing::warn!(
+                            "Upstream data suspiciously long: {} bytes",
+                            buf.data().len()
+                        );
+                        return Ok(None);
+                    }
+                }
+
                 // First decrypt the entire frame if encryption is enabled, then extract MAC addresses
                 let decrypted_payload = if self.args.node_params.enable_encryption {
                     // Check if we've recently failed to decrypt this exact same data
@@ -149,22 +170,39 @@ impl Rsu {
                         let mut failed_map = self.failed_decryptions.write().unwrap();
                         // Clean up old entries (older than 1 second)
                         let now = Instant::now();
-                        failed_map.retain(|_, &mut time| now.duration_since(time) < Duration::from_secs(1));
-                        
+                        failed_map.retain(|_, &mut time| {
+                            now.duration_since(time) < Duration::from_secs(1)
+                        });
+
                         // If we've seen this data recently and it failed, skip it
                         if let Some(&last_failure) = failed_map.get(&data_key) {
                             if now.duration_since(last_failure) < Duration::from_millis(100) {
-                                tracing::trace!("Skipping recently failed decryption to prevent loop");
+                                tracing::trace!(
+                                    "Skipping recently failed decryption to prevent loop"
+                                );
                                 return Ok(None);
                             }
                         }
                     }
 
                     match crate::crypto::decrypt_payload(buf.data()) {
-                        Ok(decrypted_data) => decrypted_data,
+                        Ok(decrypted_data) => {
+                            // Validate decrypted data structure
+                            if decrypted_data.len() < 12 {
+                                tracing::warn!(
+                                    "Decrypted data too short: {} bytes",
+                                    decrypted_data.len()
+                                );
+                                return Ok(None);
+                            }
+                            decrypted_data
+                        }
                         Err(e) => {
                             // Record this failure to prevent infinite loops
-                            self.failed_decryptions.write().unwrap().insert(data_key, Instant::now());
+                            self.failed_decryptions
+                                .write()
+                                .unwrap()
+                                .insert(data_key, Instant::now());
                             tracing::debug!("Failed to decrypt upstream frame: {}", e);
                             return Ok(None);
                         }
