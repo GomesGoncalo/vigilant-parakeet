@@ -146,7 +146,7 @@ impl Rsu {
                     // Basic sanity check on encrypted data length
                     // Encrypted data should be at least 28 bytes (12 nonce + 16 tag)
                     if buf.data().len() < 28 {
-                        tracing::warn!(
+                        tracing::debug!(
                             "Upstream data too short for encryption: {} bytes",
                             buf.data().len()
                         );
@@ -154,7 +154,7 @@ impl Rsu {
                     }
                     // Additional check: if data is suspiciously long, it might be corrupted
                     if buf.data().len() > 2000 {
-                        tracing::warn!(
+                        tracing::debug!(
                             "Upstream data suspiciously long: {} bytes",
                             buf.data().len()
                         );
@@ -174,9 +174,9 @@ impl Rsu {
                             now.duration_since(time) < Duration::from_secs(1)
                         });
 
-                        // If we've seen this data recently and it failed, skip it
+                        // If we've seen this data recently and it failed, skip it with longer backoff
                         if let Some(&last_failure) = failed_map.get(&data_key) {
-                            if now.duration_since(last_failure) < Duration::from_millis(100) {
+                            if now.duration_since(last_failure) < Duration::from_millis(500) {
                                 tracing::trace!(
                                     "Skipping recently failed decryption to prevent loop"
                                 );
@@ -189,7 +189,7 @@ impl Rsu {
                         Ok(decrypted_data) => {
                             // Validate decrypted data structure
                             if decrypted_data.len() < 12 {
-                                tracing::warn!(
+                                tracing::debug!(
                                     "Decrypted data too short: {} bytes",
                                     decrypted_data.len()
                                 );
@@ -198,7 +198,7 @@ impl Rsu {
                             decrypted_data
                         }
                         Err(e) => {
-                            // Record this failure to prevent infinite loops
+                            // Record this failure to prevent infinite loops with longer backoff
                             self.failed_decryptions
                                 .write()
                                 .unwrap()
