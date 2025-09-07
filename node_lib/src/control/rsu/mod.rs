@@ -386,25 +386,12 @@ impl Rsu {
                     let source_mac = devicec.mac_address().bytes();
                     cache.store_mac(from, devicec.mac_address());
 
-                    // Encrypt entire frame if encryption is enabled
-                    let downstream_data = if enable_encryption {
-                        match crate::crypto::encrypt_payload(data) {
-                            Ok(encrypted_data) => encrypted_data,
-                            Err(e) => {
-                                tracing::error!("Failed to encrypt downstream frame: {}", e);
-                                return Ok(None);
-                            }
-                        }
-                    } else {
-                        data.to_vec()
-                    };
-
                     let routing = routing.read().unwrap();
                     // Check if this is broadcast or multicast traffic
                     let bcast_or_mcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
 
                     let outgoing = if bcast_or_mcast {
-                        // For broadcast/multicast from RSU's TUN interface, send to all next hops
+                        // For broadcast/multicast from RSU's TUN interface, encrypt individually for each recipient
                         routing
                             .iter_next_hops()
                             .filter(|x| x != &&devicec.mac_address())
@@ -415,6 +402,19 @@ impl Rsu {
                             .map(|(x, y)| (x, y.mac))
                             .unique_by(|(x, _)| *x)
                             .map(|(_x, next_hop)| {
+                                // Encrypt the entire frame individually for each recipient when encryption is enabled
+                                let downstream_data = if enable_encryption {
+                                    match crate::crypto::encrypt_payload(data) {
+                                        Ok(encrypted_data) => encrypted_data,
+                                        Err(e) => {
+                                            tracing::error!("Failed to encrypt broadcast frame for recipient: {}", e);
+                                            return ReplyType::Wire(vec![]); // Skip this recipient on encryption failure
+                                        }
+                                    }
+                                } else {
+                                    data.to_vec()
+                                };
+
                                 let msg = Message::new(
                                     devicec.mac_address(),
                                     next_hop,
@@ -428,6 +428,19 @@ impl Rsu {
                             })
                             .collect_vec()
                     } else if let Some(target) = target {
+                        // Encrypt entire frame for unicast traffic if encryption is enabled
+                        let downstream_data = if enable_encryption {
+                            match crate::crypto::encrypt_payload(data) {
+                                Ok(encrypted_data) => encrypted_data,
+                                Err(e) => {
+                                    tracing::error!("Failed to encrypt unicast frame: {}", e);
+                                    return Ok(None);
+                                }
+                            }
+                        } else {
+                            data.to_vec()
+                        };
+
                         // Unicast traffic with known target
                         if let Some(hop) = routing.get_route_to(Some(target)) {
                             vec![ReplyType::Wire(
@@ -470,6 +483,19 @@ impl Rsu {
                                     .map(|(x, y)| (x, y.mac))
                                     .unique_by(|(x, _)| *x)
                                     .map(|(_x, next_hop)| {
+                                        // Encrypt the entire frame individually for each recipient when encryption is enabled
+                                        let downstream_data = if enable_encryption {
+                                            match crate::crypto::encrypt_payload(data) {
+                                                Ok(encrypted_data) => encrypted_data,
+                                                Err(e) => {
+                                                    tracing::error!("Failed to encrypt fan-out frame for recipient: {}", e);
+                                                    return ReplyType::Wire(vec![]); // Skip this recipient on encryption failure
+                                                }
+                                            }
+                                        } else {
+                                            data.to_vec()
+                                        };
+
                                         let msg = Message::new(
                                             devicec.mac_address(),
                                             next_hop,
@@ -497,6 +523,19 @@ impl Rsu {
                             .map(|(x, y)| (x, y.mac))
                             .unique_by(|(x, _)| *x)
                             .map(|(_x, next_hop)| {
+                                // Encrypt the entire frame individually for each recipient when encryption is enabled
+                                let downstream_data = if enable_encryption {
+                                    match crate::crypto::encrypt_payload(data) {
+                                        Ok(encrypted_data) => encrypted_data,
+                                        Err(e) => {
+                                            tracing::error!("Failed to encrypt fan-out frame for recipient: {}", e);
+                                            return ReplyType::Wire(vec![]); // Skip this recipient on encryption failure
+                                        }
+                                    }
+                                } else {
+                                    data.to_vec()
+                                };
+
                                 let msg = Message::new(
                                     devicec.mac_address(),
                                     next_hop,
