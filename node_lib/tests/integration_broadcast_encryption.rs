@@ -348,7 +348,7 @@ async fn test_rsu_broadcast_individual_encryption() {
     tokio::task::yield_now().await;
 
     // Test completed successfully - the individual encryption is working
-    // The fact that no errors occurred means the RSU is properly encrypting 
+    // The fact that no errors occurred means the RSU is properly encrypting
     // broadcast traffic individually for each recipient
     println!("✅ RSU broadcast successfully sent individually and encrypted to each node");
 }
