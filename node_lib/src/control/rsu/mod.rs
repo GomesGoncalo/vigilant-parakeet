@@ -18,9 +18,10 @@ use itertools::Itertools;
 use mac_address::MacAddress;
 use routing::Routing;
 use std::{
+    collections::HashMap,
     io::IoSlice,
     sync::{Arc, RwLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub struct Rsu {
@@ -29,6 +30,8 @@ pub struct Rsu {
     tun: Arc<Tun>,
     device: Arc<Device>,
     cache: Arc<ClientCache>,
+    // Track failed decryption attempts to prevent infinite loops
+    failed_decryptions: Arc<RwLock<HashMap<Vec<u8>, Instant>>>,
 }
 
 impl Rsu {
@@ -39,6 +42,7 @@ impl Rsu {
             tun,
             device,
             cache: ClientCache::default().into(),
+            failed_decryptions: Arc::new(RwLock::new(HashMap::new())),
         });
 
         tracing::info!(?rsu.args, "Setup Rsu");
@@ -63,6 +67,7 @@ impl Rsu {
         let tun = rsu.tun.clone();
 
         tokio::task::spawn(async move {
+            let mut consecutive_errors = 0;
             loop {
                 let rsu = rsu.clone();
                 let messages = node::wire_traffic(&device, |pkt, size| {
@@ -103,8 +108,30 @@ impl Rsu {
                         }
                     }
                 }).await;
-                if let Ok(Some(messages)) = messages {
-                    let _ = node::handle_messages(messages, &tun, &device, None).await;
+                
+                match messages {
+                    Ok(Some(messages)) => {
+                        consecutive_errors = 0;
+                        let _ = node::handle_messages(messages, &tun, &device, None).await;
+                    }
+                    Ok(None) => {
+                        consecutive_errors += 1;
+                        // If we're getting too many empty responses, add a small delay to prevent tight loops
+                        if consecutive_errors > 100 {
+                            tracing::warn!("Too many consecutive empty responses, adding delay");
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                            consecutive_errors = 0;
+                        }
+                    }
+                    Err(e) => {
+                        consecutive_errors += 1;
+                        tracing::error!("Error in wire_traffic: {:?}", e);
+                        if consecutive_errors > 100 {
+                            tracing::error!("Too many consecutive errors, adding delay");
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                            consecutive_errors = 0;
+                        }
+                    }
                 }
             }
         });
@@ -116,10 +143,29 @@ impl Rsu {
             PacketType::Data(Data::Upstream(buf)) => {
                 // First decrypt the entire frame if encryption is enabled, then extract MAC addresses
                 let decrypted_payload = if self.args.node_params.enable_encryption {
+                    // Check if we've recently failed to decrypt this exact same data
+                    let data_key = buf.data().to_vec();
+                    {
+                        let mut failed_map = self.failed_decryptions.write().unwrap();
+                        // Clean up old entries (older than 1 second)
+                        let now = Instant::now();
+                        failed_map.retain(|_, &mut time| now.duration_since(time) < Duration::from_secs(1));
+                        
+                        // If we've seen this data recently and it failed, skip it
+                        if let Some(&last_failure) = failed_map.get(&data_key) {
+                            if now.duration_since(last_failure) < Duration::from_millis(100) {
+                                tracing::trace!("Skipping recently failed decryption to prevent loop");
+                                return Ok(None);
+                            }
+                        }
+                    }
+
                     match crate::crypto::decrypt_payload(buf.data()) {
                         Ok(decrypted_data) => decrypted_data,
                         Err(e) => {
-                            tracing::error!("Failed to decrypt upstream frame: {}", e);
+                            // Record this failure to prevent infinite loops
+                            self.failed_decryptions.write().unwrap().insert(data_key, Instant::now());
+                            tracing::debug!("Failed to decrypt upstream frame: {}", e);
                             return Ok(None);
                         }
                     }
