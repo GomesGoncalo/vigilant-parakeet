@@ -18,10 +18,9 @@ use itertools::Itertools;
 use mac_address::MacAddress;
 use routing::Routing;
 use std::{
-    collections::HashMap,
     io::IoSlice,
     sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 pub struct Rsu {
@@ -30,8 +29,6 @@ pub struct Rsu {
     tun: Arc<Tun>,
     device: Arc<Device>,
     cache: Arc<ClientCache>,
-    // Track failed decryption attempts to prevent infinite loops
-    failed_decryptions: Arc<RwLock<HashMap<Vec<u8>, Instant>>>,
 }
 
 impl Rsu {
@@ -42,7 +39,6 @@ impl Rsu {
             tun,
             device,
             cache: ClientCache::default().into(),
-            failed_decryptions: Arc::new(RwLock::new(HashMap::new())),
         });
 
         tracing::info!(?rsu.args, "Setup Rsu");
@@ -67,7 +63,6 @@ impl Rsu {
         let tun = rsu.tun.clone();
 
         tokio::task::spawn(async move {
-            let mut consecutive_errors = 0;
             loop {
                 let rsu = rsu.clone();
                 let messages = node::wire_traffic(&device, |pkt, size| {
@@ -111,26 +106,11 @@ impl Rsu {
 
                 match messages {
                     Ok(Some(messages)) => {
-                        consecutive_errors = 0;
                         let _ = node::handle_messages(messages, &tun, &device, None).await;
                     }
-                    Ok(None) => {
-                        consecutive_errors += 1;
-                        // If we're getting too many empty responses, add a small delay to prevent tight loops
-                        if consecutive_errors > 100 {
-                            tracing::warn!("Too many consecutive empty responses, adding delay");
-                            tokio::time::sleep(Duration::from_millis(10)).await;
-                            consecutive_errors = 0;
-                        }
-                    }
+                    Ok(None) => {}
                     Err(e) => {
-                        consecutive_errors += 1;
                         tracing::error!("Error in wire_traffic: {:?}", e);
-                        if consecutive_errors > 100 {
-                            tracing::error!("Too many consecutive errors, adding delay");
-                            tokio::time::sleep(Duration::from_millis(10)).await;
-                            consecutive_errors = 0;
-                        }
                     }
                 }
             }
@@ -141,71 +121,11 @@ impl Rsu {
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
         match msg.get_packet_type() {
             PacketType::Data(Data::Upstream(buf)) => {
-                // Validate message structure before attempting decryption
-                if self.args.node_params.enable_encryption {
-                    // Basic sanity check on encrypted data length
-                    // Encrypted data should be at least 28 bytes (12 nonce + 16 tag)
-                    if buf.data().len() < 28 {
-                        tracing::debug!(
-                            "Upstream data too short for encryption: {} bytes",
-                            buf.data().len()
-                        );
-                        return Ok(None);
-                    }
-                    // Additional check: if data is suspiciously long, it might be corrupted
-                    if buf.data().len() > 2000 {
-                        tracing::debug!(
-                            "Upstream data suspiciously long: {} bytes",
-                            buf.data().len()
-                        );
-                        return Ok(None);
-                    }
-                }
-
-                // First decrypt the entire frame if encryption is enabled, then extract MAC addresses
+                // Decrypt the entire frame if encryption is enabled
                 let decrypted_payload = if self.args.node_params.enable_encryption {
-                    // Check if we've recently failed to decrypt this exact same data
-                    let data_key = buf.data().to_vec();
-                    {
-                        let mut failed_map = self.failed_decryptions.write().unwrap();
-                        // Clean up old entries (older than 1 second)
-                        let now = Instant::now();
-                        failed_map.retain(|_, &mut time| {
-                            now.duration_since(time) < Duration::from_secs(1)
-                        });
-
-                        // If we've seen this data recently and it failed, skip it with longer backoff
-                        if let Some(&last_failure) = failed_map.get(&data_key) {
-                            if now.duration_since(last_failure) < Duration::from_millis(500) {
-                                tracing::trace!(
-                                    "Skipping recently failed decryption to prevent loop"
-                                );
-                                return Ok(None);
-                            }
-                        }
-                    }
-
                     match crate::crypto::decrypt_payload(buf.data()) {
-                        Ok(decrypted_data) => {
-                            // Validate decrypted data structure
-                            if decrypted_data.len() < 12 {
-                                tracing::debug!(
-                                    "Decrypted data too short: {} bytes",
-                                    decrypted_data.len()
-                                );
-                                return Ok(None);
-                            }
-                            decrypted_data
-                        }
-                        Err(e) => {
-                            // Record this failure to prevent infinite loops with longer backoff
-                            self.failed_decryptions
-                                .write()
-                                .unwrap()
-                                .insert(data_key, Instant::now());
-                            tracing::debug!("Failed to decrypt upstream frame: {}", e);
-                            return Ok(None);
-                        }
+                        Ok(decrypted_data) => decrypted_data,
+                        Err(_) => return Ok(None),
                     }
                 } else {
                     buf.data().to_vec()
@@ -247,24 +167,18 @@ impl Rsu {
                             let route = routing.get_route_to(Some(*x))?;
                             Some((*x, route.mac))
                         })
-                        .map(|(target, next_hop)| {
+                        .filter_map(|(target, next_hop)| {
                             // For broadcast traffic, encrypt the entire decrypted frame individually for each recipient
                             let downstream_data = if self.args.node_params.enable_encryption {
                                 match crate::crypto::encrypt_payload(&decrypted_payload) {
                                     Ok(encrypted_data) => encrypted_data,
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "Failed to encrypt downstream broadcast frame: {}",
-                                            e
-                                        );
-                                        return ReplyType::Wire(vec![]); // Skip this recipient on encryption failure
-                                    }
+                                    Err(_) => return None, // Skip this recipient on encryption failure
                                 }
                             } else {
                                 decrypted_payload.clone()
                             };
 
-                            ReplyType::Wire(
+                            Some(ReplyType::Wire(
                                 (&Message::new(
                                     self.device.mac_address(),
                                     next_hop,
@@ -275,7 +189,7 @@ impl Rsu {
                                     ))),
                                 ))
                                     .into(),
-                            )
+                            ))
                         })
                         .collect_vec()
                 } else if let Some(target) = target {
@@ -287,13 +201,7 @@ impl Rsu {
                     let downstream_data = if self.args.node_params.enable_encryption {
                         match crate::crypto::encrypt_payload(&decrypted_payload) {
                             Ok(encrypted_data) => encrypted_data,
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to encrypt downstream unicast frame: {}",
-                                    e
-                                );
-                                return Ok(None);
-                            }
+                            Err(_) => return Ok(None),
                         }
                     } else {
                         decrypted_payload.clone()
@@ -387,11 +295,11 @@ impl Rsu {
                     cache.store_mac(from, devicec.mac_address());
 
                     let routing = routing.read().unwrap();
-                    // Check if this is broadcast or multicast traffic
-                    let bcast_or_mcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
+                    // Check if this is multicast traffic
+                    let is_multicast = to.bytes()[0] & 0x1 != 0;
 
-                    let outgoing = if bcast_or_mcast {
-                        // For broadcast/multicast from RSU's TUN interface, encrypt individually for each recipient
+                    let outgoing = if is_multicast {
+                        // For multicast from RSU's TUN interface, encrypt individually for each recipient
                         routing
                             .iter_next_hops()
                             .filter(|x| x != &&devicec.mac_address())
@@ -401,15 +309,12 @@ impl Rsu {
                             })
                             .map(|(x, y)| (x, y.mac))
                             .unique_by(|(x, _)| *x)
-                            .map(|(_x, next_hop)| {
+                            .filter_map(|(_x, next_hop)| {
                                 // Encrypt the entire frame individually for each recipient when encryption is enabled
                                 let downstream_data = if enable_encryption {
                                     match crate::crypto::encrypt_payload(data) {
                                         Ok(encrypted_data) => encrypted_data,
-                                        Err(e) => {
-                                            tracing::error!("Failed to encrypt broadcast frame for recipient: {}", e);
-                                            return ReplyType::Wire(vec![]); // Skip this recipient on encryption failure
-                                        }
+                                        Err(_) => return None, // Skip this recipient on encryption failure
                                     }
                                 } else {
                                     data.to_vec()
@@ -424,7 +329,7 @@ impl Rsu {
                                         &downstream_data,
                                     ))),
                                 );
-                                ReplyType::Wire((&msg).into())
+                                Some(ReplyType::Wire((&msg).into()))
                             })
                             .collect_vec()
                     } else if let Some(target) = target {
@@ -432,10 +337,7 @@ impl Rsu {
                         let downstream_data = if enable_encryption {
                             match crate::crypto::encrypt_payload(data) {
                                 Ok(encrypted_data) => encrypted_data,
-                                Err(e) => {
-                                    tracing::error!("Failed to encrypt unicast frame: {}", e);
-                                    return Ok(None);
-                                }
+                                Err(_) => return Ok(None),
                             }
                         } else {
                             data.to_vec()
@@ -482,15 +384,12 @@ impl Rsu {
                                     })
                                     .map(|(x, y)| (x, y.mac))
                                     .unique_by(|(x, _)| *x)
-                                    .map(|(_x, next_hop)| {
+                                    .filter_map(|(_x, next_hop)| {
                                         // Encrypt the entire frame individually for each recipient when encryption is enabled
                                         let downstream_data = if enable_encryption {
                                             match crate::crypto::encrypt_payload(data) {
                                                 Ok(encrypted_data) => encrypted_data,
-                                                Err(e) => {
-                                                    tracing::error!("Failed to encrypt fan-out frame for recipient: {}", e);
-                                                    return ReplyType::Wire(vec![]); // Skip this recipient on encryption failure
-                                                }
+                                                Err(_) => return None, // Skip this recipient on encryption failure
                                             }
                                         } else {
                                             data.to_vec()
@@ -505,7 +404,7 @@ impl Rsu {
                                                 &downstream_data,
                                             ))),
                                         );
-                                        ReplyType::Wire((&msg).into())
+                                        Some(ReplyType::Wire((&msg).into()))
                                     })
                                     .collect_vec()
                             }
@@ -522,15 +421,12 @@ impl Rsu {
                             })
                             .map(|(x, y)| (x, y.mac))
                             .unique_by(|(x, _)| *x)
-                            .map(|(_x, next_hop)| {
+                            .filter_map(|(_x, next_hop)| {
                                 // Encrypt the entire frame individually for each recipient when encryption is enabled
                                 let downstream_data = if enable_encryption {
                                     match crate::crypto::encrypt_payload(data) {
                                         Ok(encrypted_data) => encrypted_data,
-                                        Err(e) => {
-                                            tracing::error!("Failed to encrypt fan-out frame for recipient: {}", e);
-                                            return ReplyType::Wire(vec![]); // Skip this recipient on encryption failure
-                                        }
+                                        Err(_) => return None, // Skip this recipient on encryption failure
                                     }
                                 } else {
                                     data.to_vec()
@@ -545,7 +441,7 @@ impl Rsu {
                                         &downstream_data,
                                     ))),
                                 );
-                                ReplyType::Wire((&msg).into())
+                                Some(ReplyType::Wire((&msg).into()))
                             })
                             .collect_vec()
                     };
