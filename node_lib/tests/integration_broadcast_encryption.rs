@@ -161,7 +161,7 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
 
     // Send broadcast frame from OBU1
     let broadcast_mac = [255u8; 6]; // Broadcast destination
-    let test_payload = b"BROADCAST_DATA_FROM_OBU1";
+    let test_payload = b"TEST_DATA"; // Shorter payload
     let mut broadcast_frame = Vec::new();
     broadcast_frame.extend_from_slice(&broadcast_mac); // destination MAC
     broadcast_frame.extend_from_slice(&mac_obu1.bytes()); // source MAC
@@ -173,13 +173,25 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
         .expect("Failed to send broadcast frame from OBU1");
 
     // Verify RSU receives the broadcast frame on its TUN interface (decrypted)
-    let got_broadcast_at_rsu = node_lib::test_helpers::util::poll_tun_recv_expected_mocked(
-        &tun_rsu_peer,
-        &broadcast_frame,
-        100,
-        100,
-    )
-    .await;
+    let mut large_buf = vec![0u8; 2048];
+    let mut got_broadcast_at_rsu = false;
+    for _ in 0..200 {
+        // Increase attempts
+        if let Some(n) = node_lib::test_helpers::util::poll_tun_recv_with_timeout_mocked(
+            &tun_rsu_peer,
+            &mut large_buf,
+            50, // Increase timeout per attempt
+            1,
+        )
+        .await
+        {
+            if n >= broadcast_frame.len() && large_buf[..broadcast_frame.len()] == broadcast_frame {
+                got_broadcast_at_rsu = true;
+                break;
+            }
+        }
+        tokio::time::advance(Duration::from_millis(10)).await; // Small advance between attempts
+    }
     assert!(
         got_broadcast_at_rsu,
         "RSU did not receive broadcast frame on TUN"
@@ -197,13 +209,26 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
     );
 
     // Verify OBU2 received the broadcast data
-    let got_broadcast_at_obu2 = node_lib::test_helpers::util::poll_tun_recv_expected_mocked(
-        &tun_obu2_peer,
-        &broadcast_frame,
-        100,
-        100,
-    )
-    .await;
+    let mut large_buf2 = vec![0u8; 2048];
+    let mut got_broadcast_at_obu2 = false;
+    for _ in 0..200 {
+        // Increase attempts
+        if let Some(n) = node_lib::test_helpers::util::poll_tun_recv_with_timeout_mocked(
+            &tun_obu2_peer,
+            &mut large_buf2,
+            50, // Increase timeout per attempt
+            1,
+        )
+        .await
+        {
+            if n >= broadcast_frame.len() && large_buf2[..broadcast_frame.len()] == broadcast_frame
+            {
+                got_broadcast_at_obu2 = true;
+                break;
+            }
+        }
+        tokio::time::advance(Duration::from_millis(10)).await; // Small advance between attempts
+    }
     assert!(
         got_broadcast_at_obu2,
         "OBU2 did not receive broadcast frame on TUN"

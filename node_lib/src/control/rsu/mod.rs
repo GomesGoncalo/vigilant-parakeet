@@ -167,7 +167,7 @@ impl Rsu {
                             let route = routing.get_route_to(Some(*x))?;
                             Some((*x, route.mac))
                         })
-                        .filter_map(|(target, next_hop)| {
+                        .filter_map(|(_target, next_hop)| {
                             // For broadcast traffic, encrypt the entire decrypted frame individually for each recipient
                             let downstream_data = if self.args.node_params.enable_encryption {
                                 match crate::crypto::encrypt_payload(&decrypted_payload) {
@@ -178,13 +178,14 @@ impl Rsu {
                                 decrypted_payload.clone()
                             };
 
+                            // For broadcast distribution, use the original destination (broadcast) not the target OBU
                             Some(ReplyType::Wire(
                                 (&Message::new(
                                     self.device.mac_address(),
                                     next_hop,
                                     PacketType::Data(Data::Downstream(ToDownstream::new(
                                         buf.source(),
-                                        target,
+                                        to, // Use original broadcast destination, not target OBU
                                         &downstream_data,
                                     ))),
                                 ))
