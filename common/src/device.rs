@@ -1,7 +1,9 @@
 use crate::network_interface::NetworkInterface;
 #[cfg(feature = "stats")]
 use crate::stats::Stats;
-use anyhow::{Context, Result};
+#[cfg(not(test))]
+use anyhow::Context;
+use anyhow::Result;
 #[cfg(feature = "stats")]
 use std::sync::Mutex;
 
@@ -28,29 +30,28 @@ mod test_fd_registry {
 use test_fd_registry::{close_raw_fd, register_owned_fd, unregister_owned_fd};
 
 use futures::ready;
+#[cfg(not(test))]
 use libc::{sockaddr, sockaddr_ll, AF_PACKET};
 use mac_address::MacAddress;
+#[cfg(not(test))]
 use nix::sys::socket::{bind as nix_bind, LinkAddr, SockaddrLike};
+#[cfg(not(test))]
 use socket2::{Domain, Protocol, Socket, Type};
+#[cfg(not(test))]
 use std::convert::TryFrom;
 use std::io;
 use std::io::{ErrorKind, IoSlice, Read, Write};
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+#[cfg(not(test))]
+use std::os::unix::io::IntoRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::pin::Pin;
 use std::task;
 use std::task::Poll;
 use tokio::io::unix::AsyncFd;
-use tokio::io::ReadBuf;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+#[cfg(not(test))]
 const ETH_P_ALL: u16 = 0x0003;
-
-pub struct Device {
-    mac_address: MacAddress,
-    fd: AsyncFd<DeviceIo>,
-    #[cfg(feature = "stats")]
-    stats: Mutex<Stats>,
-}
 
 impl AsyncRead for Device {
     fn poll_read(
@@ -333,6 +334,13 @@ impl Drop for DeviceIo {
     }
 }
 
+pub struct Device {
+    mac_address: MacAddress,
+    fd: AsyncFd<DeviceIo>,
+    #[cfg(feature = "stats")]
+    stats: Mutex<Stats>,
+}
+
 impl NetworkInterface for Device {
     fn mac_address(&self) -> MacAddress {
         self.mac_address
@@ -340,7 +348,9 @@ impl NetworkInterface for Device {
 }
 
 impl Device {
-    pub fn new(interface: &str) -> Result<Self> {
+    // Helper extracted so tests can more easily stub or replace raw socket creation.
+    #[cfg(not(test))]
+    fn create_packet_socket_and_mac(interface: &str) -> Result<(MacAddress, RawFd)> {
         let fd = Socket::new(
             Domain::PACKET,
             Type::RAW,
@@ -368,12 +378,36 @@ impl Device {
         // bind using nix's socket bind helpers
         let _ = nix_bind(fd.as_raw_fd(), &storage);
         let raw_fd: RawFd = fd.into_raw_fd();
+        Ok((mac_address, raw_fd))
+    }
+
+    pub fn new(interface: &str) -> Result<Self> {
+        let (mac_address, raw_fd) = Self::create_packet_socket_and_mac(interface)?;
         Ok(Self {
             mac_address,
             fd: AsyncFd::new(unsafe { DeviceIo::from_raw_fd(raw_fd) })?,
             #[cfg(feature = "stats")]
             stats: Stats::default().into(),
         })
+    }
+
+    // Test shim: provide a non-privileged socket and dummy MAC when running tests.
+    #[cfg(test)]
+    fn create_packet_socket_and_mac(_interface: &str) -> Result<(MacAddress, RawFd)> {
+        // create a simple pipe and use the writer end as the 'socket' for tests.
+        let mut fds = [0; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let writer_fd = fds[1];
+        // set non-blocking to match production behavior
+        unsafe {
+            let flags = libc::fcntl(writer_fd, libc::F_GETFL);
+            if flags >= 0 {
+                let _ = libc::fcntl(writer_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+        }
+        // dummy MAC address (not used by tests that only exercise send/recv)
+        let mac: MacAddress = [0, 1, 2, 3, 4, 5].into();
+        Ok((mac, writer_fd))
     }
 
     /// Public helper to construct a Device from an existing AsyncFd<DeviceIo>.
@@ -542,6 +576,51 @@ mod tests {
     }
 
     #[test]
+    fn deviceio_send_errors_on_broken_pipe_sync() {
+        // create a pipe, close the reader, then write should return EPIPE (error)
+        let mut fds = [0; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let reader_fd = fds[0];
+        let writer_fd = fds[1];
+
+        // close reader to provoke broken pipe
+        close_raw_fd(reader_fd);
+
+        // set writer non-blocking to avoid SIGPIPE terminating the test process
+        set_nonblocking(writer_fd);
+
+        let dio = DeviceIo::from(writer_fd);
+        match dio.send(b"hello") {
+            Ok(_) => panic!("expected send to error when reader closed"),
+            Err(e) => assert_eq!(e.raw_os_error(), Some(libc::EPIPE)),
+        }
+    }
+
+    #[test]
+    fn deviceio_writev_errors_on_broken_pipe_sync() {
+        // create a pipe, close the reader, then writev should return EPIPE (error)
+        let mut fds = [0; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let reader_fd = fds[0];
+        let writer_fd = fds[1];
+
+        // close reader to provoke broken pipe
+        close_raw_fd(reader_fd);
+
+        // set writer non-blocking to avoid SIGPIPE
+        set_nonblocking(writer_fd);
+
+        let dio = DeviceIo::from(writer_fd);
+        let a = b"ab";
+        let b = b"cd";
+        let bufs = [IoSlice::new(a), IoSlice::new(b)];
+        match dio.sendv(&bufs) {
+            Ok(_) => panic!("expected sendv to error when reader closed"),
+            Err(e) => assert_eq!(e.raw_os_error(), Some(libc::EPIPE)),
+        }
+    }
+
+    #[test]
     fn deviceio_writev_works() {
         let (reader, writer) = make_pipe();
         let mut r = reader;
@@ -678,6 +757,60 @@ mod tests {
         assert_eq!(&out, b"1234");
 
         close_raw_fd(reader_fd);
+    }
+
+    #[tokio::test]
+    async fn device_send_errors_on_broken_pipe() {
+        use std::os::unix::io::FromRawFd;
+
+        // create a pipe and immediately close the reader to provoke EPIPE on write
+        let mut fds = [0; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let reader_fd = fds[0];
+        let writer_fd = fds[1];
+
+        // close reader to provoke broken pipe
+        close_raw_fd(reader_fd);
+
+        set_nonblocking(writer_fd);
+
+        let mac: MacAddress = [10, 11, 12, 13, 14, 15].into();
+        let async_fd =
+            tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
+        let device = device_from_parts(mac, async_fd);
+
+        let res = device.send(b"willfail").await;
+        assert!(res.is_err(), "send should error when reader closed");
+        // DeviceIo Drop will close writer_fd
+    }
+
+    #[tokio::test]
+    async fn device_send_vectored_errors_on_broken_pipe() {
+        use std::os::unix::io::FromRawFd;
+
+        let mut fds = [0; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let reader_fd = fds[0];
+        let writer_fd = fds[1];
+
+        // close reader to provoke EPIPE on writev
+        close_raw_fd(reader_fd);
+
+        set_nonblocking(writer_fd);
+
+        let mac: MacAddress = [20, 21, 22, 23, 24, 25].into();
+        let async_fd =
+            tokio::io::unix::AsyncFd::new(unsafe { DeviceIo::from_raw_fd(writer_fd) }).unwrap();
+        let device = device_from_parts(mac, async_fd);
+
+        let a = b"ab";
+        let b = b"cd";
+        let bufs = [IoSlice::new(a), IoSlice::new(b)];
+        let res = device.send_vectored(&bufs).await;
+        assert!(
+            res.is_err(),
+            "send_vectored should error when reader closed"
+        );
     }
 
     #[tokio::test]

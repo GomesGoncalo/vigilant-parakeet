@@ -356,3 +356,151 @@ where
     .await
     .is_ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn poll_until_immediate_and_none() {
+        // immediate success
+        let got = poll_until(|| Some(42u32), 3, 1).await;
+        assert_eq!(got, Some(42));
+
+        // always none
+        let none: Option<u32> = poll_until(|| None, 2, 1).await;
+        assert_eq!(none, None);
+    }
+
+    #[tokio::test]
+    async fn poll_until_mocked_sees_change() {
+        tokio::time::pause();
+
+        let flag = Arc::new(AtomicU32::new(0));
+        let f = flag.clone();
+
+        // schedule a change after 15ms
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            f.store(1, Ordering::SeqCst);
+        });
+
+        let res = poll_until_mocked(
+            || {
+                if flag.load(Ordering::SeqCst) == 1 {
+                    Some(7u32)
+                } else {
+                    None
+                }
+            },
+            10,
+            10,
+        )
+        .await;
+
+        assert_eq!(res, Some(7));
+    }
+
+    #[tokio::test]
+    async fn repeat_async_send_mocked_increments() {
+        tokio::time::pause();
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+
+        repeat_async_send_mocked(
+            || {
+                let c = c.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok::<(), ()>(())
+                }
+            },
+            5,
+            10,
+        )
+        .await;
+
+        assert_eq!(counter.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn mk_pipe_nonblocking_and_read_write() {
+        let (r, w) = mk_pipe_nonblocking().expect("create pipe");
+        let payload = b"hi";
+        let nw = unsafe { libc::write(w, payload.as_ptr().cast(), payload.len()) };
+        assert_eq!(nw, payload.len() as isize);
+
+        let mut buf = [0u8; 2];
+        let nr = read_fd(r, &mut buf).expect("read");
+        assert_eq!(nr, 2);
+        assert_eq!(&buf, payload);
+
+        close_fd(r).expect("close r");
+        close_fd(w).expect("close w");
+    }
+
+    #[test]
+    fn mk_socketpairs_roundtrip_and_close() {
+        let (node_fds, hub_fds) = mk_socketpairs(1).expect("socketpairs");
+        let node = node_fds[0];
+        let hub = hub_fds[0];
+
+        let msg = b"yo";
+        let n = unsafe { libc::send(node, msg.as_ptr().cast(), msg.len(), 0) };
+        assert!(n >= 0, "send failed");
+
+        let mut buf = [0u8; 8];
+        let got = read_fd(hub, &mut buf).expect("read from hub");
+        assert_eq!(got, msg.len());
+
+        close_fd(node).expect("close node");
+        close_fd(hub).expect("close hub");
+    }
+
+    #[tokio::test]
+    async fn await_with_timeout_success_and_timeout() {
+        // immediate future should succeed
+        let ok = await_with_timeout(async { 9u32 }, Duration::from_millis(10)).await;
+        assert_eq!(ok.unwrap(), 9);
+
+        // now test timeout path using a pending oneshot receiver
+        tokio::time::pause();
+        let (_tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let fut = async {
+            rx.await.unwrap();
+            5u32
+        };
+        let pending = await_with_timeout(fut, Duration::from_millis(10));
+
+        // advance time to trigger timeout
+        tokio::time::advance(Duration::from_millis(20)).await;
+        let res = pending.await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn advance_until_detects_flag() {
+        tokio::time::pause();
+        let flag = Arc::new(AtomicU32::new(0));
+        let f = flag.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            f.store(1, Ordering::SeqCst);
+        });
+
+        let ok = advance_until(
+            || flag.load(Ordering::SeqCst) == 1,
+            Duration::from_millis(10),
+            Duration::from_millis(200),
+        )
+        .await;
+        assert!(ok);
+    }
+}
