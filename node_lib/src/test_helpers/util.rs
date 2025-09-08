@@ -207,7 +207,7 @@ pub fn mk_socketpairs(n: usize) -> io::Result<(Vec<i32>, Vec<i32>)> {
     for _ in 0..n {
         let mut fds = [0; 2];
         unsafe {
-            let r = libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr());
+            let r = libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, fds.as_mut_ptr());
             if r != 0 {
                 return Err(io::Error::last_os_error());
             }
