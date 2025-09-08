@@ -22,6 +22,7 @@ use std::{
     sync::{Arc, RwLock},
     time::Duration,
 };
+use tokio::net::UdpSocket;
 
 pub struct Rsu {
     args: Args,
@@ -29,22 +30,39 @@ pub struct Rsu {
     tun: Arc<Tun>,
     device: Arc<Device>,
     cache: Arc<ClientCache>,
+    server_socket: Option<Arc<UdpSocket>>,
 }
 
 impl Rsu {
     pub fn new(args: Args, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
+        // Create UDP socket for server communication if server address is provided
+        let server_socket = if args.node_params.server_address.is_some() {
+            let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+            socket.set_nonblocking(true)?;
+            Some(Arc::new(UdpSocket::from_std(socket)?))
+        } else {
+            None
+        };
+
         let rsu = Arc::new(Self {
             routing: Arc::new(RwLock::new(Routing::new(&args)?)),
             args,
             tun,
             device,
             cache: ClientCache::default().into(),
+            server_socket,
         });
 
         tracing::info!(?rsu.args, "Setup Rsu");
         rsu.hello_task()?;
         rsu.process_tap_traffic()?;
         Self::wire_traffic_task(rsu.clone())?;
+        
+        // Start server response handling task if server socket exists
+        if rsu.server_socket.is_some() {
+            Self::server_response_task(rsu.clone())?;
+        }
+        
         Ok(rsu)
     }
 
@@ -118,10 +136,163 @@ impl Rsu {
         Ok(())
     }
 
+    fn server_response_task(rsu: Arc<Self>) -> Result<()> {
+        let Some(ref server_socket) = rsu.server_socket else {
+            return Ok(()); // No server socket, nothing to do
+        };
+        
+        let socket = server_socket.clone();
+        let tun = rsu.tun.clone();
+        let device = rsu.device.clone();
+        let routing = rsu.routing.clone();
+        let cache = rsu.cache.clone();
+        let enable_encryption = rsu.args.node_params.enable_encryption;
+        
+        tokio::task::spawn(async move {
+            let mut buffer = vec![0u8; 65536];
+            
+            loop {
+                match socket.recv(&mut buffer).await {
+                    Ok(len) => {
+                        let data = &buffer[..len];
+                        if let Ok(server_msg) = bincode::deserialize::<crate::server::ServerToRsuMessage>(data) {
+                            tracing::debug!("Received server response: destination={:?}", server_msg.destination_mac);
+                            
+                            // Process the decrypted payload similar to original RSU logic
+                            let destination_mac: MacAddress = server_msg.destination_mac.into();
+                            let source_mac: MacAddress = server_msg.source_mac.into();
+                            
+                            let is_broadcast = destination_mac == [255; 6].into() || destination_mac.bytes()[0] & 0x1 != 0;
+                            let target = cache.get(destination_mac);
+                            let mut messages = Vec::new();
+                            
+                            // Send to tap if broadcast/multicast or if we're the target
+                            if is_broadcast || target.is_some_and(|x| x == device.mac_address()) {
+                                messages.push(ReplyType::Tap(vec![server_msg.decrypted_payload.clone()]));
+                            }
+                            
+                            // Forward to other nodes based on routing
+                            let forwards: Vec<_> = {
+                                let routing = routing.read().unwrap();
+                                if is_broadcast {
+                                    // For broadcast, forward to next hops except source
+                                    routing
+                                        .iter_next_hops()
+                                        .filter(|&&mac| mac != source_mac)
+                                        .filter_map(|&next_hop_mac| {
+                                            let route = routing.get_route_to(Some(next_hop_mac))?;
+                                            
+                                            // Re-encrypt if encryption is enabled
+                                            let downstream_data = if enable_encryption {
+                                                match crate::crypto::encrypt_payload(&server_msg.decrypted_payload) {
+                                                    Ok(encrypted_data) => encrypted_data,
+                                                    Err(_) => return None,
+                                                }
+                                            } else {
+                                                server_msg.decrypted_payload.clone()
+                                            };
+                                            
+                                            Some(ReplyType::Wire(
+                                                (&Message::new(
+                                                    device.mac_address(),
+                                                    route.mac,
+                                                    PacketType::Data(Data::Downstream(ToDownstream::new(
+                                                        &source_mac.bytes(),
+                                                        destination_mac,
+                                                        &downstream_data,
+                                                    ))),
+                                                )).into(),
+                                            ))
+                                        })
+                                        .collect()
+                                } else if let Some(target_mac) = target {
+                                    // For unicast, forward to specific target
+                                    if let Some(route) = routing.get_route_to(Some(target_mac)) {
+                                        let downstream_data = if enable_encryption {
+                                            match crate::crypto::encrypt_payload(&server_msg.decrypted_payload) {
+                                                Ok(encrypted_data) => encrypted_data,
+                                                Err(_) => {
+                                                    tracing::warn!("Failed to encrypt payload for unicast forwarding");
+                                                    continue;
+                                                }
+                                            }
+                                        } else {
+                                            server_msg.decrypted_payload.clone()
+                                        };
+                                        
+                                        vec![ReplyType::Wire(
+                                            (&Message::new(
+                                                device.mac_address(),
+                                                route.mac,
+                                                PacketType::Data(Data::Downstream(ToDownstream::new(
+                                                    &source_mac.bytes(),
+                                                    target_mac,
+                                                    &downstream_data,
+                                                ))),
+                                            )).into(),
+                                        )]
+                                    } else {
+                                        Vec::new()
+                                    }
+                                } else {
+                                    Vec::new()
+                                }
+                            };
+                            messages.extend(forwards);
+                            
+                            if !messages.is_empty() {
+                                let _ = node::handle_messages(messages, &tun, &device, None).await;
+                            }
+                        } else {
+                            tracing::warn!("Failed to deserialize server response");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Error receiving from server socket: {:?}", e);
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
         match msg.get_packet_type() {
             PacketType::Data(Data::Upstream(buf)) => {
-                // Decrypt the entire frame if encryption is enabled
+                // Check if we should forward to server or handle locally
+                if let Some(server_addr) = self.args.node_params.server_address {
+                    // Forward encrypted upstream traffic to server
+                    if let Some(ref server_socket) = self.server_socket {
+                        let source: [u8; 6] = buf
+                            .source()
+                            .get(0..6)
+                            .ok_or_else(|| anyhow!("message source too short"))?
+                            .try_into()?;
+                        
+                        let server_msg = crate::server::RsuToServerMessage {
+                            rsu_mac: self.device.mac_address().bytes(),
+                            encrypted_data: buf.data().to_vec(),
+                            original_source: source,
+                        };
+                        
+                        let serialized = bincode::serialize(&server_msg)
+                            .map_err(|e| anyhow!("Failed to serialize server message: {}", e))?;
+                        
+                        // Send to server (fire and forget)
+                        if let Err(e) = server_socket.send_to(&serialized, server_addr).await {
+                            tracing::warn!("Failed to send to server: {:?}", e);
+                        }
+                        
+                        // Return None since server will handle the processing
+                        return Ok(None);
+                    } else {
+                        tracing::warn!("Server address configured but no server socket available");
+                        return Ok(None);
+                    }
+                }
+                
+                // Legacy mode: decrypt locally (when no server address is configured)
                 let decrypted_payload = if self.args.node_params.enable_encryption {
                     match crate::crypto::decrypt_payload(buf.data()) {
                         Ok(decrypted_data) => decrypted_data,
@@ -591,6 +762,7 @@ mod rsu_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -634,6 +806,7 @@ mod rsu_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -675,6 +848,7 @@ mod rsu_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -725,6 +899,7 @@ mod rsu_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(

@@ -14,6 +14,7 @@ pub fn mk_node_params(node_type: NodeType, hello_periodicity: Option<u32>) -> No
         hello_periodicity,
         cached_candidates: 3,
         enable_encryption: false,
+        server_address: None,
     }
 }
 

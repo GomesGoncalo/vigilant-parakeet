@@ -223,6 +223,7 @@ mod tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -269,6 +270,7 @@ mod tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -322,6 +324,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 

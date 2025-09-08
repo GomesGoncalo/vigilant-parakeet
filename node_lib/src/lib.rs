@@ -5,6 +5,7 @@ pub mod crypto;
 mod data;
 pub mod messages;
 pub mod metrics;
+pub mod server;
 // Re-export test helpers for integration tests.
 // Make this available unconditionally so integration tests can import
 // `node_lib::test_helpers::hub` without passing a feature flag.
@@ -142,6 +143,7 @@ mod tests {
                 hello_periodicity: Some(100),
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let args_obu = Args {
@@ -155,6 +157,7 @@ mod tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -180,6 +183,7 @@ mod tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let res = crate::create(args);

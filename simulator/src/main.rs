@@ -24,6 +24,7 @@ use tokio::signal;
 // Context is unused in current builds; remove the import.
 #[cfg(not(feature = "test_helpers"))]
 use tokio_tun::Tun as TokioTun;
+use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 #[cfg(feature = "webview")]
 use warp::Filter;
@@ -85,7 +86,8 @@ async fn main() -> Result<()> {
     }
 
     let devices = Arc::new(Mutex::new(HashMap::new()));
-    let simulator = Simulator::new(&args, |name, config| {
+    let server_addr = args.server_address;
+    let simulator = Simulator::new(&args, move |name, config| {
         let Some(config) = config.get("config_path") else {
             bail!("no config for node");
         };
@@ -138,6 +140,8 @@ async fn main() -> Result<()> {
                     .flatten(),
                 cached_candidates,
                 enable_encryption: settings.get_bool("enable_encryption").unwrap_or(false),
+                server_address: settings.get::<std::net::SocketAddr>("server_address").ok()
+                    .or(server_addr), // Use config file setting or command line arg
             },
         };
 
@@ -178,6 +182,15 @@ async fn main() -> Result<()> {
             .insert(name.to_string(), (dev.clone(), tun.clone()));
         Ok((dev, tun, node))
     })?;
+
+    // Spawn server if configured
+    let _server = if let Some(server_addr) = args.server_address {
+        info!("Starting server at {}", server_addr);
+        Some(node_lib::server::Server::new(server_addr).await?)
+    } else {
+        info!("No server address configured, RSUs will process traffic locally");
+        None
+    };
 
     #[cfg(feature = "webview")]
     {

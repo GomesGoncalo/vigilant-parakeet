@@ -47,6 +47,7 @@ mod extra_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -117,6 +118,7 @@ mod extra_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -195,6 +197,7 @@ mod tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -236,6 +239,7 @@ mod tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -300,6 +304,7 @@ mod cache_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -350,6 +355,7 @@ mod cache_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -431,6 +437,7 @@ mod regression_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -488,6 +495,7 @@ mod regression_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -552,6 +560,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -579,6 +588,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let boot = Instant::now() - Duration::from_secs(1);
@@ -644,6 +654,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let boot = Instant::now() - Duration::from_secs(1);
@@ -706,6 +717,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -747,6 +759,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -805,6 +818,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -864,6 +878,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -887,6 +902,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -928,6 +944,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -990,6 +1007,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
@@ -1055,6 +1073,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         // Use paused time so we can deterministically advance time
@@ -1147,6 +1166,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         // Use paused time so we can deterministically advance time
@@ -1244,6 +1264,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         // Use paused time for deterministic latency measurement
@@ -1343,6 +1364,7 @@ mod more_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let mut obu_routing = Routing::new(&obu_args, &boot).expect("OBU routing built");
