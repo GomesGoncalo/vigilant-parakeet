@@ -6,6 +6,17 @@ use std::os::unix::io::FromRawFd;
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 
+/// Create NodeParameters with sensible defaults for tests.
+pub fn mk_node_params(node_type: NodeType, hello_periodicity: Option<u32>) -> NodeParameters {
+    NodeParameters {
+        node_type,
+        hello_history: 10,
+        hello_periodicity,
+        cached_candidates: 3,
+        enable_encryption: false,
+    }
+}
+
 /// Create a Device from a raw fd and mac address. Intended for tests only.
 pub fn mk_device_from_fd(mac: MacAddress, fd: i32) -> Device {
     Device::from_asyncfd_for_bench(
@@ -21,12 +32,7 @@ pub fn mk_args(node_type: NodeType, hello_periodicity: Option<u32>) -> Args {
         tap_name: None,
         ip: None,
         mtu: 1500,
-        node_params: NodeParameters {
-            node_type,
-            hello_history: 10,
-            hello_periodicity,
-            cached_candidates: 3,
-        },
+        node_params: mk_node_params(node_type, hello_periodicity),
     }
 }
 
@@ -201,7 +207,7 @@ pub fn mk_socketpairs(n: usize) -> io::Result<(Vec<i32>, Vec<i32>)> {
     for _ in 0..n {
         let mut fds = [0; 2];
         unsafe {
-            let r = libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr());
+            let r = libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, fds.as_mut_ptr());
             if r != 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -327,4 +333,26 @@ where
         timeout,
     )
     .await
+}
+
+/// Mocked-time version of advance_until that uses await_condition_with_time_advance internally.
+/// Advances time by `step` duration until `check` returns true or `timeout` is reached.
+/// Returns true if condition was met, false if timed out.
+pub async fn advance_until<F>(mut check: F, step: Duration, timeout: Duration) -> bool
+where
+    F: FnMut() -> bool,
+{
+    await_condition_with_time_advance(
+        step,
+        || {
+            if check() {
+                Some(true)
+            } else {
+                None
+            }
+        },
+        timeout,
+    )
+    .await
+    .is_ok()
 }

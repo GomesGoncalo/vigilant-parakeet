@@ -25,6 +25,10 @@ pub struct NodeParameters {
     /// Number of cached upstream candidates to keep for fast failover
     #[arg(long, default_value_t = 3)]
     pub cached_candidates: u32,
+
+    /// Enable payload encryption between OBUs and upstream RSUs
+    #[arg(long, default_value_t = false)]
+    pub enable_encryption: bool,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -43,7 +47,7 @@ pub struct Args {
     pub ip: Option<Ipv4Addr>,
 
     /// MTU
-    #[arg(short, long, default_value_t = 1459)]
+    #[arg(short, long, default_value_t = 1436)]
     pub mtu: i32,
 
     /// Node Parameters

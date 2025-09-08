@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
             bind: tun.name().to_string(),
             tap_name: Some("virtual".to_string()),
             ip: Some(Ipv4Addr::from_str(&settings.get_string("ip")?)?),
-            mtu: 1459,
+            mtu: 1436,
             node_params: NodeParameters {
                 node_type: NodeType::from_str(&settings.get_string("node_type")?, true)
                     .or_else(|_| bail!("invalid node type"))?,
@@ -137,6 +137,7 @@ async fn main() -> Result<()> {
                     .ok()
                     .flatten(),
                 cached_candidates,
+                enable_encryption: settings.get_bool("enable_encryption").unwrap_or(false),
             },
         };
 
