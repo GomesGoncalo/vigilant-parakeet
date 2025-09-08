@@ -3,7 +3,8 @@ use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
 use node_lib::test_helpers::hub::HubCheck;
 use node_lib::test_helpers::util::{
-    await_condition_with_time_advance, mk_device_from_fd, mk_node_params, mk_shim_pairs,
+    advance_until, await_condition_with_time_advance, mk_device_from_fd, mk_node_params,
+    mk_shim_pairs,
 };
 use node_lib::Args;
 use std::sync::{
@@ -16,41 +17,34 @@ use std::time::Duration;
 struct PayloadChecker {
     payload_found: Arc<AtomicBool>,
     test_payload: Vec<u8>,
-    search_anywhere: bool, // If true, search anywhere in data; if false, search at offset 12
 }
 
 impl HubCheck for PayloadChecker {
     fn on_packet(&self, from_idx: usize, data: &[u8]) {
         // Check packets from OBU1 (index 1)
-        if from_idx == 1 {
-            if let Ok(msg) = node_lib::messages::message::Message::try_from(data) {
-                if let node_lib::messages::packet_type::PacketType::Data(data_msg) = msg.get_packet_type() {
-                    let message_data = match data_msg {
-                        node_lib::messages::data::Data::Upstream(upstream) => upstream.data(),
-                        node_lib::messages::data::Data::Downstream(downstream) => {
-                            downstream.data()
-                        }
-                    };
+        if from_idx != 1 {
+            return;
+        }
 
-                    if self.search_anywhere {
-                        // Search anywhere in the data for the payload (used for encryption tests)
-                        if message_data
-                            .windows(self.test_payload.len())
-                            .any(|window| window == self.test_payload)
-                        {
-                            self.payload_found.store(true, Ordering::SeqCst);
-                        }
-                    } else {
-                        // Search at specific offset 12 (used for plaintext tests)
-                        if message_data.len() >= 12 + self.test_payload.len() {
-                            let payload_part = &message_data[12..];
-                            if payload_part.starts_with(&self.test_payload) {
-                                self.payload_found.store(true, Ordering::SeqCst);
-                            }
-                        }
-                    }
-                }
-            }
+        let Ok(msg) = node_lib::messages::message::Message::try_from(data) else {
+            return;
+        };
+
+        let node_lib::messages::packet_type::PacketType::Data(data_msg) = msg.get_packet_type()
+        else {
+            return;
+        };
+
+        let message_data = match data_msg {
+            node_lib::messages::data::Data::Upstream(upstream) => upstream.data(),
+            node_lib::messages::data::Data::Downstream(downstream) => downstream.data(),
+        };
+
+        if message_data
+            .windows(self.test_payload.len())
+            .any(|window| window == self.test_payload)
+        {
+            self.payload_found.store(true, Ordering::SeqCst);
         }
     }
 }
@@ -97,7 +91,6 @@ async fn test_payload_encryption_prevents_inspection() {
     let inspector = Arc::new(PayloadChecker {
         payload_found: payload_inspected_clone,
         test_payload: test_payload_vec.clone(),
-        search_anywhere: true, // Search anywhere in the data for encrypted payloads
     });
 
     // Create hub with our custom inspector
@@ -243,7 +236,6 @@ async fn test_encryption_disabled_allows_inspection() {
     let checker = Arc::new(PayloadChecker {
         payload_found: payload_seen_clone,
         test_payload: test_payload_vec.clone(),
-        search_anywhere: false, // Search at offset 12 for plaintext payloads
     });
 
     node_lib::test_helpers::util::mk_hub_with_checks_mocked_time(
@@ -299,12 +291,12 @@ async fn test_encryption_disabled_allows_inspection() {
         .expect("Failed to send test frame");
 
     // Give more time for the frame to be processed and sent over the network
-    for _i in 0..10 {
-        tokio::time::advance(Duration::from_millis(100)).await;
-        if payload_seen.load(Ordering::SeqCst) {
-            break;
-        }
-    }
+    advance_until(
+        || payload_seen.load(Ordering::SeqCst),
+        Duration::from_millis(1),
+        Duration::from_millis(10),
+    )
+    .await;
 
     // When encryption is disabled, the payload should be readable
     assert!(
@@ -354,7 +346,6 @@ async fn test_ping_encryption_prevents_inspection_but_rsu_receives_correctly() {
     let inspector = Arc::new(PayloadChecker {
         payload_found: ping_content_found_clone,
         test_payload: ping_payload_vec.clone(),
-        search_anywhere: true, // Search anywhere in the data for encrypted payloads
     });
 
     // Create hub with our custom inspector

@@ -334,3 +334,25 @@ where
     )
     .await
 }
+
+/// Mocked-time version of advance_until that uses await_condition_with_time_advance internally.
+/// Advances time by `step` duration until `check` returns true or `timeout` is reached.
+/// Returns true if condition was met, false if timed out.
+pub async fn advance_until<F>(mut check: F, step: Duration, timeout: Duration) -> bool
+where
+    F: FnMut() -> bool,
+{
+    await_condition_with_time_advance(
+        step,
+        || {
+            if check() {
+                Some(true)
+            } else {
+                None
+            }
+        },
+        timeout,
+    )
+    .await
+    .is_ok()
+}

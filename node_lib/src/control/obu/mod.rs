@@ -219,11 +219,9 @@ impl Obu {
                     .ok_or_else(|| anyhow!("error"))?
                     .try_into()?;
                 let destination: MacAddress = destination.into();
-                let is_for_us = destination == self.device.mac_address()
-                    || destination == [255; 6].into() // broadcast
-                    || destination.bytes()[0] & 0x1 != 0; // multicast
+                let is_for_us =
+                    destination == self.device.mac_address() || destination.bytes()[0] & 0x1 != 0;
                 if is_for_us {
-                    // This downstream packet is for us - decrypt entire frame if encryption is enabled
                     let payload_data = if self.args.node_params.enable_encryption {
                         match crate::crypto::decrypt_payload(buf.data()) {
                             Ok(decrypted_data) => decrypted_data,

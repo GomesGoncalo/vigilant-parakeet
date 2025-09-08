@@ -296,7 +296,6 @@ impl Rsu {
                     cache.store_mac(from, devicec.mac_address());
 
                     let routing = routing.read().unwrap();
-                    // Check if this is multicast traffic
                     let is_multicast = to.bytes()[0] & 0x1 != 0;
 
                     let outgoing = if is_multicast {
