@@ -6,7 +6,7 @@ use common::device::Device;
 use common::tun::Tun;
 use futures::{future::join_all, Future};
 use itertools::Itertools;
-use std::{io::IoSlice, sync::Arc, time::Duration};
+use std::{io::IoSlice, sync::Arc};
 use uninit::uninit_array;
 
 #[derive(Debug)]
@@ -61,104 +61,50 @@ pub async fn handle_messages(
     dev: &Arc<Device>,
     routing: Option<Arc<std::sync::RwLock<Routing>>>,
 ) -> Result<()> {
-    // Check if we have multiple wire messages (potentially broadcast scenario)
-    let wire_count = messages
+    let future_vec = messages
         .iter()
-        .filter(|msg| matches!(msg, ReplyType::Wire(_)))
-        .count();
-
-    if wire_count > 1 {
-        // Sequential handling for broadcast scenarios to prevent message concatenation
-        for (i, reply) in messages.iter().enumerate() {
-            if i > 0 {
-                // Add small delay between messages to prevent concatenation
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
+        .map(|reply| {
             let routing_clone = routing.clone();
-            match reply {
-                ReplyType::Tap(buf) => {
-                    let vec: Vec<IoSlice> = buf.iter().map(|x| IoSlice::new(x)).collect();
-                    let _ = tun
-                        .send_vectored(&vec)
-                        .await
-                        .inspect_err(|e| tracing::error!(?e, "error sending to tap"));
-                }
-                ReplyType::Wire(reply) => {
-                    let vec: Vec<IoSlice> = reply.iter().map(|x| IoSlice::new(x)).collect();
-                    // Attempt to send; on error, if routing is present and this
-                    // wire payload targets the cached upstream for an OBU,
-                    // trigger a failover to the next candidate.
-                    let send_res = dev.send_vectored(&vec).await;
-                    if let Err(e) = send_res {
-                        tracing::error!(?e, "error sending to dev");
-
-                        // Try to parse the wire bytes; if this message's destination
-                        // equals the current cached upstream, trigger a failover.
-                        if let Some(r) = &routing_clone {
-                            let bytes: Vec<u8> =
-                                reply.iter().flat_map(|x| x.iter()).copied().collect();
-                            if let Ok(parsed) = Message::try_from(&bytes[..]) {
-                                if let Ok(dest) = parsed.to() {
-                                    let cached = r.read().unwrap().get_cached_upstream();
-                                    if cached.is_some() && cached.unwrap() == dest {
-                                        let promoted =
-                                            r.write().unwrap().failover_cached_upstream();
-                                        tracing::info!(promoted = ?promoted, "promoted cached upstream after send error");
-                                    }
-                                }
-                            }
-                        }
+            async move {
+                match reply {
+                    ReplyType::Tap(buf) => {
+                        let vec: Vec<IoSlice> = buf.iter().map(|x| IoSlice::new(x)).collect();
+                        let _ = tun
+                            .send_vectored(&vec)
+                            .await
+                            .inspect_err(|e| tracing::error!(?e, "error sending to tap"));
                     }
-                }
-            };
-        }
-    } else {
-        // Original concurrent handling for single messages
-        let future_vec = messages
-            .iter()
-            .map(|reply| {
-                let routing_clone = routing.clone();
-                async move {
-                    match reply {
-                        ReplyType::Tap(buf) => {
-                            let vec: Vec<IoSlice> = buf.iter().map(|x| IoSlice::new(x)).collect();
-                            let _ = tun
-                                .send_vectored(&vec)
-                                .await
-                                .inspect_err(|e| tracing::error!(?e, "error sending to tap"));
-                        }
-                        ReplyType::Wire(reply) => {
-                            let vec: Vec<IoSlice> = reply.iter().map(|x| IoSlice::new(x)).collect();
-                            // Attempt to send; on error, if routing is present and this
-                            // wire payload targets the cached upstream for an OBU,
-                            // trigger a failover to the next candidate.
-                            let send_res = dev.send_vectored(&vec).await;
-                            if let Err(e) = send_res {
-                                tracing::error!(?e, "error sending to dev");
+                    ReplyType::Wire(reply) => {
+                        let vec: Vec<IoSlice> = reply.iter().map(|x| IoSlice::new(x)).collect();
+                        // Attempt to send; on error, if routing is present and this
+                        // wire payload targets the cached upstream for an OBU,
+                        // trigger a failover to the next candidate.
+                        let send_res = dev.send_vectored(&vec).await;
+                        if let Err(e) = send_res {
+                            tracing::error!(?e, "error sending to dev");
 
-                                // Try to parse the wire bytes; if this message's destination
-                                // equals the current cached upstream, trigger a failover.
-                                if let Some(r) = &routing_clone {
-                                    let bytes: Vec<u8> = reply.iter().flat_map(|x| x.iter()).copied().collect();
-                                    if let Ok(parsed) = Message::try_from(&bytes[..]) {
-                                        if let Ok(dest) = parsed.to() {
-                                            let cached = r.read().unwrap().get_cached_upstream();
-                                            if cached.is_some() && cached.unwrap() == dest {
-                                                let promoted = r.write().unwrap().failover_cached_upstream();
-                                                tracing::info!(promoted = ?promoted, "promoted cached upstream after send error");
-                                            }
+                            // Try to parse the wire bytes; if this message's destination
+                            // equals the current cached upstream, trigger a failover.
+                            if let Some(r) = &routing_clone {
+                                let bytes: Vec<u8> = reply.iter().flat_map(|x| x.iter()).copied().collect();
+                                if let Ok(parsed) = Message::try_from(&bytes[..]) {
+                                    if let Ok(dest) = parsed.to() {
+                                        let cached = r.read().unwrap().get_cached_upstream();
+                                        if cached.is_some() && cached.unwrap() == dest {
+                                            let promoted = r.write().unwrap().failover_cached_upstream();
+                                            tracing::info!(promoted = ?promoted, "promoted cached upstream after send error");
                                         }
                                     }
                                 }
                             }
                         }
-                    };
-                }
-            })
-            .collect_vec();
+                    }
+                };
+            }
+        })
+        .collect_vec();
 
-        join_all(future_vec).await;
-    }
+    join_all(future_vec).await;
     Ok(())
 }
 

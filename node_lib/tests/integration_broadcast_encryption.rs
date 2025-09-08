@@ -25,16 +25,38 @@ impl HubCheck for BroadcastTrafficChecker {
     fn on_packet(&self, from_idx: usize, data: &[u8]) {
         // Capture all Data::Downstream packets from RSU (index 0)
         if from_idx == 0 {
-            if let Ok(msg) = node_lib::messages::message::Message::try_from(data) {
-                if let node_lib::messages::packet_type::PacketType::Data(
-                    node_lib::messages::data::Data::Downstream(_),
-                ) = msg.get_packet_type()
-                {
-                    self.rsu_downstream_count.fetch_add(1, Ordering::SeqCst);
-                    self.captured_packets
-                        .lock()
-                        .unwrap()
-                        .push((from_idx, data.to_vec()));
+            // Handle potentially concatenated frames by parsing multiple messages
+            let mut offset = 0;
+            while offset < data.len() {
+                match node_lib::messages::message::Message::try_from(&data[offset..]) {
+                    Ok(msg) => {
+                        if let node_lib::messages::packet_type::PacketType::Data(
+                            node_lib::messages::data::Data::Downstream(_),
+                        ) = msg.get_packet_type()
+                        {
+                            self.rsu_downstream_count.fetch_add(1, Ordering::SeqCst);
+                            
+                            // Calculate the length of this message
+                            let msg_data: Vec<Vec<u8>> = (&msg).into();
+                            let msg_len: usize = msg_data.iter().map(|chunk| chunk.len()).sum();
+                            
+                            self.captured_packets
+                                .lock()
+                                .unwrap()
+                                .push((from_idx, data[offset..offset + msg_len].to_vec()));
+                            
+                            offset += msg_len;
+                        } else {
+                            // Non-downstream message, skip it
+                            let msg_data: Vec<Vec<u8>> = (&msg).into();
+                            let msg_len: usize = msg_data.iter().map(|chunk| chunk.len()).sum();
+                            offset += msg_len;
+                        }
+                    }
+                    Err(_) => {
+                        // Can't parse message, stop processing
+                        break;
+                    }
                 }
             }
         }
