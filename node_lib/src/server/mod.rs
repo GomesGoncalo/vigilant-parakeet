@@ -8,9 +8,7 @@ use std::{
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, warn};
 
-use crate::{
-    control::client_cache::ClientCache,
-};
+use crate::control::client_cache::ClientCache;
 
 /// Server that handles encrypted traffic from RSUs
 pub struct Server {
@@ -113,7 +111,7 @@ impl Server {
             .ok_or_else(|| anyhow!("decrypted frame too short for destination MAC"))?
             .try_into()?;
         let to: MacAddress = to.into();
-        
+
         let from: [u8; 6] = decrypted_payload
             .get(6..12)
             .ok_or_else(|| anyhow!("decrypted frame too short for source MAC"))?
@@ -121,7 +119,8 @@ impl Server {
         let from: MacAddress = from.into();
 
         // Store MAC mapping
-        self.cache.store_mac(from, rsu_message.original_source.into());
+        self.cache
+            .store_mac(from, rsu_message.original_source.into());
 
         let is_broadcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
 
@@ -157,9 +156,11 @@ impl Server {
         // Send response to target RSUs
         let rsu_addrs: Vec<(_, SocketAddr)> = {
             let rsu_addresses = self.rsu_addresses.read().unwrap();
-            target_rsus.iter()
+            target_rsus
+                .iter()
                 .filter_map(|target_rsu| {
-                    rsu_addresses.get(&MacAddress::from(*target_rsu))
+                    rsu_addresses
+                        .get(&MacAddress::from(*target_rsu))
                         .map(|&addr| (*target_rsu, addr))
                 })
                 .collect()
@@ -168,9 +169,12 @@ impl Server {
         for (target_rsu, rsu_addr) in rsu_addrs {
             let serialized = bincode::serialize(&response)
                 .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
-            
+
             if let Err(e) = self.socket.send_to(&serialized, rsu_addr).await {
-                warn!("Failed to send response to RSU {:?} at {}: {:?}", target_rsu, rsu_addr, e);
+                warn!(
+                    "Failed to send response to RSU {:?} at {}: {:?}",
+                    target_rsu, rsu_addr, e
+                );
             }
         }
 
@@ -192,7 +196,7 @@ mod tests {
     async fn server_creation_and_binding() {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
         let server = Server::new(addr).await.expect("Failed to create server");
-        
+
         // Should be able to get the local address
         let local_addr = server.local_addr().expect("Failed to get local address");
         assert_eq!(local_addr.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
@@ -212,7 +216,8 @@ mod tests {
         };
 
         let serialized = bincode::serialize(&message).expect("Failed to serialize");
-        let deserialized: RsuToServerMessage = bincode::deserialize(&serialized).expect("Failed to deserialize");
+        let deserialized: RsuToServerMessage =
+            bincode::deserialize(&serialized).expect("Failed to deserialize");
 
         assert_eq!(deserialized.rsu_mac, rsu_mac);
         assert_eq!(deserialized.encrypted_data, encrypted_data);

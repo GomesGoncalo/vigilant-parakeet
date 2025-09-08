@@ -1,7 +1,7 @@
 use node_lib::{
     args::{Args, NodeType},
-    server::{Server, RsuToServerMessage, ServerToRsuMessage},
-    test_helpers::util::{mk_shim_pair, mk_node_params},
+    server::{RsuToServerMessage, Server, ServerToRsuMessage},
+    test_helpers::util::{mk_node_params, mk_shim_pair},
 };
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -15,7 +15,9 @@ async fn test_server_creation_and_protocol() {
 
     // Start server on localhost with an ephemeral port
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-    let server = Server::new(server_addr).await.expect("Failed to start server");
+    let server = Server::new(server_addr)
+        .await
+        .expect("Failed to start server");
     let actual_server_addr = server.local_addr().expect("Failed to get server address");
 
     // Verify server is bound to localhost
@@ -30,7 +32,8 @@ async fn test_server_creation_and_protocol() {
     };
 
     let serialized = bincode::serialize(&test_message).expect("Failed to serialize");
-    let deserialized: RsuToServerMessage = bincode::deserialize(&serialized).expect("Failed to deserialize");
+    let deserialized: RsuToServerMessage =
+        bincode::deserialize(&serialized).expect("Failed to deserialize");
 
     assert_eq!(deserialized.rsu_mac, test_message.rsu_mac);
     assert_eq!(deserialized.encrypted_data, test_message.encrypted_data);
@@ -45,11 +48,18 @@ async fn test_server_creation_and_protocol() {
     };
 
     let response_serialized = bincode::serialize(&response).expect("Failed to serialize response");
-    let response_deserialized: ServerToRsuMessage = bincode::deserialize(&response_serialized).expect("Failed to deserialize response");
+    let response_deserialized: ServerToRsuMessage =
+        bincode::deserialize(&response_serialized).expect("Failed to deserialize response");
 
-    assert_eq!(response_deserialized.decrypted_payload, response.decrypted_payload);
+    assert_eq!(
+        response_deserialized.decrypted_payload,
+        response.decrypted_payload
+    );
     assert_eq!(response_deserialized.target_rsus, response.target_rsus);
-    assert_eq!(response_deserialized.destination_mac, response.destination_mac);
+    assert_eq!(
+        response_deserialized.destination_mac,
+        response.destination_mac
+    );
     assert_eq!(response_deserialized.source_mac, response.source_mac);
 
     println!("✓ Server creation and communication protocol validated");
@@ -66,7 +76,8 @@ async fn test_rsu_server_configuration() {
     // Create a mock device for testing
     let device = Arc::new(common::device::Device::from_asyncfd_for_bench(
         [1, 2, 3, 4, 5, 6].into(),
-        tokio::io::unix::AsyncFd::new(unsafe { std::os::unix::io::FromRawFd::from_raw_fd(0) }).unwrap(),
+        tokio::io::unix::AsyncFd::new(unsafe { std::os::unix::io::FromRawFd::from_raw_fd(0) })
+            .unwrap(),
     ));
 
     // Test 1: RSU without server configuration (legacy mode)

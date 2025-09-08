@@ -140,7 +140,9 @@ async fn main() -> Result<()> {
                     .flatten(),
                 cached_candidates,
                 enable_encryption: settings.get_bool("enable_encryption").unwrap_or(false),
-                server_address: settings.get::<std::net::SocketAddr>("server_address").ok()
+                server_address: settings
+                    .get::<std::net::SocketAddr>("server_address")
+                    .ok()
                     .or(server_addr), // Use config file setting or command line arg
             },
         };

@@ -17,6 +17,7 @@ fn bench_obu_get_route(_c: &mut Criterion) {
             hello_periodicity: None,
             cached_candidates: 3,
             enable_encryption: false,
+            server_address: None,
         },
     };
 
@@ -67,6 +68,7 @@ fn bench_rsu_get_route(_c: &mut Criterion) {
             hello_periodicity: None,
             cached_candidates: 3,
             enable_encryption: false,
+            server_address: None,
         },
     };
 
