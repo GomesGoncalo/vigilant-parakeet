@@ -186,45 +186,9 @@ async fn main() -> Result<()> {
         Ok((dev, tun, node))
     })?;
 
-    // Spawn server (always required now)
-    let server_addr = args.server_address;
-    info!("Starting server at {}", server_addr);
-    
-    // Create server in the main namespace with infrastructure connectivity
-    // The server should be accessible through the simulator's routing infrastructure
-    let server_ip = Ipv4Addr::new(10, 0, 255, 1); // Use a dedicated server IP
-    
-    #[cfg(not(feature = "test_helpers"))]
-    let server_tun = Arc::new(Tun::new(
-        TokioTun::builder()
-            .name("server")
-            .tap()
-            .address(server_ip)
-            .mtu(1436)
-            .up()
-            .build()?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder for server"))?,
-    ));
-    
-    #[cfg(feature = "test_helpers")]
-    let server_tun = {
-        let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
-        Arc::new(tun_a)
-    };
-    
-    let server_device = Arc::new(Device::new(server_tun.name())?);
-    
-    // Connect server to simulator routing
-    let simulator_nodes = simulator.get_nodes();
-    let _server = node_lib::server::Server::new_with_routing(
-        server_addr, 
-        server_ip, 
-        server_tun, 
-        server_device,
-        simulator_nodes,
-    ).await?;
+    // Server is now created as a node in the simulator configuration
+    // No need to create it separately
+    info!("Server will be created as configured node in topology");
 
     #[cfg(feature = "webview")]
     {

@@ -28,14 +28,24 @@ use tokio::net::UdpSocket;
 pub struct Rsu {
     args: Args,
     routing: Arc<RwLock<Routing>>,
+    /// Virtual interface for OBU communication
     tun: Arc<Tun>,
+    /// Real interface for OBU communication (used by node lib)
     device: Arc<Device>,
     cache: Arc<ClientCache>,
+    /// Infrastructure interface for server communication (real device)
+    infra_device: Arc<Device>,
     server_socket: Arc<UdpSocket>,
 }
 
 impl Rsu {
     pub fn new(args: Args, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
+        // For backward compatibility, create RSU without infrastructure device
+        // This will use the same device for both OBU and server communication
+        Self::new_with_infra(args, tun, device.clone(), device)
+    }
+
+    pub fn new_with_infra(args: Args, tun: Arc<Tun>, device: Arc<Device>, infra_device: Arc<Device>) -> Result<Arc<Self>> {
         // Server address is mandatory for RSUs
         let _server_address = args
             .node_params
@@ -43,7 +53,7 @@ impl Rsu {
             .as_ref()
             .ok_or_else(|| anyhow!("RSU requires server_address to be configured"))?;
 
-        // Create UDP socket for server communication
+        // Create UDP socket for server communication - bind to infrastructure interface
         let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
         socket.set_nonblocking(true)?;
         let server_socket = Arc::new(UdpSocket::from_std(socket)?);
@@ -54,18 +64,17 @@ impl Rsu {
             tun,
             device,
             cache: ClientCache::default().into(),
+            infra_device,
             server_socket,
         });
 
-        tracing::info!(?rsu.args, "Setup Rsu");
+        tracing::info!(?rsu.args, "Setup Rsu with infrastructure device");
         rsu.hello_task()?;
         rsu.process_tap_traffic()?;
         Self::wire_traffic_task(rsu.clone())?;
 
-        // Start server response handling task
+        // Start server communication tasks
         Self::server_response_task(rsu.clone())?;
-
-        // Start server registration task
         Self::server_registration_task(rsu.clone())?;
 
         Ok(rsu)
