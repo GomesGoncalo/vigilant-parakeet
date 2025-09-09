@@ -9,6 +9,9 @@ use std::{
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, warn};
 
+#[cfg(not(feature = "test_helpers"))]
+use tokio_tun;
+
 use crate::{
     control::client_cache::ClientCache,
     messages::{
@@ -16,6 +19,7 @@ use crate::{
         message::Message,
         packet_type::PacketType,
     },
+    Node,
 };
 
 /// Server that handles encrypted traffic from RSUs
@@ -30,11 +34,11 @@ pub struct Server {
     obu_to_rsu: Arc<RwLock<HashMap<MacAddress, MacAddress>>>,
     /// Track all known OBU MACs per RSU (for broadcast)
     rsu_to_obus: Arc<RwLock<HashMap<MacAddress, HashSet<MacAddress>>>>,
-    /// TUN device for network connectivity (so server can be pinged)
+    /// Virtual TUN device for OBU connectivity (so server can be pinged)
     tun: Arc<Tun>,
-    /// Device for network interface management
+    /// Real device for RSU communication through simulator routing
     device: Arc<Device>,
-    /// Server IP address
+    /// Server IP address for OBU connectivity
     ip_address: Ipv4Addr,
     /// ARP cache to remember IP to MAC mappings
     arp_cache: Arc<RwLock<HashMap<Ipv4Addr, [u8; 6]>>>,
@@ -250,6 +254,70 @@ impl ServerToRsuMessage {
 }
 
 impl Server {
+    /// Create server as infrastructure-only service (no TAP device for OBU ping)
+    pub async fn new_infrastructure_only(bind_addr: SocketAddr) -> Result<Arc<Self>> {
+        let socket = UdpSocket::bind(bind_addr).await?;
+        info!("Infrastructure server bound to {}", bind_addr);
+
+        // Create a dummy TUN device for compatibility
+        #[cfg(not(feature = "test_helpers"))]
+        let dummy_tun = {
+            use tokio_tun::Tun as TokioTun;
+            Arc::new(Tun::new(
+                TokioTun::builder()
+                    .name("server-dummy")
+                    .mtu(1436)
+                    .build()?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder for server"))?,
+            ))
+        };
+        
+        #[cfg(feature = "test_helpers")]
+        let dummy_tun = {
+            let (tun_a, _peer) = crate::test_helpers::util::mk_shim_pair();
+            Arc::new(tun_a)
+        };
+
+        let dummy_device = Arc::new(Device::new(dummy_tun.name())?);
+
+        let server = Arc::new(Self {
+            socket: Arc::new(socket),
+            cache: Arc::new(ClientCache::default()),
+            rsu_addresses: Arc::new(RwLock::new(HashMap::new())),
+            obu_to_rsu: Arc::new(RwLock::new(HashMap::new())),
+            rsu_to_obus: Arc::new(RwLock::new(HashMap::new())),
+            tun: dummy_tun,
+            device: dummy_device,
+            ip_address: Ipv4Addr::new(127, 0, 0, 1),  // Infrastructure server on localhost
+            arp_cache: Arc::new(RwLock::new(HashMap::new())),
+        });
+
+        // Start the server task for RSU communication
+        let server_clone = server.clone();
+        tokio::spawn(async move {
+            if let Err(e) = server_clone.run().await {
+                error!("Server error: {:?}", e);
+            }
+        });
+
+        Ok(server)
+    }
+
+    /// Create server with routing integration to simulator nodes
+    pub async fn new_with_routing(
+        bind_addr: SocketAddr, 
+        server_ip: Ipv4Addr, 
+        tun: Arc<Tun>, 
+        device: Arc<Device>,
+        _simulator_nodes: HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Node>)>,
+    ) -> Result<Arc<Self>> {
+        // For now, create server same as before but with awareness of simulator nodes
+        // Future enhancement: integrate with simulator routing
+        Self::new(bind_addr, server_ip, tun, device).await
+    }
+
     pub async fn new(bind_addr: SocketAddr, server_ip: Ipv4Addr, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
         let socket = UdpSocket::bind(bind_addr).await?;
         info!("Server bound to {} with IP {}", bind_addr, server_ip);

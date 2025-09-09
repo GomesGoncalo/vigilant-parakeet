@@ -5,6 +5,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 pub enum NodeType {
     Rsu,
     Obu,
+    Server,
 }
 
 #[derive(clap::Args, Clone, Debug)]

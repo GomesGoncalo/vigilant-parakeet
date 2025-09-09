@@ -43,6 +43,12 @@ impl Node for control::obu::Obu {
     }
 }
 
+impl Node for server::Server {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 pub fn create_with_vdev(
     args: Args,
     tun: Arc<Tun>,
@@ -51,6 +57,20 @@ pub fn create_with_vdev(
     match args.node_params.node_type {
         NodeType::Rsu => Ok(control::rsu::Rsu::new(args, tun, node_device)?),
         NodeType::Obu => Ok(control::obu::Obu::new(args, tun, node_device)?),
+        NodeType::Server => {
+            // For server nodes, we need to extract the server address from the args
+            let server_addr = args.node_params.server_address
+                .ok_or_else(|| anyhow::anyhow!("Server node requires server_address"))?;
+            let server_ip = args.ip
+                .ok_or_else(|| anyhow::anyhow!("Server node requires ip address"))?;
+                
+            // Create server with node devices for simulator integration
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    server::Server::new(server_addr, server_ip, tun, node_device).await
+                })
+            }).map(|s| s as Arc<dyn Node>)
+        }
     }
 }
 
