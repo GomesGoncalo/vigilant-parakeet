@@ -20,7 +20,6 @@ indexmap = "*"
 tokio-timerfd = "*"
 itertools = "*"
 serde = { version = "*", features = ["derive"]}
-bincode = "*"
 common = { path = "../common/" }
 arc-swap = { version = "*" }
 tracing-subscriber = { version = "*", features = ["env-filter"] }

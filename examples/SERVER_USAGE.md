@@ -1,6 +1,6 @@
 # Server Implementation Usage Guide
 
-This document describes how to use the new centralized server functionality for RSU traffic decryption.
+This document describes how to use the centralized server functionality for RSU traffic decryption.
 
 ## Overview
 
@@ -8,28 +8,25 @@ The server implementation moves encrypted traffic decryption from individual RSU
 
 - **Multi-RSU coordination**: Server handles traffic distribution between multiple RSUs
 - **OBU handover scenarios**: OBUs can seamlessly move between RSU coverage areas
-- **Centralized traffic management**: Single point for decryption and routing decisions
-- **Backward compatibility**: Existing configurations continue to work unchanged
+- **Centralized traffic decryption**: Single point for decryption while routing remains decentralized
 
 ## Architecture
 
 ```
-OBU1 ──(encrypted)──> RSU1 ──(UDP)──> Server ──(UDP)──> RSU2 ──(decrypted)──> OBU2
+OBU1 ──(encrypted)──> RSU1 ──(UDP)──> Server ──(encrypted)──> RSU2 ──(decrypted)──> OBU2
 OBU2 ──(encrypted)──> RSU2              │
-                                        └──(decrypted)──> RSU1
+                                        └──(encrypted)──> RSU1
 ```
 
 1. OBUs send encrypted upstream traffic to RSUs
 2. RSUs forward encrypted data to server via UDP
 3. Server decrypts traffic and determines distribution
-4. Server sends decrypted data back to appropriate RSUs
-5. RSUs forward decrypted traffic to destination OBUs
+4. Server sends encrypted data back to appropriate RSUs
+5. RSUs decrypt and forward traffic to destination OBUs
 
 ## Configuration
 
-### Server Mode (New)
-
-Configure RSUs with `server_address` to enable centralized processing:
+Configure RSUs with `server_address` (mandatory):
 
 ```yaml
 # rsu-config.yaml
@@ -39,21 +36,6 @@ hello_periodicity: 5000
 ip: 10.0.1.1
 enable_encryption: true
 server_address: "127.0.0.1:8080"  # Forward to centralized server
-cached_candidates: 3
-```
-
-### Legacy Mode (Existing)
-
-Omit `server_address` for local decryption (backward compatible):
-
-```yaml
-# rsu-legacy.yaml
-node_type: Rsu
-hello_history: 10
-hello_periodicity: 5000
-ip: 10.0.1.1
-enable_encryption: true
-# No server_address - decrypt locally
 cached_candidates: 3
 ```
 
@@ -72,23 +54,12 @@ sudo RUST_LOG="node=debug" ./target/release/simulator \
   --pretty
 ```
 
-### Legacy Mode (No Server)
-
-```bash
-# Start simulator without server (legacy mode)
-sudo RUST_LOG="node=debug" ./target/release/simulator \
-  --config-file examples/simulator-legacy.yaml \
-  --pretty
-```
-
 ## Example Configurations
 
 The `examples/` directory contains sample configurations:
 
 - `simulator-with-server.yaml` - Multi-RSU setup with centralized server
 - `rsu1-server.yaml`, `rsu2-server.yaml` - RSU configs with server address
-- `simulator-legacy.yaml` - Single RSU setup without server
-- `rsu1-legacy.yaml` - RSU config for local decryption
 - `obu1.yaml`, `obu2.yaml` - OBU configurations
 
 ## Testing
@@ -107,11 +78,7 @@ cargo test --workspace
 
 ## Configuration Priority
 
-Server address can be specified in multiple ways (in order of precedence):
-
-1. **Per-node config file**: `server_address: "127.0.0.1:8080"`
-2. **Simulator command line**: `--server-address 127.0.0.1:8080`
-3. **None**: Falls back to legacy mode (local decryption)
+Server address must be specified in the RSU config file: `server_address: "127.0.0.1:8080"`
 
 ## Monitoring
 
@@ -128,5 +95,3 @@ When server is enabled:
 **RSUs not connecting**: Verify server address in config and network connectivity
 
 **Traffic not flowing**: Check encryption settings match between OBUs and RSUs
-
-**Legacy mode fallback**: Remove `server_address` from config to disable server mode

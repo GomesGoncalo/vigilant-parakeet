@@ -101,6 +101,7 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
         node_params: mk_node_params(NodeType::Rsu, Some(50)),
     };
     args_rsu.node_params.enable_encryption = true;
+    args_rsu.node_params.server_address = Some("127.0.0.1:8080".parse().unwrap());
 
     let mut args_obu1 = Args {
         bind: String::from("unused"),
@@ -295,6 +296,7 @@ async fn test_rsu_broadcast_individual_encryption() {
         node_params: mk_node_params(NodeType::Rsu, Some(50)),
     };
     args_rsu.node_params.enable_encryption = true;
+    args_rsu.node_params.server_address = Some("127.0.0.1:8080".parse().unwrap());
 
     let mut args_obu1 = Args {
         bind: String::from("unused"),

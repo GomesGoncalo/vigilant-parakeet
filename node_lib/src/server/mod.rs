@@ -8,7 +8,14 @@ use std::{
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, warn};
 
-use crate::control::client_cache::ClientCache;
+use crate::{
+    control::client_cache::ClientCache,
+    messages::{
+        data::{Data, ToDownstream, ToUpstream},
+        message::Message,
+        packet_type::PacketType,
+    },
+};
 
 /// Server that handles encrypted traffic from RSUs
 pub struct Server {
@@ -21,27 +28,123 @@ pub struct Server {
 }
 
 /// Message sent from RSU to Server containing encrypted upstream data
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct RsuToServerMessage {
-    /// MAC address of the RSU sending this message (as 6-byte array)
-    pub rsu_mac: [u8; 6],
+    /// MAC address of the RSU sending this message
+    pub rsu_mac: MacAddress,
     /// Original encrypted upstream message data
     pub encrypted_data: Vec<u8>,
-    /// Source MAC from the original message (as 6-byte array)
-    pub original_source: [u8; 6],
+    /// Source MAC from the original message
+    pub original_source: MacAddress,
 }
 
 /// Message sent from Server back to RSUs with decrypted/processed data
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct ServerToRsuMessage {
     /// Decrypted payload data
     pub decrypted_payload: Vec<u8>,
     /// Target RSU MAC addresses to forward to (for broadcast/multicast)
-    pub target_rsus: Vec<[u8; 6]>,
+    pub target_rsus: Vec<MacAddress>,
     /// Original destination MAC address
-    pub destination_mac: [u8; 6],
+    pub destination_mac: MacAddress,
     /// Original source MAC address
-    pub source_mac: [u8; 6],
+    pub source_mac: MacAddress,
+}
+
+impl RsuToServerMessage {
+    pub fn new(rsu_mac: MacAddress, encrypted_data: Vec<u8>, original_source: MacAddress) -> Self {
+        Self {
+            rsu_mac,
+            encrypted_data,
+            original_source,
+        }
+    }
+
+    /// Convert to wire format using existing Message protocol
+    pub fn to_wire(&self) -> Vec<u8> {
+        // Create upstream data message with RSU MAC as origin
+        let upstream = ToUpstream::new(self.rsu_mac, &self.encrypted_data);
+        let data = Data::Upstream(upstream);
+        let packet_type = PacketType::Data(data);
+
+        // Create message from original source to server (using broadcast address as placeholder)
+        let msg = Message::new(
+            self.original_source,
+            MacAddress::from([255; 6]),
+            packet_type,
+        );
+        let parts: Vec<Vec<u8>> = (&msg).into();
+        parts.into_iter().flatten().collect()
+    }
+
+    /// Parse from wire format
+    pub fn from_wire(data: &[u8], rsu_mac: MacAddress) -> Result<Self> {
+        let msg = Message::try_from(data)?;
+        match msg.get_packet_type() {
+            PacketType::Data(Data::Upstream(upstream)) => Ok(Self {
+                rsu_mac,
+                encrypted_data: upstream.data().to_vec(),
+                original_source: msg.from()?,
+            }),
+            _ => Err(anyhow!("Invalid message type for RSU to server")),
+        }
+    }
+}
+
+impl ServerToRsuMessage {
+    pub fn new(
+        decrypted_payload: Vec<u8>,
+        target_rsus: Vec<MacAddress>,
+        destination_mac: MacAddress,
+        source_mac: MacAddress,
+    ) -> Self {
+        Self {
+            decrypted_payload,
+            target_rsus,
+            destination_mac,
+            source_mac,
+        }
+    }
+
+    /// Convert to wire format using existing Message protocol
+    pub fn to_wire(&self) -> Vec<u8> {
+        // Create downstream data message
+        let source_bytes = self.source_mac.bytes();
+        let downstream =
+            ToDownstream::new(&source_bytes, self.destination_mac, &self.decrypted_payload);
+        let data = Data::Downstream(downstream);
+        let packet_type = PacketType::Data(data);
+
+        // Create message from server (using broadcast) to destination
+        let msg = Message::new(
+            MacAddress::from([255; 6]),
+            self.destination_mac,
+            packet_type,
+        );
+        let parts: Vec<Vec<u8>> = (&msg).into();
+        parts.into_iter().flatten().collect()
+    }
+
+    /// Parse from wire format
+    pub fn from_wire(data: &[u8]) -> Result<Self> {
+        let msg = Message::try_from(data)?;
+        match msg.get_packet_type() {
+            PacketType::Data(Data::Downstream(downstream)) => {
+                let source_bytes: [u8; 6] = downstream
+                    .source()
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| anyhow!("Invalid source MAC"))?;
+                Ok(Self {
+                    decrypted_payload: downstream.data().to_vec(),
+                    target_rsus: vec![], // Will be filled separately based on routing
+                    destination_mac: msg.to()?,
+                    source_mac: MacAddress::from(source_bytes),
+                })
+            }
+            _ => Err(anyhow!("Invalid message type for server to RSU")),
+        }
+    }
 }
 
 impl Server {
@@ -87,9 +190,21 @@ impl Server {
     }
 
     async fn handle_message(&self, data: &[u8], from_addr: SocketAddr) -> Result<()> {
-        // Deserialize the message from RSU
-        let rsu_message: RsuToServerMessage = bincode::deserialize(data)
-            .map_err(|e| anyhow!("Failed to deserialize message: {}", e))?;
+        // Parse the message from RSU using the wire format
+        // We need to extract the RSU MAC from the socket address mapping
+        let rsu_mac = self
+            .rsu_addresses
+            .read()
+            .unwrap()
+            .iter()
+            .find(|(_, &addr)| addr == from_addr)
+            .map(|(&mac, _)| mac)
+            .unwrap_or_else(|| {
+                // For new RSUs, we'll use a placeholder and register them
+                MacAddress::from([0; 6])
+            });
+
+        let rsu_message = RsuToServerMessage::from_wire(data, rsu_mac)?;
 
         debug!(
             "Received message from RSU {:?} at {}",
@@ -100,7 +215,7 @@ impl Server {
         self.rsu_addresses
             .write()
             .unwrap()
-            .insert(rsu_message.rsu_mac.into(), from_addr);
+            .insert(rsu_message.rsu_mac, from_addr);
 
         // Decrypt the payload
         let decrypted_payload = crate::crypto::decrypt_payload(&rsu_message.encrypted_data)?;
@@ -119,38 +234,32 @@ impl Server {
         let from: MacAddress = from.into();
 
         // Store MAC mapping
-        self.cache
-            .store_mac(from, rsu_message.original_source.into());
+        self.cache.store_mac(from, rsu_message.original_source);
 
-        let is_broadcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
+        let is_multicast = to.bytes()[0] & 0x1 != 0;
 
         // Determine target RSUs
-        let target_rsus: Vec<[u8; 6]> = if is_broadcast {
-            // For broadcast, send to all RSUs except the sender
+        let target_rsus: Vec<MacAddress> = if is_multicast {
+            // For multicast, send to all RSUs except the sender
             self.rsu_addresses
                 .read()
                 .unwrap()
                 .keys()
-                .filter(|&&rsu_mac| rsu_mac != rsu_message.rsu_mac.into())
-                .map(|mac| mac.bytes())
+                .filter(|&&rsu_mac| rsu_mac != rsu_message.rsu_mac)
+                .copied()
                 .collect()
         } else {
             // For unicast, determine which RSU should handle this
             // For now, we'll send it back to all RSUs and let them decide based on their routing
-            self.rsu_addresses
-                .read()
-                .unwrap()
-                .keys()
-                .map(|mac| mac.bytes())
-                .collect()
+            self.rsu_addresses.read().unwrap().keys().copied().collect()
         };
 
         // Create response message
         let response = ServerToRsuMessage {
             decrypted_payload,
             target_rsus: target_rsus.clone(),
-            destination_mac: to.bytes(),
-            source_mac: from.bytes(),
+            destination_mac: to,
+            source_mac: from,
         };
 
         // Send response to target RSUs
@@ -160,17 +269,16 @@ impl Server {
                 .iter()
                 .filter_map(|target_rsu| {
                     rsu_addresses
-                        .get(&MacAddress::from(*target_rsu))
+                        .get(target_rsu)
                         .map(|&addr| (*target_rsu, addr))
                 })
                 .collect()
         };
 
         for (target_rsu, rsu_addr) in rsu_addrs {
-            let serialized = bincode::serialize(&response)
-                .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
+            let wire_data = response.to_wire();
 
-            if let Err(e) = self.socket.send_to(&serialized, rsu_addr).await {
+            if let Err(e) = self.socket.send_to(&wire_data, rsu_addr).await {
                 warn!(
                     "Failed to send response to RSU {:?} at {}: {:?}",
                     target_rsu, rsu_addr, e
@@ -205,8 +313,8 @@ mod tests {
 
     #[tokio::test]
     async fn server_message_serialization() {
-        let rsu_mac = [1, 2, 3, 4, 5, 6];
-        let original_source = [7, 8, 9, 10, 11, 12];
+        let rsu_mac = MacAddress::from([1, 2, 3, 4, 5, 6]);
+        let original_source = MacAddress::from([7, 8, 9, 10, 11, 12]);
         let encrypted_data = vec![1, 2, 3, 4, 5];
 
         let message = RsuToServerMessage {
@@ -215,9 +323,9 @@ mod tests {
             original_source,
         };
 
-        let serialized = bincode::serialize(&message).expect("Failed to serialize");
-        let deserialized: RsuToServerMessage =
-            bincode::deserialize(&serialized).expect("Failed to deserialize");
+        let wire_data = message.to_wire();
+        let deserialized =
+            RsuToServerMessage::from_wire(&wire_data, rsu_mac).expect("Failed to deserialize");
 
         assert_eq!(deserialized.rsu_mac, rsu_mac);
         assert_eq!(deserialized.encrypted_data, encrypted_data);

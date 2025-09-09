@@ -1,3 +1,4 @@
+use mac_address::MacAddress;
 use node_lib::{
     args::{Args, NodeType},
     server::{RsuToServerMessage, Server, ServerToRsuMessage},
@@ -25,15 +26,16 @@ async fn test_server_creation_and_protocol() {
     assert_ne!(actual_server_addr.port(), 0); // Should have been assigned a port
 
     // Test RSU to Server message serialization/deserialization
+    let rsu_mac = MacAddress::from([1, 2, 3, 4, 5, 6]);
     let test_message = RsuToServerMessage {
-        rsu_mac: [1, 2, 3, 4, 5, 6],
+        rsu_mac,
         encrypted_data: vec![1, 2, 3, 4, 5],
-        original_source: [7, 8, 9, 10, 11, 12],
+        original_source: MacAddress::from([7, 8, 9, 10, 11, 12]),
     };
 
-    let serialized = bincode::serialize(&test_message).expect("Failed to serialize");
-    let deserialized: RsuToServerMessage =
-        bincode::deserialize(&serialized).expect("Failed to deserialize");
+    let wire_data = test_message.to_wire();
+    let deserialized =
+        RsuToServerMessage::from_wire(&wire_data, rsu_mac).expect("Failed to deserialize");
 
     assert_eq!(deserialized.rsu_mac, test_message.rsu_mac);
     assert_eq!(deserialized.encrypted_data, test_message.encrypted_data);
@@ -42,14 +44,14 @@ async fn test_server_creation_and_protocol() {
     // Test Server to RSU message serialization/deserialization
     let response = ServerToRsuMessage {
         decrypted_payload: vec![10, 20, 30],
-        target_rsus: vec![[1, 2, 3, 4, 5, 6]],
-        destination_mac: [255, 255, 255, 255, 255, 255], // Broadcast
-        source_mac: [7, 8, 9, 10, 11, 12],
+        target_rsus: vec![MacAddress::from([1, 2, 3, 4, 5, 6])],
+        destination_mac: MacAddress::from([255, 255, 255, 255, 255, 255]), // Broadcast
+        source_mac: MacAddress::from([7, 8, 9, 10, 11, 12]),
     };
 
-    let response_serialized = bincode::serialize(&response).expect("Failed to serialize response");
-    let response_deserialized: ServerToRsuMessage =
-        bincode::deserialize(&response_serialized).expect("Failed to deserialize response");
+    let response_wire_data = response.to_wire();
+    let response_deserialized =
+        ServerToRsuMessage::from_wire(&response_wire_data).expect("Failed to deserialize response");
 
     assert_eq!(
         response_deserialized.decrypted_payload,
@@ -65,7 +67,7 @@ async fn test_server_creation_and_protocol() {
     println!("✓ Server creation and communication protocol validated");
 }
 
-/// Test that RSU can be created with and without server configuration
+/// Test that RSU requires server configuration
 #[tokio::test]
 async fn test_rsu_server_configuration() {
     node_lib::init_test_tracing();
@@ -80,8 +82,8 @@ async fn test_rsu_server_configuration() {
             .unwrap(),
     ));
 
-    // Test 1: RSU without server configuration (legacy mode)
-    let args_legacy = Args {
+    // Test 1: RSU without server configuration should fail
+    let args_no_server = Args {
         bind: String::from("test"),
         tap_name: None,
         ip: None,
@@ -89,11 +91,14 @@ async fn test_rsu_server_configuration() {
         node_params: mk_node_params(NodeType::Rsu, Some(1000)),
     };
 
-    assert!(args_legacy.node_params.server_address.is_none());
-    let _rsu_legacy = node_lib::control::rsu::Rsu::new(args_legacy, tun_a.clone(), device.clone())
-        .expect("Failed to create RSU in legacy mode");
+    assert!(args_no_server.node_params.server_address.is_none());
+    let result = node_lib::control::rsu::Rsu::new(args_no_server, tun_a.clone(), device.clone());
+    assert!(
+        result.is_err(),
+        "RSU creation should fail without server address"
+    );
 
-    // Test 2: RSU with server configuration
+    // Test 2: RSU with server configuration should succeed
     let mut args_server = Args {
         bind: String::from("test"),
         tap_name: None,
@@ -108,5 +113,5 @@ async fn test_rsu_server_configuration() {
     let _rsu_server = node_lib::control::rsu::Rsu::new(args_server, tun_a.clone(), device.clone())
         .expect("Failed to create RSU with server configuration");
 
-    println!("✓ RSU configuration with and without server validated");
+    println!("✓ RSU mandatory server configuration validated");
 }

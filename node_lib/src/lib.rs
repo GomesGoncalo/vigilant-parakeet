@@ -143,7 +143,7 @@ mod tests {
                 hello_periodicity: Some(100),
                 cached_candidates: 3,
                 enable_encryption: false,
-                server_address: None,
+                server_address: Some("127.0.0.1:8080".parse().unwrap()),
             },
         };
         let args_obu = Args {
