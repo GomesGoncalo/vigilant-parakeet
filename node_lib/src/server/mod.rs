@@ -36,6 +36,8 @@ pub struct Server {
     device: Arc<Device>,
     /// Server IP address
     ip_address: Ipv4Addr,
+    /// ARP cache to remember IP to MAC mappings
+    arp_cache: Arc<RwLock<HashMap<Ipv4Addr, [u8; 6]>>>,
 }
 
 /// Message sent from RSU to Server containing encrypted upstream data
@@ -261,6 +263,7 @@ impl Server {
             tun,
             device,
             ip_address: server_ip,
+            arp_cache: Arc::new(RwLock::new(HashMap::new())),
         });
 
         // Start the server task
@@ -401,13 +404,23 @@ impl Server {
         let _target_mac = &arp_data[18..24]; // Not used for requests
         let target_ip = &arp_data[24..28];
 
+        // Store sender IP to MAC mapping in ARP cache
+        let sender_ip_addr = Ipv4Addr::new(sender_ip[0], sender_ip[1], sender_ip[2], sender_ip[3]);
+        let mut sender_mac_array = [0u8; 6];
+        sender_mac_array.copy_from_slice(sender_mac);
+        self.arp_cache.write().unwrap().insert(sender_ip_addr, sender_mac_array);
+
+        debug!("ARP cache updated: {} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+               sender_ip_addr,
+               sender_mac_array[0], sender_mac_array[1], sender_mac_array[2],
+               sender_mac_array[3], sender_mac_array[4], sender_mac_array[5]);
+
         // Check if this is an ARP request for our IP
         let our_ip = self.ip_address.octets();
         if opcode == 1 && target_ip == our_ip {
             // ARP Request - send ARP Reply
-            debug!("Server received ARP request for {} from {}.{}.{}.{}", 
-                   self.ip_address,
-                   sender_ip[0], sender_ip[1], sender_ip[2], sender_ip[3]);
+            debug!("Server received ARP request for {} from {}", 
+                   self.ip_address, sender_ip_addr);
 
             let mut arp_reply = vec![0u8; 42]; // Ethernet + ARP header
             
@@ -431,8 +444,8 @@ impl Server {
             if let Err(e) = self.tun.send_all(&arp_reply).await {
                 warn!("Failed to send ARP reply: {:?}", e);
             } else {
-                debug!("Server sent ARP reply to {}.{}.{}.{} (MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
-                       sender_ip[0], sender_ip[1], sender_ip[2], sender_ip[3],
+                debug!("Server sent ARP reply to {} (MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
+                       sender_ip_addr,
                        sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3], sender_mac[4], sender_mac[5]);
             }
         }
@@ -475,14 +488,27 @@ impl Server {
 
         // Handle ICMP Echo Request (ping)
         if icmp_type == 8 && icmp_code == 0 {
-            debug!("Server received ping from {}", Ipv4Addr::from(src_ip));
+            let src_ip_addr = Ipv4Addr::from(src_ip);
+            debug!("Server received ping from {}", src_ip_addr);
+            
+            // Look up the destination MAC from ARP cache
+            let dest_mac = self.arp_cache.read().unwrap()
+                .get(&src_ip_addr)
+                .copied()
+                .unwrap_or([0xFF; 6]); // Fall back to broadcast if not in cache
+
+            if dest_mac == [0xFF; 6] {
+                debug!("No ARP cache entry for {}, using broadcast MAC for ping reply", src_ip_addr);
+            } else {
+                debug!("Found ARP cache entry for {}: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                       src_ip_addr, dest_mac[0], dest_mac[1], dest_mac[2], dest_mac[3], dest_mac[4], dest_mac[5]);
+            }
             
             // Create ICMP Echo Reply as Ethernet frame
             let mut reply = vec![0u8; 14 + packet.len()]; // Ethernet header + IP packet
             
-            // Ethernet header (14 bytes) - we need the source MAC from ARP table or use broadcast
-            // For now, use broadcast MAC (this will work but is not ideal)
-            reply[0..6].copy_from_slice(&[0xFF; 6]); // Destination MAC (broadcast for now)
+            // Ethernet header (14 bytes) - use ARP cache to get proper destination MAC
+            reply[0..6].copy_from_slice(&dest_mac); // Destination MAC from ARP cache
             reply[6..12].copy_from_slice(&self.device.mac_address().bytes()); // Source MAC (our MAC)
             reply[12..14].copy_from_slice(&[0x08, 0x00]); // EtherType: IPv4
             
@@ -513,7 +539,8 @@ impl Server {
             if let Err(e) = self.tun.send_all(&reply).await {
                 warn!("Failed to send ping reply: {:?}", e);
             } else {
-                debug!("Server sent ping reply to {}", Ipv4Addr::from(src_ip));
+                debug!("Server sent ping reply to {} (MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
+                       src_ip_addr, dest_mac[0], dest_mac[1], dest_mac[2], dest_mac[3], dest_mac[4], dest_mac[5]);
             }
         }
 

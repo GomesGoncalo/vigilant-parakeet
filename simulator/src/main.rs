@@ -86,6 +86,7 @@ async fn main() -> Result<()> {
     }
 
     let devices = Arc::new(Mutex::new(HashMap::new()));
+    let devices_for_closure = devices.clone();
     let server_addr = Some(args.server_address);
     let simulator = Simulator::new(&args, move |name, config| {
         let Some(config) = config.get("config_path") else {
@@ -178,7 +179,7 @@ async fn main() -> Result<()> {
 
         let dev = Arc::new(Device::new(tun.name())?);
         let node = node_lib::create_with_vdev(args, virtual_tun, dev.clone())?;
-        devices
+        devices_for_closure
             .lock()
             .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
             .insert(name.to_string(), (dev.clone(), tun.clone()));
