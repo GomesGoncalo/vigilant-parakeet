@@ -158,6 +158,23 @@ impl Rsu {
                                 server_msg.destination_mac
                             );
 
+                            // Decrypt the payload received from server
+                            let decrypted_payload = if enable_encryption {
+                                match crate::crypto::decrypt_payload(&server_msg.encrypted_payload)
+                                {
+                                    Ok(payload) => payload,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Failed to decrypt server response: {:?}",
+                                            e
+                                        );
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                server_msg.encrypted_payload.clone()
+                            };
+
                             // Process the decrypted payload similar to original RSU logic
                             let destination_mac = server_msg.destination_mac;
                             let source_mac = server_msg.source_mac;
@@ -179,13 +196,13 @@ impl Rsu {
                                             // Re-encrypt if encryption is enabled
                                             let downstream_data = if enable_encryption {
                                                 match crate::crypto::encrypt_payload(
-                                                    &server_msg.decrypted_payload,
+                                                    &decrypted_payload,
                                                 ) {
                                                     Ok(encrypted_data) => encrypted_data,
                                                     Err(_) => return None,
                                                 }
                                             } else {
-                                                server_msg.decrypted_payload.clone()
+                                                decrypted_payload.clone()
                                             };
 
                                             Some(ReplyType::Wire(

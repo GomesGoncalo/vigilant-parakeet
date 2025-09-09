@@ -21,7 +21,7 @@ OBU2 ──(encrypted)──> RSU2              │
 1. OBUs send encrypted upstream traffic to RSUs
 2. RSUs forward encrypted data to server via UDP
 3. Server decrypts traffic and determines distribution
-4. Server sends encrypted data back to appropriate RSUs
+4. Server re-encrypts and sends data back to appropriate RSUs
 5. RSUs decrypt and forward traffic to destination OBUs
 
 ## Configuration

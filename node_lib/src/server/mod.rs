@@ -41,8 +41,8 @@ pub struct RsuToServerMessage {
 /// Message sent from Server back to RSUs with decrypted/processed data
 #[derive(Debug, Clone)]
 pub struct ServerToRsuMessage {
-    /// Decrypted payload data
-    pub decrypted_payload: Vec<u8>,
+    /// Encrypted payload data (re-encrypted by server)
+    pub encrypted_payload: Vec<u8>,
     /// Target RSU MAC addresses to forward to (for broadcast/multicast)
     pub target_rsus: Vec<MacAddress>,
     /// Original destination MAC address
@@ -93,13 +93,13 @@ impl RsuToServerMessage {
 
 impl ServerToRsuMessage {
     pub fn new(
-        decrypted_payload: Vec<u8>,
+        encrypted_payload: Vec<u8>,
         target_rsus: Vec<MacAddress>,
         destination_mac: MacAddress,
         source_mac: MacAddress,
     ) -> Self {
         Self {
-            decrypted_payload,
+            encrypted_payload,
             target_rsus,
             destination_mac,
             source_mac,
@@ -111,7 +111,7 @@ impl ServerToRsuMessage {
         // Create downstream data message
         let source_bytes = self.source_mac.bytes();
         let downstream =
-            ToDownstream::new(&source_bytes, self.destination_mac, &self.decrypted_payload);
+            ToDownstream::new(&source_bytes, self.destination_mac, &self.encrypted_payload);
         let data = Data::Downstream(downstream);
         let packet_type = PacketType::Data(data);
 
@@ -136,7 +136,7 @@ impl ServerToRsuMessage {
                     .try_into()
                     .map_err(|_| anyhow!("Invalid source MAC"))?;
                 Ok(Self {
-                    decrypted_payload: downstream.data().to_vec(),
+                    encrypted_payload: downstream.data().to_vec(),
                     target_rsus: vec![], // Will be filled separately based on routing
                     destination_mac: msg.to()?,
                     source_mac: MacAddress::from(source_bytes),
@@ -254,9 +254,12 @@ impl Server {
             self.rsu_addresses.read().unwrap().keys().copied().collect()
         };
 
+        // Re-encrypt the payload for sending back to RSUs
+        let encrypted_payload = crate::crypto::encrypt_payload(&decrypted_payload)?;
+
         // Create response message
         let response = ServerToRsuMessage {
-            decrypted_payload,
+            encrypted_payload,
             target_rsus: target_rsus.clone(),
             destination_mac: to,
             source_mac: from,

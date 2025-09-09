@@ -43,7 +43,7 @@ async fn test_server_creation_and_protocol() {
 
     // Test Server to RSU message serialization/deserialization
     let response = ServerToRsuMessage {
-        decrypted_payload: vec![10, 20, 30],
+        encrypted_payload: vec![10, 20, 30],
         target_rsus: vec![MacAddress::from([1, 2, 3, 4, 5, 6])],
         destination_mac: MacAddress::from([255, 255, 255, 255, 255, 255]), // Broadcast
         source_mac: MacAddress::from([7, 8, 9, 10, 11, 12]),
@@ -54,10 +54,10 @@ async fn test_server_creation_and_protocol() {
         ServerToRsuMessage::from_wire(&response_wire_data).expect("Failed to deserialize response");
 
     assert_eq!(
-        response_deserialized.decrypted_payload,
-        response.decrypted_payload
+        response_deserialized.encrypted_payload,
+        response.encrypted_payload
     );
-    assert_eq!(response_deserialized.target_rsus, response.target_rsus);
+    assert_eq!(response_deserialized.target_rsus, vec![]); // Target RSUs are not sent on wire
     assert_eq!(
         response_deserialized.destination_mac,
         response.destination_mac
