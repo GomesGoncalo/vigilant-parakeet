@@ -143,7 +143,6 @@ impl Rsu {
         let device = rsu.device.clone();
         let routing = rsu.routing.clone();
         let _cache = rsu.cache.clone();
-        let enable_encryption = rsu.args.node_params.enable_encryption;
 
         tokio::task::spawn(async move {
             let mut buffer = vec![0u8; 65536];
@@ -158,24 +157,8 @@ impl Rsu {
                                 server_msg.destination_mac
                             );
 
-                            // Decrypt the payload received from server
-                            let decrypted_payload = if enable_encryption {
-                                match crate::crypto::decrypt_payload(&server_msg.encrypted_payload)
-                                {
-                                    Ok(payload) => payload,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "Failed to decrypt server response: {:?}",
-                                            e
-                                        );
-                                        continue;
-                                    }
-                                }
-                            } else {
-                                server_msg.encrypted_payload.clone()
-                            };
-
-                            // Process the decrypted payload similar to original RSU logic
+                            // RSU should not modify payload - just forward encrypted data as-is
+                            let encrypted_payload = &server_msg.encrypted_payload;
                             let destination_mac = server_msg.destination_mac;
                             let source_mac = server_msg.source_mac;
 
@@ -193,18 +176,7 @@ impl Rsu {
                                         .filter_map(|&next_hop_mac| {
                                             let route = routing.get_route_to(Some(next_hop_mac))?;
 
-                                            // Re-encrypt if encryption is enabled
-                                            let downstream_data = if enable_encryption {
-                                                match crate::crypto::encrypt_payload(
-                                                    &decrypted_payload,
-                                                ) {
-                                                    Ok(encrypted_data) => encrypted_data,
-                                                    Err(_) => return None,
-                                                }
-                                            } else {
-                                                decrypted_payload.clone()
-                                            };
-
+                                            // Forward encrypted payload without modification
                                             Some(ReplyType::Wire(
                                                 (&Message::new(
                                                     device.mac_address(),
@@ -213,7 +185,7 @@ impl Rsu {
                                                         ToDownstream::new(
                                                             &source_mac.bytes(),
                                                             destination_mac,
-                                                            &downstream_data,
+                                                            encrypted_payload,
                                                         ),
                                                     )),
                                                 ))
@@ -248,137 +220,32 @@ impl Rsu {
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
         match msg.get_packet_type() {
             PacketType::Data(Data::Upstream(buf)) => {
-                // Check if we should forward to server or handle locally
-                if let Some(server_addr) = self.args.node_params.server_address {
-                    // Forward encrypted upstream traffic to server
-                    let source_bytes: [u8; 6] = buf
-                        .source()
-                        .get(0..6)
-                        .ok_or_else(|| anyhow!("message source too short"))?
-                        .try_into()?;
-                    let source_mac = MacAddress::from(source_bytes);
-
-                    let server_msg = crate::server::RsuToServerMessage::new(
-                        self.device.mac_address(),
-                        buf.data().to_vec(),
-                        source_mac,
-                    );
-
-                    let wire_data = server_msg.to_wire();
-
-                    // Send to server (fire and forget)
-                    if let Err(e) = self.server_socket.send_to(&wire_data, server_addr).await {
-                        tracing::warn!("Failed to send to server: {:?}", e);
-                    }
-
-                    // Return None since server will handle the processing
-                    return Ok(None);
-                }
-
-                // Legacy mode: decrypt locally (when no server address is configured)
-                let decrypted_payload = if self.args.node_params.enable_encryption {
-                    match crate::crypto::decrypt_payload(buf.data()) {
-                        Ok(decrypted_data) => decrypted_data,
-                        Err(_) => return Ok(None),
-                    }
-                } else {
-                    buf.data().to_vec()
-                };
-
-                // Extract MAC addresses from decrypted data
-                let to: [u8; 6] = decrypted_payload
-                    .get(0..6)
-                    .ok_or_else(|| anyhow!("decrypted frame too short for destination MAC"))?
-                    .try_into()?;
-                let to: MacAddress = to.into();
-                let from: [u8; 6] = decrypted_payload
-                    .get(6..12)
-                    .ok_or_else(|| anyhow!("decrypted frame too short for source MAC"))?
-                    .try_into()?;
-                let from: MacAddress = from.into();
-                let source: [u8; 6] = buf
+                // Forward encrypted upstream traffic to server (server address is mandatory)
+                let server_addr = self.args.node_params.server_address
+                    .expect("RSU must have server_address configured");
+                
+                let source_bytes: [u8; 6] = buf
                     .source()
                     .get(0..6)
                     .ok_or_else(|| anyhow!("message source too short"))?
                     .try_into()?;
-                let source: MacAddress = source.into();
-                self.cache.store_mac(from, source);
-                let bcast_or_mcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
-                let mut target = self.cache.get(to);
-                let mut messages = Vec::with_capacity(1);
+                let source_mac = MacAddress::from(source_bytes);
 
-                if bcast_or_mcast || target.is_some_and(|x| x == self.device.mac_address()) {
-                    messages.push(ReplyType::Tap(vec![decrypted_payload.clone()]));
-                    target = None;
+                let server_msg = crate::server::RsuToServerMessage::new(
+                    self.device.mac_address(),
+                    buf.data().to_vec(),
+                    source_mac,
+                );
+
+                let wire_data = server_msg.to_wire();
+
+                // Send to server (fire and forget) - RSU just forwards encrypted data
+                if let Err(e) = self.server_socket.send_to(&wire_data, server_addr).await {
+                    tracing::warn!("Failed to send to server: {:?}", e);
                 }
 
-                let routing = self.routing.read().unwrap();
-                messages.extend(if bcast_or_mcast {
-                    routing
-                        .iter_next_hops()
-                        .filter(|x| x != &&source)
-                        .filter_map(|x| {
-                            let route = routing.get_route_to(Some(*x))?;
-                            Some((*x, route.mac))
-                        })
-                        .filter_map(|(_target, next_hop)| {
-                            // For broadcast traffic, encrypt the entire decrypted frame individually for each recipient
-                            let downstream_data = if self.args.node_params.enable_encryption {
-                                match crate::crypto::encrypt_payload(&decrypted_payload) {
-                                    Ok(encrypted_data) => encrypted_data,
-                                    Err(_) => return None, // Skip this recipient on encryption failure
-                                }
-                            } else {
-                                decrypted_payload.clone()
-                            };
-
-                            // For broadcast distribution, use the original destination (broadcast) not the target OBU
-                            Some(ReplyType::Wire(
-                                (&Message::new(
-                                    self.device.mac_address(),
-                                    next_hop,
-                                    PacketType::Data(Data::Downstream(ToDownstream::new(
-                                        buf.source(),
-                                        to, // Use original broadcast destination, not target OBU
-                                        &downstream_data,
-                                    ))),
-                                ))
-                                    .into(),
-                            ))
-                        })
-                        .collect_vec()
-                } else if let Some(target) = target {
-                    let Some(next_hop) = routing.get_route_to(Some(target)) else {
-                        return Ok(None);
-                    };
-
-                    // For unicast traffic, encrypt the entire decrypted frame for the specific recipient
-                    let downstream_data = if self.args.node_params.enable_encryption {
-                        match crate::crypto::encrypt_payload(&decrypted_payload) {
-                            Ok(encrypted_data) => encrypted_data,
-                            Err(_) => return Ok(None),
-                        }
-                    } else {
-                        decrypted_payload.clone()
-                    };
-
-                    vec![ReplyType::Wire(
-                        (&Message::new(
-                            self.device.mac_address(),
-                            next_hop.mac,
-                            PacketType::Data(Data::Downstream(ToDownstream::new(
-                                buf.source(),
-                                target,
-                                &downstream_data,
-                            ))),
-                        ))
-                            .into(),
-                    )]
-                } else {
-                    vec![]
-                });
-
-                Ok(Some(messages))
+                // Return None since server will handle the processing
+                Ok(None)
             }
             PacketType::Control(Control::HeartbeatReply(hbr)) => {
                 if hbr.source() == self.device.mac_address() {
@@ -433,7 +300,6 @@ impl Rsu {
         let device = self.device.clone();
         let cache = self.cache.clone();
         let routing = self.routing.clone();
-        let enable_encryption = self.args.node_params.enable_encryption;
         tokio::task::spawn(async move {
             loop {
                 let devicec = device.clone();
@@ -453,7 +319,7 @@ impl Rsu {
                     let is_multicast = to.bytes()[0] & 0x1 != 0;
 
                     let outgoing = if is_multicast {
-                        // For multicast from RSU's TUN interface, encrypt individually for each recipient
+                        // For multicast from RSU's TUN interface, send raw data without encryption
                         routing
                             .iter_next_hops()
                             .filter(|x| x != &&devicec.mac_address())
@@ -463,41 +329,22 @@ impl Rsu {
                             })
                             .map(|(x, y)| (x, y.mac))
                             .unique_by(|(x, _)| *x)
-                            .filter_map(|(_x, next_hop)| {
-                                // Encrypt the entire frame individually for each recipient when encryption is enabled
-                                let downstream_data = if enable_encryption {
-                                    match crate::crypto::encrypt_payload(data) {
-                                        Ok(encrypted_data) => encrypted_data,
-                                        Err(_) => return None, // Skip this recipient on encryption failure
-                                    }
-                                } else {
-                                    data.to_vec()
-                                };
-
+                            .map(|(_x, next_hop)| {
+                                // RSU should not encrypt - pass raw data
                                 let msg = Message::new(
                                     devicec.mac_address(),
                                     next_hop,
                                     PacketType::Data(Data::Downstream(ToDownstream::new(
                                         &source_mac,
                                         to, // Use original broadcast destination, not target OBU MAC
-                                        &downstream_data,
+                                        data,
                                     ))),
                                 );
-                                Some(ReplyType::Wire((&msg).into()))
+                                ReplyType::Wire((&msg).into())
                             })
                             .collect_vec()
                     } else if let Some(target) = target {
-                        // Encrypt entire frame for unicast traffic if encryption is enabled
-                        let downstream_data = if enable_encryption {
-                            match crate::crypto::encrypt_payload(data) {
-                                Ok(encrypted_data) => encrypted_data,
-                                Err(_) => return Ok(None),
-                            }
-                        } else {
-                            data.to_vec()
-                        };
-
-                        // Unicast traffic with known target
+                        // RSU should not encrypt - pass raw data for unicast traffic
                         if let Some(hop) = routing.get_route_to(Some(target)) {
                             vec![ReplyType::Wire(
                                 (&Message::new(
@@ -506,7 +353,7 @@ impl Rsu {
                                     PacketType::Data(Data::Downstream(ToDownstream::new(
                                         &source_mac,
                                         target,
-                                        &downstream_data,
+                                        data,
                                     ))),
                                 ))
                                     .into(),
@@ -522,7 +369,7 @@ impl Rsu {
                                         PacketType::Data(Data::Downstream(ToDownstream::new(
                                             &source_mac,
                                             target,
-                                            &downstream_data,
+                                            data,
                                         ))),
                                     ))
                                         .into(),
@@ -538,27 +385,18 @@ impl Rsu {
                                     })
                                     .map(|(x, y)| (x, y.mac))
                                     .unique_by(|(x, _)| *x)
-                                    .filter_map(|(_x, next_hop)| {
-                                        // Encrypt the entire frame individually for each recipient when encryption is enabled
-                                        let downstream_data = if enable_encryption {
-                                            match crate::crypto::encrypt_payload(data) {
-                                                Ok(encrypted_data) => encrypted_data,
-                                                Err(_) => return None, // Skip this recipient on encryption failure
-                                            }
-                                        } else {
-                                            data.to_vec()
-                                        };
-
+                                    .map(|(_x, next_hop)| {
+                                        // RSU should not encrypt - pass raw data
                                         let msg = Message::new(
                                             devicec.mac_address(),
                                             next_hop,
                                             PacketType::Data(Data::Downstream(ToDownstream::new(
                                                 &source_mac,
                                                 target,
-                                                &downstream_data,
+                                                data,
                                             ))),
                                         );
-                                        Some(ReplyType::Wire((&msg).into()))
+                                        ReplyType::Wire((&msg).into())
                                     })
                                     .collect_vec()
                             }
@@ -575,27 +413,18 @@ impl Rsu {
                             })
                             .map(|(x, y)| (x, y.mac))
                             .unique_by(|(x, _)| *x)
-                            .filter_map(|(_x, next_hop)| {
-                                // Encrypt the entire frame individually for each recipient when encryption is enabled
-                                let downstream_data = if enable_encryption {
-                                    match crate::crypto::encrypt_payload(data) {
-                                        Ok(encrypted_data) => encrypted_data,
-                                        Err(_) => return None, // Skip this recipient on encryption failure
-                                    }
-                                } else {
-                                    data.to_vec()
-                                };
-
+                            .map(|(_x, next_hop)| {
+                                // RSU should not encrypt - pass raw data
                                 let msg = Message::new(
                                     devicec.mac_address(),
                                     next_hop,
                                     PacketType::Data(Data::Downstream(ToDownstream::new(
                                         &source_mac,
                                         to,
-                                        &downstream_data,
+                                        data,
                                     ))),
                                 );
-                                Some(ReplyType::Wire((&msg).into()))
+                                ReplyType::Wire((&msg).into())
                             })
                             .collect_vec()
                     };
@@ -617,90 +446,15 @@ impl Rsu {
 pub(crate) fn handle_msg_for_test(
     routing: std::sync::Arc<std::sync::RwLock<Routing>>,
     device_mac: mac_address::MacAddress,
-    cache: std::sync::Arc<crate::control::client_cache::ClientCache>,
+    _cache: std::sync::Arc<crate::control::client_cache::ClientCache>,
     msg: &crate::messages::message::Message<'_>,
-) -> anyhow::Result<Option<Vec<ReplyType>>> {
+) -> anyhow::Result<Option<Vec<super::ReplyType>>> {
     use crate::messages::{control::Control, data::Data, packet_type::PacketType};
 
     match msg.get_packet_type() {
-        PacketType::Data(Data::Upstream(buf)) => {
-            let to: [u8; 6] = buf
-                .data()
-                .get(0..6)
-                .ok_or_else(|| anyhow::anyhow!("error"))?
-                .try_into()?;
-            let to: mac_address::MacAddress = to.into();
-            let from: [u8; 6] = buf
-                .data()
-                .get(6..12)
-                .ok_or_else(|| anyhow::anyhow!("error"))?
-                .try_into()?;
-            let from: mac_address::MacAddress = from.into();
-            let source: [u8; 6] = buf
-                .source()
-                .get(0..6)
-                .ok_or_else(|| anyhow::anyhow!("error"))?
-                .try_into()?;
-            let source: mac_address::MacAddress = source.into();
-            cache.store_mac(from, source);
-            let bcast_or_mcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
-            let mut target = cache.get(to);
-            let mut messages = Vec::with_capacity(1);
-            if bcast_or_mcast || target.is_some_and(|x| x == device_mac) {
-                messages.push(ReplyType::Tap(vec![buf.data().to_vec()]));
-                target = None;
-            }
-
-            let routing = routing.read().unwrap();
-            messages.extend(if bcast_or_mcast {
-                routing
-                    .iter_next_hops()
-                    .filter(|x| x != &&source)
-                    .filter_map(|x| {
-                        let route = routing.get_route_to(Some(*x))?;
-                        Some((*x, route.mac))
-                    })
-                    .map(|(target, next_hop)| {
-                        ReplyType::Wire(
-                            (&crate::messages::message::Message::new(
-                                device_mac,
-                                next_hop,
-                                PacketType::Data(Data::Downstream(
-                                    crate::messages::data::ToDownstream::new(
-                                        buf.source(),
-                                        target,
-                                        buf.data(),
-                                    ),
-                                )),
-                            ))
-                                .into(),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            } else if let Some(target) = target {
-                let Some(next_hop) = routing.get_route_to(Some(target)) else {
-                    return Ok(None);
-                };
-
-                vec![ReplyType::Wire(
-                    (&crate::messages::message::Message::new(
-                        device_mac,
-                        next_hop.mac,
-                        PacketType::Data(Data::Downstream(
-                            crate::messages::data::ToDownstream::new(
-                                buf.source(),
-                                target,
-                                buf.data(),
-                            ),
-                        )),
-                    ))
-                        .into(),
-                )]
-            } else {
-                vec![]
-            });
-
-            Ok(Some(messages))
+        PacketType::Data(Data::Upstream(_)) => {
+            // RSUs now forward all upstream data to server and return None
+            Ok(None)
         }
         PacketType::Control(Control::HeartbeatReply(hbr)) => {
             if hbr.source() == device_mac {
@@ -733,7 +487,7 @@ mod rsu_tests {
     use mac_address::MacAddress;
 
     #[test]
-    fn upstream_broadcast_generates_tap() {
+    fn upstream_broadcast_returns_none() {
         let args = Args {
             bind: String::new(),
             tap_name: None,
@@ -770,10 +524,8 @@ mod rsu_tests {
 
         let res =
             handle_msg_for_test(routing.clone(), [9u8; 6].into(), cache.clone(), &msg).expect("ok");
-        assert!(res.is_some());
-        let v = res.unwrap();
-        // should at least have Tap entry for broadcast
-        assert!(!v.is_empty());
+        // RSUs now forward upstream data to server and return None
+        assert!(res.is_none());
     }
 
     #[test]
@@ -819,7 +571,7 @@ mod rsu_tests {
     }
 
     #[test]
-    fn upstream_unicast_to_self_yields_tap_only() {
+    fn upstream_unicast_to_self_returns_none() {
         let args = Args {
             bind: String::new(),
             tap_name: None,
@@ -858,18 +610,12 @@ mod rsu_tests {
         );
 
         let res = handle_msg_for_test(routing, device_mac, cache, &msg).expect("ok");
-        assert!(res.is_some());
-        let msgs = res.unwrap();
-        // Expect exactly one Tap and no Wire messages
-        assert_eq!(msgs.len(), 1);
-        match &msgs[0] {
-            ReplyType::Tap(_) => {}
-            _ => panic!("expected Tap only"),
-        }
+        // RSUs now forward all upstream data to server and return None
+        assert!(res.is_none());
     }
 
     #[test]
-    fn upstream_unicast_forwards_via_route() {
+    fn upstream_unicast_returns_none() {
         // Setup RSU args and routing/cache
         let args = Args {
             bind: String::new(),
@@ -939,17 +685,7 @@ mod rsu_tests {
 
         let res =
             handle_msg_for_test(routing.clone(), [9u8; 6].into(), cache.clone(), &msg).expect("ok");
-        assert!(res.is_some());
-        let msgs = res.unwrap();
-        // Expect exactly one Wire message (no Tap), forwarding toward next_hop
-        assert_eq!(msgs.len(), 1);
-        if let ReplyType::Wire(v) = &msgs[0] {
-            // Deserialize to inspect destination MAC
-            let flat: Vec<u8> = v.iter().flat_map(|x| x.iter()).cloned().collect();
-            let out = Message::try_from(&flat[..]).expect("parse out");
-            assert_eq!(out.to().unwrap(), next_hop);
-        } else {
-            panic!("expected Wire reply");
-        }
+        // RSUs now forward all upstream data to server and return None
+        assert!(res.is_none());
     }
 }
