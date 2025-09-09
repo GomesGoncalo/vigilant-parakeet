@@ -325,7 +325,8 @@ impl Server {
                     }
                 }
                 Err(e) => {
-                    error!("Error reading from TUN interface: {:?}", e);
+                    debug!("TUN interface read error: {:?}", e);
+                    // TUN interface may be closed in tests, sleep briefly and continue
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
             }

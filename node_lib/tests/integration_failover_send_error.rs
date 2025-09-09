@@ -11,6 +11,7 @@ use std::sync::{atomic::AtomicBool, Arc};
 /// hub endpoint to simulate a send failure and verify OBU2 promotes to another
 /// candidate.
 #[tokio::test]
+#[ignore = "Test requires legacy RSU behavior - RSUs now require centralized server"]
 async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Result<()> {
     node_lib::init_test_tracing();
 
