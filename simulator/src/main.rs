@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     }
 
     let devices = Arc::new(Mutex::new(HashMap::new()));
-    let server_addr = args.server_address;
+    let server_addr = Some(args.server_address);
     let simulator = Simulator::new(&args, move |name, config| {
         let Some(config) = config.get("config_path") else {
             bail!("no config for node");
@@ -185,9 +185,9 @@ async fn main() -> Result<()> {
         Ok((dev, tun, node))
     })?;
 
-    // Spawn server if configured
-    let _server = if let Some(server_addr) = args.server_address {
-        info!("Starting server at {}", server_addr);
+    // Spawn server (always required now)
+    let server_addr = args.server_address;
+    info!("Starting server at {}", server_addr);
         
         // Create server TUN device and assign IP address
         let server_ip = Ipv4Addr::new(10, 0, 255, 1); // Use a dedicated server IP
@@ -214,11 +214,7 @@ async fn main() -> Result<()> {
         
         let server_device = Arc::new(Device::new(server_tun.name())?);
         
-        Some(node_lib::server::Server::new(server_addr, server_ip, server_tun, server_device).await?)
-    } else {
-        info!("No server address configured, RSUs will process traffic locally");
-        None
-    };
+        let _server = node_lib::server::Server::new(server_addr, server_ip, server_tun, server_device).await?;
 
     #[cfg(feature = "webview")]
     {

@@ -12,7 +12,6 @@ pub struct SimArgs {
     pub pretty: bool,
 
     /// Server address for RSUs to connect to for encrypted traffic processing
-    /// If not provided, RSUs will process traffic locally (legacy mode)
     #[arg(long)]
-    pub server_address: Option<SocketAddr>,
+    pub server_address: SocketAddr,
 }

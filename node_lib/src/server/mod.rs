@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use common::{device::Device, tun::Tun};
+use common::{device::Device, network_interface::NetworkInterface, tun::Tun};
 use mac_address::MacAddress;
 use std::{
     collections::{HashMap, HashSet},
@@ -302,11 +302,11 @@ impl Server {
         Ok(())
     }
 
-    /// Handle network interface traffic (ICMP pings, etc.)
+    /// Handle network interface traffic (ICMP pings, ARP, etc.)
     async fn run_network_interface(&self) -> Result<()> {
         let mut buffer = [0u8; 2048];
 
-        info!("Server network interface listening for IP traffic on {}", self.ip_address);
+        info!("Server network interface listening for Ethernet traffic on {}", self.ip_address);
 
         loop {
             match self.tun.recv(&mut buffer).await {
@@ -316,17 +316,17 @@ impl Server {
                         break;
                     }
 
-                    let packet = &buffer[..n];
-                    debug!("Server received {} bytes on TUN interface", n);
+                    let frame = &buffer[..n];
+                    debug!("Server received {} bytes on TAP interface", n);
                     
-                    // Handle IP packets - specifically ICMP ping requests
-                    if let Err(e) = self.handle_ip_packet(packet).await {
-                        debug!("Error handling IP packet: {:?}", e);
+                    // Handle Ethernet frames - ARP and IP packets
+                    if let Err(e) = self.handle_ethernet_frame(frame).await {
+                        debug!("Error handling Ethernet frame: {:?}", e);
                     }
                 }
                 Err(e) => {
-                    debug!("TUN interface read error: {:?}", e);
-                    // TUN interface may be closed in tests, sleep briefly and continue
+                    debug!("TAP interface read error: {:?}", e);
+                    // TAP interface may be closed in tests, sleep briefly and continue
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
             }
@@ -334,7 +334,113 @@ impl Server {
         Ok(())
     }
 
-    /// Handle IP packets received on the TUN interface
+    /// Handle Ethernet frames received on the TAP interface
+    async fn handle_ethernet_frame(&self, frame: &[u8]) -> Result<()> {
+        // Basic Ethernet header parsing
+        if frame.len() < 14 {
+            return Ok(()); // Too short for Ethernet header
+        }
+
+        // Extract Ethernet header fields
+        let dst_mac = &frame[0..6];
+        let src_mac = &frame[6..12];
+        let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+
+        // Check if this frame is addressed to us (broadcast or our MAC)
+        let our_mac = self.device.mac_address().bytes();
+        let is_broadcast = dst_mac == [0xFF; 6];
+        let is_for_us = dst_mac == our_mac;
+
+        if !is_broadcast && !is_for_us {
+            return Ok(()); // Not for us
+        }
+
+        match ethertype {
+            0x0806 => {
+                // ARP packet
+                if let Err(e) = self.handle_arp_packet(&frame[14..], src_mac).await {
+                    debug!("Error handling ARP packet: {:?}", e);
+                }
+            }
+            0x0800 => {
+                // IPv4 packet
+                if let Err(e) = self.handle_ip_packet(&frame[14..]).await {
+                    debug!("Error handling IP packet: {:?}", e);
+                }
+            }
+            _ => {
+                // Unknown ethertype, ignore
+                debug!("Unknown ethertype: 0x{:04X}", ethertype);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle ARP packets
+    async fn handle_arp_packet(&self, arp_data: &[u8], _src_eth_mac: &[u8]) -> Result<()> {
+        if arp_data.len() < 28 {
+            return Ok(()); // Too short for ARP packet
+        }
+
+        // Parse ARP header
+        let hardware_type = u16::from_be_bytes([arp_data[0], arp_data[1]]);
+        let protocol_type = u16::from_be_bytes([arp_data[2], arp_data[3]]);
+        let hardware_size = arp_data[4];
+        let protocol_size = arp_data[5];
+        let opcode = u16::from_be_bytes([arp_data[6], arp_data[7]]);
+
+        // We only handle Ethernet (hardware_type = 1) and IPv4 (protocol_type = 0x0800)
+        if hardware_type != 1 || protocol_type != 0x0800 || hardware_size != 6 || protocol_size != 4 {
+            return Ok(());
+        }
+
+        // Extract sender and target addresses
+        let sender_mac = &arp_data[8..14];
+        let sender_ip = &arp_data[14..18];
+        let _target_mac = &arp_data[18..24]; // Not used for requests
+        let target_ip = &arp_data[24..28];
+
+        // Check if this is an ARP request for our IP
+        let our_ip = self.ip_address.octets();
+        if opcode == 1 && target_ip == our_ip {
+            // ARP Request - send ARP Reply
+            debug!("Server received ARP request for {} from {}.{}.{}.{}", 
+                   self.ip_address,
+                   sender_ip[0], sender_ip[1], sender_ip[2], sender_ip[3]);
+
+            let mut arp_reply = vec![0u8; 42]; // Ethernet + ARP header
+            
+            // Ethernet header (14 bytes)
+            arp_reply[0..6].copy_from_slice(sender_mac); // Destination MAC
+            arp_reply[6..12].copy_from_slice(&self.device.mac_address().bytes()); // Source MAC (our MAC)
+            arp_reply[12..14].copy_from_slice(&[0x08, 0x06]); // EtherType: ARP
+
+            // ARP header (28 bytes)
+            arp_reply[14..16].copy_from_slice(&[0x00, 0x01]); // Hardware type: Ethernet
+            arp_reply[16..18].copy_from_slice(&[0x08, 0x00]); // Protocol type: IPv4
+            arp_reply[18] = 6; // Hardware size
+            arp_reply[19] = 4; // Protocol size
+            arp_reply[20..22].copy_from_slice(&[0x00, 0x02]); // Opcode: Reply
+            arp_reply[22..28].copy_from_slice(&self.device.mac_address().bytes()); // Sender MAC (our MAC)
+            arp_reply[28..32].copy_from_slice(&our_ip); // Sender IP (our IP)
+            arp_reply[32..38].copy_from_slice(sender_mac); // Target MAC (requester's MAC)
+            arp_reply[38..42].copy_from_slice(sender_ip); // Target IP (requester's IP)
+
+            // Send ARP reply
+            if let Err(e) = self.tun.send_all(&arp_reply).await {
+                warn!("Failed to send ARP reply: {:?}", e);
+            } else {
+                debug!("Server sent ARP reply to {}.{}.{}.{} (MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
+                       sender_ip[0], sender_ip[1], sender_ip[2], sender_ip[3],
+                       sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3], sender_mac[4], sender_mac[5]);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle IP packets received on the TAP interface (after Ethernet header stripped)
     async fn handle_ip_packet(&self, packet: &[u8]) -> Result<()> {
         // Basic IP header parsing
         if packet.len() < 20 {
@@ -371,27 +477,37 @@ impl Server {
         if icmp_type == 8 && icmp_code == 0 {
             debug!("Server received ping from {}", Ipv4Addr::from(src_ip));
             
-            // Create ICMP Echo Reply
-            let mut reply = packet.to_vec();
+            // Create ICMP Echo Reply as Ethernet frame
+            let mut reply = vec![0u8; 14 + packet.len()]; // Ethernet header + IP packet
+            
+            // Ethernet header (14 bytes) - we need the source MAC from ARP table or use broadcast
+            // For now, use broadcast MAC (this will work but is not ideal)
+            reply[0..6].copy_from_slice(&[0xFF; 6]); // Destination MAC (broadcast for now)
+            reply[6..12].copy_from_slice(&self.device.mac_address().bytes()); // Source MAC (our MAC)
+            reply[12..14].copy_from_slice(&[0x08, 0x00]); // EtherType: IPv4
+            
+            // Copy and modify IP packet (after Ethernet header)
+            reply[14..14 + packet.len()].copy_from_slice(packet);
+            let ip_start = 14;
             
             // Swap source and destination IPs
-            reply[12..16].copy_from_slice(&dst_ip.to_be_bytes());
-            reply[16..20].copy_from_slice(&src_ip.to_be_bytes());
+            reply[ip_start + 12..ip_start + 16].copy_from_slice(&dst_ip.to_be_bytes());
+            reply[ip_start + 16..ip_start + 20].copy_from_slice(&src_ip.to_be_bytes());
             
             // Change ICMP type to Echo Reply (0)
-            reply[header_len] = 0;
+            reply[ip_start + header_len] = 0;
             
             // Recalculate IP header checksum
-            reply[10] = 0;
-            reply[11] = 0;
-            let ip_checksum = self.calculate_ip_checksum(&reply[..header_len]);
-            reply[10..12].copy_from_slice(&ip_checksum.to_be_bytes());
+            reply[ip_start + 10] = 0;
+            reply[ip_start + 11] = 0;
+            let ip_checksum = self.calculate_ip_checksum(&reply[ip_start..ip_start + header_len]);
+            reply[ip_start + 10..ip_start + 12].copy_from_slice(&ip_checksum.to_be_bytes());
             
             // Recalculate ICMP checksum
-            reply[header_len + 2] = 0;
-            reply[header_len + 3] = 0;
-            let icmp_checksum = self.calculate_icmp_checksum(&reply[header_len..]);
-            reply[header_len + 2..header_len + 4].copy_from_slice(&icmp_checksum.to_be_bytes());
+            reply[ip_start + header_len + 2] = 0;
+            reply[ip_start + header_len + 3] = 0;
+            let icmp_checksum = self.calculate_icmp_checksum(&reply[ip_start + header_len..]);
+            reply[ip_start + header_len + 2..ip_start + header_len + 4].copy_from_slice(&icmp_checksum.to_be_bytes());
             
             // Send reply
             if let Err(e) = self.tun.send_all(&reply).await {
