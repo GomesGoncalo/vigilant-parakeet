@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use mac_address::MacAddress;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::{Arc, RwLock},
 };
@@ -25,6 +25,10 @@ pub struct Server {
     cache: Arc<ClientCache>,
     /// Registered RSUs and their addresses
     rsu_addresses: Arc<RwLock<HashMap<MacAddress, SocketAddr>>>,
+    /// Track which OBU MACs are reachable through which RSU
+    obu_to_rsu: Arc<RwLock<HashMap<MacAddress, MacAddress>>>,
+    /// Track all known OBU MACs per RSU (for broadcast)
+    rsu_to_obus: Arc<RwLock<HashMap<MacAddress, HashSet<MacAddress>>>>,
 }
 
 /// Message sent from RSU to Server containing encrypted upstream data
@@ -38,6 +42,15 @@ pub struct RsuToServerMessage {
     pub original_source: MacAddress,
 }
 
+/// Message sent from RSU to Server to register/update connected OBUs
+#[derive(Debug, Clone)]
+pub struct RsuRegistrationMessage {
+    /// MAC address of the RSU sending this message
+    pub rsu_mac: MacAddress,
+    /// Set of OBU MAC addresses currently connected to this RSU
+    pub connected_obus: HashSet<MacAddress>,
+}
+
 /// Message sent from Server back to RSUs with decrypted/processed data
 #[derive(Debug, Clone)]
 pub struct ServerToRsuMessage {
@@ -49,6 +62,86 @@ pub struct ServerToRsuMessage {
     pub destination_mac: MacAddress,
     /// Original source MAC address
     pub source_mac: MacAddress,
+}
+
+impl RsuRegistrationMessage {
+    pub fn new(rsu_mac: MacAddress, connected_obus: HashSet<MacAddress>) -> Self {
+        Self {
+            rsu_mac,
+            connected_obus,
+        }
+    }
+
+    /// Convert to wire format using existing Message protocol
+    /// We'll use a special control message for registration
+    pub fn to_wire(&self) -> Vec<u8> {
+        // For now, we'll use a simple format with upstream data containing registration info
+        // In a real implementation, we might want a dedicated control message type
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0xFF]); // Magic byte to indicate registration
+        data.extend_from_slice(&(self.connected_obus.len() as u32).to_be_bytes());
+        for obu_mac in &self.connected_obus {
+            data.extend_from_slice(&obu_mac.bytes());
+        }
+
+        let upstream = ToUpstream::new(self.rsu_mac, &data);
+        let data_msg = Data::Upstream(upstream);
+        let packet_type = PacketType::Data(data_msg);
+
+        // Use special destination for registration messages
+        let msg = Message::new(
+            self.rsu_mac,
+            MacAddress::from([0xFE; 6]), // Special registration destination
+            packet_type,
+        );
+        let parts: Vec<Vec<u8>> = (&msg).into();
+        parts.into_iter().flatten().collect()
+    }
+
+    /// Parse from wire format
+    pub fn from_wire(data: &[u8], rsu_mac: MacAddress) -> Result<Self> {
+        let msg = Message::try_from(data)?;
+        
+        // Check if this is a registration message by destination
+        if msg.to()? != MacAddress::from([0xFE; 6]) {
+            return Err(anyhow!("Not a registration message"));
+        }
+
+        match msg.get_packet_type() {
+            PacketType::Data(Data::Upstream(upstream)) => {
+                let reg_data = upstream.data();
+                if reg_data.is_empty() || reg_data[0] != 0xFF {
+                    return Err(anyhow!("Invalid registration data format"));
+                }
+
+                let num_obus = u32::from_be_bytes(
+                    reg_data.get(1..5)
+                        .ok_or_else(|| anyhow!("Invalid OBU count"))?
+                        .try_into()
+                        .map_err(|_| anyhow!("Invalid OBU count format"))?
+                ) as usize;
+
+                let mut connected_obus = HashSet::new();
+                let mut offset = 5;
+                for _ in 0..num_obus {
+                    if offset + 6 > reg_data.len() {
+                        return Err(anyhow!("Truncated registration data"));
+                    }
+                    let obu_bytes: [u8; 6] = reg_data[offset..offset + 6]
+                        .try_into()
+                        .map_err(|_| anyhow!("Invalid OBU MAC"))?;
+                    connected_obus.insert(MacAddress::from(obu_bytes));
+                    offset += 6;
+                }
+
+                Ok(Self {
+                    rsu_mac,
+                    connected_obus,
+                })
+            }
+            _ => Err(anyhow!("Invalid message type for RSU registration")),
+        }
+    }
 }
 
 impl RsuToServerMessage {
@@ -156,6 +249,8 @@ impl Server {
             socket: Arc::new(socket),
             cache: Arc::new(ClientCache::default()),
             rsu_addresses: Arc::new(RwLock::new(HashMap::new())),
+            obu_to_rsu: Arc::new(RwLock::new(HashMap::new())),
+            rsu_to_obus: Arc::new(RwLock::new(HashMap::new())),
         });
 
         // Start the server task
@@ -190,8 +285,12 @@ impl Server {
     }
 
     async fn handle_message(&self, data: &[u8], from_addr: SocketAddr) -> Result<()> {
-        // Parse the message from RSU using the wire format
-        // We need to extract the RSU MAC from the socket address mapping
+        // First try to parse as a registration message
+        if let Ok(registration) = self.try_parse_registration(data, from_addr).await {
+            return Ok(registration);
+        }
+
+        // Parse as regular RSU to server message
         let rsu_mac = self
             .rsu_addresses
             .read()
@@ -199,23 +298,25 @@ impl Server {
             .iter()
             .find(|(_, &addr)| addr == from_addr)
             .map(|(&mac, _)| mac)
-            .unwrap_or_else(|| {
-                // For new RSUs, we'll use a placeholder and register them
-                MacAddress::from([0; 6])
-            });
+            .ok_or_else(|| anyhow!("Unknown RSU - must register first"))?;
 
         let rsu_message = RsuToServerMessage::from_wire(data, rsu_mac)?;
 
         debug!(
-            "Received message from RSU {:?} at {}",
+            "Received traffic message from RSU {:?} at {}",
             rsu_message.rsu_mac, from_addr
         );
 
-        // Register this RSU's address
-        self.rsu_addresses
+        // Verify RSU is registered
+        if rsu_message.rsu_mac != rsu_mac {
+            return Err(anyhow!("RSU MAC mismatch"));
+        }
+
+        // Update OBU tracking - the source of this message is connected to this RSU
+        self.obu_to_rsu
             .write()
             .unwrap()
-            .insert(rsu_message.rsu_mac, from_addr);
+            .insert(rsu_message.original_source, rsu_message.rsu_mac);
 
         // Decrypt the payload
         let decrypted_payload = crate::crypto::decrypt_payload(&rsu_message.encrypted_data)?;
@@ -238,20 +339,41 @@ impl Server {
 
         let is_multicast = to.bytes()[0] & 0x1 != 0;
 
-        // Determine target RSUs
+        // Determine target RSUs based on proper routing
         let target_rsus: Vec<MacAddress> = if is_multicast {
-            // For multicast, send to all RSUs except the sender
+            // For multicast/broadcast, send to all RSUs that have connected OBUs
+            let rsu_to_obus = self.rsu_to_obus.read().unwrap();
             self.rsu_addresses
                 .read()
                 .unwrap()
                 .keys()
-                .filter(|&&rsu_mac| rsu_mac != rsu_message.rsu_mac)
+                .filter(|&&rsu_mac| {
+                    // Don't send back to the sender RSU
+                    if rsu_mac == rsu_message.rsu_mac {
+                        return false;
+                    }
+                    // Only send to RSUs that have connected OBUs
+                    rsu_to_obus.get(&rsu_mac).map_or(false, |obus| !obus.is_empty())
+                })
                 .copied()
                 .collect()
         } else {
-            // For unicast, determine which RSU should handle this
-            // For now, we'll send it back to all RSUs and let them decide based on their routing
-            self.rsu_addresses.read().unwrap().keys().copied().collect()
+            // For unicast, find which RSU the destination OBU is connected to
+            let obu_to_rsu = self.obu_to_rsu.read().unwrap();
+            if let Some(&target_rsu) = obu_to_rsu.get(&to) {
+                vec![target_rsu]
+            } else {
+                // If we don't know where the destination is, send to all RSUs except sender
+                // This allows the RSU network to discover the destination
+                warn!("Unknown destination OBU {:?}, broadcasting to all RSUs", to);
+                self.rsu_addresses
+                    .read()
+                    .unwrap()
+                    .keys()
+                    .filter(|&&rsu_mac| rsu_mac != rsu_message.rsu_mac)
+                    .copied()
+                    .collect()
+            }
         };
 
         // Re-encrypt the payload for sending back to RSUs
@@ -290,6 +412,86 @@ impl Server {
         }
 
         Ok(())
+    }
+
+    /// Try to parse incoming data as an RSU registration message
+    pub async fn try_parse_registration(&self, data: &[u8], from_addr: SocketAddr) -> Result<()> {
+        // First try to extract RSU MAC from existing registrations
+        let rsu_mac = if let Some((&mac, _)) = self
+            .rsu_addresses
+            .read()
+            .unwrap()
+            .iter()
+            .find(|(_, &addr)| addr == from_addr)
+        {
+            mac
+        } else {
+            // For new RSUs, we need to parse the message to get the MAC
+            let msg = Message::try_from(data)?;
+            if msg.to()? != MacAddress::from([0xFE; 6]) {
+                return Err(anyhow!("Not a registration message"));
+            }
+            msg.from()?
+        };
+
+        let registration = RsuRegistrationMessage::from_wire(data, rsu_mac)?;
+
+        info!(
+            "RSU {:?} registered from {} with {} connected OBUs",
+            registration.rsu_mac,
+            from_addr,
+            registration.connected_obus.len()
+        );
+
+        // Register the RSU's address
+        self.rsu_addresses
+            .write()
+            .unwrap()
+            .insert(registration.rsu_mac, from_addr);
+
+        // Update OBU tracking
+        {
+            let mut obu_to_rsu = self.obu_to_rsu.write().unwrap();
+            let mut rsu_to_obus = self.rsu_to_obus.write().unwrap();
+
+            // Remove old mappings for this RSU
+            obu_to_rsu.retain(|_, &mut rsu| rsu != registration.rsu_mac);
+
+            // Add new mappings
+            for obu_mac in &registration.connected_obus {
+                obu_to_rsu.insert(*obu_mac, registration.rsu_mac);
+            }
+
+            // Update RSU to OBUs mapping
+            rsu_to_obus.insert(registration.rsu_mac, registration.connected_obus.clone());
+        }
+
+        debug!(
+            "Updated OBU mappings for RSU {:?}: {:?}",
+            registration.rsu_mac, registration.connected_obus
+        );
+
+        Ok(())
+    }
+
+    /// Get all registered RSUs
+    pub fn get_registered_rsus(&self) -> Vec<MacAddress> {
+        self.rsu_addresses.read().unwrap().keys().copied().collect()
+    }
+
+    /// Get OBUs connected to a specific RSU
+    pub fn get_obus_for_rsu(&self, rsu_mac: MacAddress) -> HashSet<MacAddress> {
+        self.rsu_to_obus
+            .read()
+            .unwrap()
+            .get(&rsu_mac)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Get which RSU an OBU is connected to
+    pub fn get_rsu_for_obu(&self, obu_mac: MacAddress) -> Option<MacAddress> {
+        self.obu_to_rsu.read().unwrap().get(&obu_mac).copied()
     }
 
     /// Get the local address the server is bound to
@@ -333,5 +535,117 @@ mod tests {
         assert_eq!(deserialized.rsu_mac, rsu_mac);
         assert_eq!(deserialized.encrypted_data, encrypted_data);
         assert_eq!(deserialized.original_source, original_source);
+    }
+
+    #[tokio::test]
+    async fn server_registration_message_serialization() {
+        let rsu_mac = MacAddress::from([1, 2, 3, 4, 5, 6]);
+        let mut connected_obus = HashSet::new();
+        connected_obus.insert(MacAddress::from([10, 11, 12, 13, 14, 15]));
+        connected_obus.insert(MacAddress::from([20, 21, 22, 23, 24, 25]));
+
+        let registration = RsuRegistrationMessage {
+            rsu_mac,
+            connected_obus: connected_obus.clone(),
+        };
+
+        let wire_data = registration.to_wire();
+        let deserialized = RsuRegistrationMessage::from_wire(&wire_data, rsu_mac)
+            .expect("Failed to deserialize registration");
+
+        assert_eq!(deserialized.rsu_mac, rsu_mac);
+        assert_eq!(deserialized.connected_obus, connected_obus);
+    }
+
+    #[tokio::test]
+    async fn server_tracks_rsu_registrations() {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let server = Server::new(addr).await.expect("Failed to create server");
+
+        // Initially no RSUs registered
+        assert!(server.get_registered_rsus().is_empty());
+
+        // Simulate RSU registration by calling try_parse_registration directly
+        let rsu_mac = MacAddress::from([1, 2, 3, 4, 5, 6]);
+        let mut connected_obus = HashSet::new();
+        connected_obus.insert(MacAddress::from([10, 11, 12, 13, 14, 15]));
+
+        let registration = RsuRegistrationMessage {
+            rsu_mac,
+            connected_obus: connected_obus.clone(),
+        };
+
+        let wire_data = registration.to_wire();
+        let from_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345);
+
+        // Register the RSU
+        server
+            .try_parse_registration(&wire_data, from_addr)
+            .await
+            .expect("Failed to parse registration");
+
+        // Verify RSU is registered
+        let registered_rsus = server.get_registered_rsus();
+        assert_eq!(registered_rsus.len(), 1);
+        assert!(registered_rsus.contains(&rsu_mac));
+
+        // Verify OBU mappings
+        assert_eq!(server.get_obus_for_rsu(rsu_mac), connected_obus);
+        
+        for obu_mac in &connected_obus {
+            assert_eq!(server.get_rsu_for_obu(*obu_mac), Some(rsu_mac));
+        }
+    }
+
+    #[tokio::test]
+    async fn server_handles_obu_tracking_updates() {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let server = Server::new(addr).await.expect("Failed to create server");
+
+        let rsu_mac = MacAddress::from([1, 2, 3, 4, 5, 6]);
+        let from_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345);
+
+        // Initial registration with one OBU
+        let mut connected_obus = HashSet::new();
+        let obu1 = MacAddress::from([10, 11, 12, 13, 14, 15]);
+        connected_obus.insert(obu1);
+
+        let registration = RsuRegistrationMessage {
+            rsu_mac,
+            connected_obus: connected_obus.clone(),
+        };
+
+        server
+            .try_parse_registration(&registration.to_wire(), from_addr)
+            .await
+            .expect("Failed to parse initial registration");
+
+        assert_eq!(server.get_obus_for_rsu(rsu_mac), connected_obus);
+        assert_eq!(server.get_rsu_for_obu(obu1), Some(rsu_mac));
+
+        // Update registration with different OBUs
+        let mut new_connected_obus = HashSet::new();
+        let obu2 = MacAddress::from([20, 21, 22, 23, 24, 25]);
+        let obu3 = MacAddress::from([30, 31, 32, 33, 34, 35]);
+        new_connected_obus.insert(obu2);
+        new_connected_obus.insert(obu3);
+
+        let updated_registration = RsuRegistrationMessage {
+            rsu_mac,
+            connected_obus: new_connected_obus.clone(),
+        };
+
+        server
+            .try_parse_registration(&updated_registration.to_wire(), from_addr)
+            .await
+            .expect("Failed to parse updated registration");
+
+        // Verify old OBU is no longer mapped to this RSU
+        assert_eq!(server.get_rsu_for_obu(obu1), None);
+
+        // Verify new OBUs are mapped
+        assert_eq!(server.get_obus_for_rsu(rsu_mac), new_connected_obus);
+        assert_eq!(server.get_rsu_for_obu(obu2), Some(rsu_mac));
+        assert_eq!(server.get_rsu_for_obu(obu3), Some(rsu_mac));
     }
 }

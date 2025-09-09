@@ -18,6 +18,7 @@ use itertools::Itertools;
 use mac_address::MacAddress;
 use routing::Routing;
 use std::{
+    collections::HashSet,
     io::IoSlice,
     sync::{Arc, RwLock},
     time::Duration,
@@ -63,6 +64,9 @@ impl Rsu {
 
         // Start server response handling task
         Self::server_response_task(rsu.clone())?;
+
+        // Start server registration task
+        Self::server_registration_task(rsu.clone())?;
 
         Ok(rsu)
     }
@@ -215,6 +219,55 @@ impl Rsu {
             }
         });
         Ok(())
+    }
+
+    fn server_registration_task(rsu: Arc<Self>) -> Result<()> {
+        let socket = rsu.server_socket.clone();
+        let routing = rsu.routing.clone();
+        let device_mac = rsu.device.mac_address();
+        let server_addr = rsu.args.node_params.server_address
+            .expect("RSU must have server_address configured");
+
+        tokio::task::spawn(async move {
+            // Send initial registration
+            let _ = Self::send_registration(&socket, &routing, device_mac, server_addr).await;
+
+            // Periodic registration updates (every 30 seconds)
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            interval.tick().await; // Skip first tick
+
+            loop {
+                interval.tick().await;
+                let _ = Self::send_registration(&socket, &routing, device_mac, server_addr).await;
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn send_registration(
+        socket: &UdpSocket,
+        routing: &RwLock<Routing>,
+        device_mac: MacAddress,
+        server_addr: std::net::SocketAddr,
+    ) {
+        // Get all next hops from routing table (these are connected OBUs)
+        let connected_obus: HashSet<MacAddress> = {
+            let routing = routing.read().unwrap();
+            routing.iter_next_hops().copied().collect()
+        };
+
+        let registration = crate::server::RsuRegistrationMessage::new(device_mac, connected_obus);
+        let wire_data = registration.to_wire();
+
+        if let Err(e) = socket.send_to(&wire_data, server_addr).await {
+            tracing::warn!("Failed to send registration to server: {:?}", e);
+        } else {
+            tracing::debug!(
+                "Sent registration to server with {} connected OBUs",
+                registration.connected_obus.len()
+            );
+        }
     }
 
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
@@ -448,7 +501,7 @@ pub(crate) fn handle_msg_for_test(
     device_mac: mac_address::MacAddress,
     _cache: std::sync::Arc<crate::control::client_cache::ClientCache>,
     msg: &crate::messages::message::Message<'_>,
-) -> anyhow::Result<Option<Vec<super::ReplyType>>> {
+) -> anyhow::Result<Option<Vec<crate::control::node::ReplyType>>> {
     use crate::messages::{control::Control, data::Data, packet_type::PacketType};
 
     match msg.get_packet_type() {
@@ -475,7 +528,7 @@ pub(crate) fn handle_msg_for_test(
 #[cfg(test)]
 mod rsu_tests {
     use super::handle_msg_for_test;
-    use super::ReplyType;
+    use crate::control::node::ReplyType;
     use crate::args::{NodeParameters, NodeType};
     use crate::messages::control::Control;
     use crate::messages::{

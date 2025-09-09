@@ -1,11 +1,13 @@
 use node_lib::args::NodeType;
 use node_lib::control::obu::Obu;
 use node_lib::control::rsu::Rsu;
+use node_lib::server::Server;
 use node_lib::test_helpers::hub::HubCheck;
 use node_lib::test_helpers::util::{
     await_condition_with_time_advance, mk_device_from_fd, mk_node_params, mk_shim_pairs,
 };
 use node_lib::Args;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
@@ -53,6 +55,10 @@ impl HubCheck for BroadcastTrafficChecker {
 async fn test_obu_broadcast_spreads_to_other_nodes() {
     node_lib::init_test_tracing();
     tokio::time::pause();
+
+    // Start the server first
+    let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
+    let _server = Server::new(server_addr).await.expect("Failed to start server");
 
     // Create 3 shim TUN pairs for RSU, OBU1 (sender), OBU2 (receiver)
     let mut pairs = mk_shim_pairs(3);
@@ -248,6 +254,10 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
 async fn test_rsu_broadcast_individual_encryption() {
     node_lib::init_test_tracing();
     tokio::time::pause();
+
+    // Start the server first
+    let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
+    let _server = Server::new(server_addr).await.expect("Failed to start server");
 
     // Create 3 shim TUN pairs for RSU, OBU1, OBU2
     let mut pairs = mk_shim_pairs(3);
