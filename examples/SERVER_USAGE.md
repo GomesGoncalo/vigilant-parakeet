@@ -33,7 +33,6 @@ Configure RSUs with `server_address` (mandatory):
 node_type: Rsu
 hello_history: 10
 hello_periodicity: 5000
-ip: 10.0.1.1
 enable_encryption: true
 server_address: "127.0.0.1:8080"  # Forward to centralized server
 cached_candidates: 3
@@ -48,10 +47,24 @@ cached_candidates: 3
 cargo build -p simulator --release --features webview
 
 # Start simulator with server on port 8080
+# Server will be assigned IP 10.0.255.1 and can be pinged by OBUs
 sudo RUST_LOG="node=debug" ./target/release/simulator \
   --config-file examples/simulator-with-server.yaml \
   --server-address 127.0.0.1:8080 \
   --pretty
+```
+
+### Server Network Configuration
+
+The server is automatically configured with:
+- **IP Address**: `10.0.255.1` (pingable by OBUs)
+- **TUN Interface**: `server` (for network connectivity)
+- **UDP Socket**: As specified in `--server-address` (for RSU communication)
+
+OBUs can ping the server to verify connectivity:
+```bash
+# From within an OBU namespace (if using real interfaces)
+ping 10.0.255.1
 ```
 
 ## Example Configurations

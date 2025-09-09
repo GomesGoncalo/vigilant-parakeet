@@ -188,7 +188,33 @@ async fn main() -> Result<()> {
     // Spawn server if configured
     let _server = if let Some(server_addr) = args.server_address {
         info!("Starting server at {}", server_addr);
-        Some(node_lib::server::Server::new(server_addr).await?)
+        
+        // Create server TUN device and assign IP address
+        let server_ip = Ipv4Addr::new(10, 0, 255, 1); // Use a dedicated server IP
+        
+        #[cfg(not(feature = "test_helpers"))]
+        let server_tun = Arc::new(Tun::new(
+            TokioTun::builder()
+                .name("server")
+                .tap()
+                .address(server_ip)
+                .mtu(1436)
+                .up()
+                .build()?
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder for server"))?,
+        ));
+        
+        #[cfg(feature = "test_helpers")]
+        let server_tun = {
+            let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+            Arc::new(tun_a)
+        };
+        
+        let server_device = Arc::new(Device::new(server_tun.name())?);
+        
+        Some(node_lib::server::Server::new(server_addr, server_ip, server_tun, server_device).await?)
     } else {
         info!("No server address configured, RSUs will process traffic locally");
         None

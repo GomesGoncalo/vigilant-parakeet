@@ -2,13 +2,23 @@ use mac_address::MacAddress;
 use node_lib::{
     args::{Args, NodeType},
     server::{RsuRegistrationMessage, RsuToServerMessage, Server, ServerToRsuMessage},
-    test_helpers::util::{mk_node_params, mk_shim_pair},
+    test_helpers::util::{mk_node_params, mk_shim_pair, make_test_device},
 };
 use std::{
     collections::HashSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
 };
+
+/// Helper to create a test server with TUN device for integration tests
+async fn create_integration_test_server(addr: SocketAddr) -> Arc<Server> {
+    let server_ip = Ipv4Addr::new(10, 0, 255, 1);
+    let (tun, _peer) = mk_shim_pair();
+    let device = make_test_device([0xFF; 6].into());
+    Server::new(addr, server_ip, Arc::new(tun), Arc::new(device))
+        .await
+        .expect("Failed to create integration test server")
+}
 
 /// Integration test to verify server creation and protocol messages
 #[tokio::test]
@@ -17,9 +27,7 @@ async fn test_server_creation_and_protocol() {
 
     // Start server on localhost with an ephemeral port
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-    let server = Server::new(server_addr)
-        .await
-        .expect("Failed to start server");
+    let server = create_integration_test_server(server_addr).await;
     let actual_server_addr = server.local_addr().expect("Failed to get server address");
 
     // Verify server is bound to localhost
@@ -124,9 +132,7 @@ async fn test_server_registration_and_routing() {
 
     // Start server
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-    let server = Server::new(server_addr)
-        .await
-        .expect("Failed to start server");
+    let server = create_integration_test_server(server_addr).await;
     let actual_server_addr = server.local_addr().expect("Failed to get server address");
 
     // Simulate two RSUs registering with different OBUs
@@ -185,9 +191,7 @@ async fn test_server_broadcast_routing() {
 
     // Start server
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-    let server = Server::new(server_addr)
-        .await
-        .expect("Failed to start server");
+    let server = create_integration_test_server(server_addr).await;
 
     // Register multiple RSUs with different OBUs
     let rsu1_mac = MacAddress::from([1, 1, 1, 1, 1, 1]);

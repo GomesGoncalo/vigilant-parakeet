@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Result};
+use common::{device::Device, tun::Tun};
 use mac_address::MacAddress;
 use std::{
     collections::{HashMap, HashSet},
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     sync::{Arc, RwLock},
 };
 use tokio::net::UdpSocket;
@@ -29,6 +30,12 @@ pub struct Server {
     obu_to_rsu: Arc<RwLock<HashMap<MacAddress, MacAddress>>>,
     /// Track all known OBU MACs per RSU (for broadcast)
     rsu_to_obus: Arc<RwLock<HashMap<MacAddress, HashSet<MacAddress>>>>,
+    /// TUN device for network connectivity (so server can be pinged)
+    tun: Arc<Tun>,
+    /// Device for network interface management
+    device: Arc<Device>,
+    /// Server IP address
+    ip_address: Ipv4Addr,
 }
 
 /// Message sent from RSU to Server containing encrypted upstream data
@@ -241,9 +248,9 @@ impl ServerToRsuMessage {
 }
 
 impl Server {
-    pub async fn new(bind_addr: SocketAddr) -> Result<Arc<Self>> {
+    pub async fn new(bind_addr: SocketAddr, server_ip: Ipv4Addr, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
         let socket = UdpSocket::bind(bind_addr).await?;
-        info!("Server bound to {}", bind_addr);
+        info!("Server bound to {} with IP {}", bind_addr, server_ip);
 
         let server = Arc::new(Self {
             socket: Arc::new(socket),
@@ -251,6 +258,9 @@ impl Server {
             rsu_addresses: Arc::new(RwLock::new(HashMap::new())),
             obu_to_rsu: Arc::new(RwLock::new(HashMap::new())),
             rsu_to_obus: Arc::new(RwLock::new(HashMap::new())),
+            tun,
+            device,
+            ip_address: server_ip,
         });
 
         // Start the server task
@@ -258,6 +268,14 @@ impl Server {
         tokio::spawn(async move {
             if let Err(e) = server_clone.run().await {
                 error!("Server error: {:?}", e);
+            }
+        });
+
+        // Start the network interface task for handling ICMP and other IP traffic
+        let server_clone2 = server.clone();
+        tokio::spawn(async move {
+            if let Err(e) = server_clone2.run_network_interface().await {
+                error!("Server network interface error: {:?}", e);
             }
         });
 
@@ -282,6 +300,145 @@ impl Server {
             }
         }
         Ok(())
+    }
+
+    /// Handle network interface traffic (ICMP pings, etc.)
+    async fn run_network_interface(&self) -> Result<()> {
+        let mut buffer = [0u8; 2048];
+
+        info!("Server network interface listening for IP traffic on {}", self.ip_address);
+
+        loop {
+            match self.tun.recv(&mut buffer).await {
+                Ok(n) => {
+                    if n == 0 {
+                        debug!("TUN interface closed");
+                        break;
+                    }
+
+                    let packet = &buffer[..n];
+                    debug!("Server received {} bytes on TUN interface", n);
+                    
+                    // Handle IP packets - specifically ICMP ping requests
+                    if let Err(e) = self.handle_ip_packet(packet).await {
+                        debug!("Error handling IP packet: {:?}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Error reading from TUN interface: {:?}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle IP packets received on the TUN interface
+    async fn handle_ip_packet(&self, packet: &[u8]) -> Result<()> {
+        // Basic IP header parsing
+        if packet.len() < 20 {
+            return Ok(()); // Too short for IP header
+        }
+
+        let ip_version = (packet[0] >> 4) & 0xF;
+        if ip_version != 4 {
+            return Ok(()); // Only handle IPv4
+        }
+
+        let protocol = packet[9];
+        if protocol != 1 {
+            return Ok(()); // Only handle ICMP (protocol 1)
+        }
+
+        let src_ip = u32::from_be_bytes([packet[12], packet[13], packet[14], packet[15]]);
+        let dst_ip = u32::from_be_bytes([packet[16], packet[17], packet[18], packet[19]]);
+
+        // Check if this is for our server IP
+        if Ipv4Addr::from(dst_ip) != self.ip_address {
+            return Ok(());
+        }
+
+        let header_len = ((packet[0] & 0xF) * 4) as usize;
+        if packet.len() < header_len + 8 {
+            return Ok(()); // Too short for ICMP
+        }
+
+        let icmp_type = packet[header_len];
+        let icmp_code = packet[header_len + 1];
+
+        // Handle ICMP Echo Request (ping)
+        if icmp_type == 8 && icmp_code == 0 {
+            debug!("Server received ping from {}", Ipv4Addr::from(src_ip));
+            
+            // Create ICMP Echo Reply
+            let mut reply = packet.to_vec();
+            
+            // Swap source and destination IPs
+            reply[12..16].copy_from_slice(&dst_ip.to_be_bytes());
+            reply[16..20].copy_from_slice(&src_ip.to_be_bytes());
+            
+            // Change ICMP type to Echo Reply (0)
+            reply[header_len] = 0;
+            
+            // Recalculate IP header checksum
+            reply[10] = 0;
+            reply[11] = 0;
+            let ip_checksum = self.calculate_ip_checksum(&reply[..header_len]);
+            reply[10..12].copy_from_slice(&ip_checksum.to_be_bytes());
+            
+            // Recalculate ICMP checksum
+            reply[header_len + 2] = 0;
+            reply[header_len + 3] = 0;
+            let icmp_checksum = self.calculate_icmp_checksum(&reply[header_len..]);
+            reply[header_len + 2..header_len + 4].copy_from_slice(&icmp_checksum.to_be_bytes());
+            
+            // Send reply
+            if let Err(e) = self.tun.send_all(&reply).await {
+                warn!("Failed to send ping reply: {:?}", e);
+            } else {
+                debug!("Server sent ping reply to {}", Ipv4Addr::from(src_ip));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Calculate IP header checksum
+    fn calculate_ip_checksum(&self, header: &[u8]) -> u16 {
+        let mut sum = 0u32;
+        
+        for chunk in header.chunks(2) {
+            if chunk.len() == 2 {
+                sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+            } else {
+                sum += (chunk[0] as u32) << 8;
+            }
+        }
+        
+        while sum >> 16 != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        
+        !sum as u16
+    }
+
+    /// Calculate ICMP checksum
+    fn calculate_icmp_checksum(&self, icmp_data: &[u8]) -> u16 {
+        let mut sum = 0u32;
+        
+        for chunk in icmp_data.chunks(2) {
+            if chunk.len() == 2 {
+                sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+            } else {
+                sum += (chunk[0] as u32) << 8;
+            }
+        }
+        
+        while sum >> 16 != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        
+        !sum as u16
     }
 
     async fn handle_message(&self, data: &[u8], from_addr: SocketAddr) -> Result<()> {
@@ -504,11 +661,22 @@ impl Server {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+    use crate::test_helpers::util::mk_shim_pair;
+
+    /// Helper to create a test server with TUN device
+    async fn create_test_server(addr: SocketAddr) -> Arc<Server> {
+        let server_ip = Ipv4Addr::new(10, 0, 255, 1);
+        let (tun, _peer) = mk_shim_pair();
+        let device = crate::test_helpers::util::make_test_device([0xFF; 6].into());
+        Server::new(addr, server_ip, Arc::new(tun), Arc::new(device))
+            .await
+            .expect("Failed to create test server")
+    }
 
     #[tokio::test]
     async fn server_creation_and_binding() {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let server = Server::new(addr).await.expect("Failed to create server");
+        let server = create_test_server(addr).await;
 
         // Should be able to get the local address
         let local_addr = server.local_addr().expect("Failed to get local address");
@@ -560,7 +728,7 @@ mod tests {
     #[tokio::test]
     async fn server_tracks_rsu_registrations() {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let server = Server::new(addr).await.expect("Failed to create server");
+        let server = create_test_server(addr).await;
 
         // Initially no RSUs registered
         assert!(server.get_registered_rsus().is_empty());
@@ -600,7 +768,7 @@ mod tests {
     #[tokio::test]
     async fn server_handles_obu_tracking_updates() {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let server = Server::new(addr).await.expect("Failed to create server");
+        let server = create_test_server(addr).await;
 
         let rsu_mac = MacAddress::from([1, 2, 3, 4, 5, 6]);
         let from_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345);

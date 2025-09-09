@@ -4,7 +4,7 @@ use node_lib::control::rsu::Rsu;
 use node_lib::server::Server;
 use node_lib::test_helpers::hub::HubCheck;
 use node_lib::test_helpers::util::{
-    await_condition_with_time_advance, mk_device_from_fd, mk_node_params, mk_shim_pairs,
+    await_condition_with_time_advance, mk_device_from_fd, mk_node_params, mk_shim_pairs, mk_shim_pair, make_test_device,
 };
 use node_lib::Args;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -13,6 +13,16 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::time::Duration;
+
+/// Helper to create a test server for broadcast encryption tests
+async fn create_broadcast_test_server(addr: SocketAddr) -> Arc<Server> {
+    let server_ip = Ipv4Addr::new(10, 0, 255, 1);
+    let (tun, _peer) = mk_shim_pair();
+    let device = make_test_device([0xFF; 6].into());
+    Server::new(addr, server_ip, Arc::new(tun), Arc::new(device))
+        .await
+        .expect("Failed to create broadcast test server")
+}
 
 // Type alias to simplify complex type
 type CapturedPackets = Arc<Mutex<Vec<(usize, Vec<u8>)>>>;
@@ -58,7 +68,7 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
 
     // Start the server first
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
-    let _server = Server::new(server_addr).await.expect("Failed to start server");
+    let _server = create_broadcast_test_server(server_addr).await;
 
     // Create 3 shim TUN pairs for RSU, OBU1 (sender), OBU2 (receiver)
     let mut pairs = mk_shim_pairs(3);
@@ -257,7 +267,7 @@ async fn test_rsu_broadcast_individual_encryption() {
 
     // Start the server first
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
-    let _server = Server::new(server_addr).await.expect("Failed to start server");
+    let _server = create_broadcast_test_server(server_addr).await;
 
     // Create 3 shim TUN pairs for RSU, OBU1, OBU2
     let mut pairs = mk_shim_pairs(3);
