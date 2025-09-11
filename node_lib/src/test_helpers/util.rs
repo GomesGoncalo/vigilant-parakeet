@@ -14,6 +14,7 @@ pub fn mk_node_params(node_type: NodeType, hello_periodicity: Option<u32>) -> No
         hello_periodicity,
         cached_candidates: 3,
         enable_encryption: false,
+        server_address: None,
     }
 }
 
@@ -22,6 +23,17 @@ pub fn mk_device_from_fd(mac: MacAddress, fd: i32) -> Device {
     Device::from_asyncfd_for_bench(
         mac,
         AsyncFd::new(unsafe { DeviceIo::from_raw_fd(fd) }).unwrap(),
+    )
+}
+
+/// Create a test device with a fake file descriptor. Intended for tests only.
+pub fn make_test_device(mac: MacAddress) -> Device {
+    // Create a pipe to get valid file descriptors for testing
+    let (reader_fd, _writer_fd) = mk_pipe_nonblocking()
+        .expect("Failed to create pipe for test device");
+    Device::from_asyncfd_for_bench(
+        mac,
+        AsyncFd::new(unsafe { DeviceIo::from_raw_fd(reader_fd) }).unwrap(),
     )
 }
 

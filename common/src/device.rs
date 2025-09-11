@@ -113,6 +113,7 @@ mod stats_tests {
             mac_address: mac,
             fd: async_fd,
             stats: Stats::default().into(),
+            interface_name: "test".to_string(),
         };
 
         let before = device.stats();
@@ -156,6 +157,7 @@ mod stats_tests {
             mac_address: mac,
             fd: async_fd,
             stats: Stats::default().into(),
+            interface_name: "test".to_string(),
         };
 
         let before = device.stats();
@@ -339,6 +341,7 @@ pub struct Device {
     fd: AsyncFd<DeviceIo>,
     #[cfg(feature = "stats")]
     stats: Mutex<Stats>,
+    interface_name: String,
 }
 
 impl NetworkInterface for Device {
@@ -348,6 +351,9 @@ impl NetworkInterface for Device {
 }
 
 impl Device {
+    pub fn name(&self) -> &str {
+        &self.interface_name
+    }
     // Helper extracted so tests can more easily stub or replace raw socket creation.
     #[cfg(not(test))]
     fn create_packet_socket_and_mac(interface: &str) -> Result<(MacAddress, RawFd)> {
@@ -388,6 +394,7 @@ impl Device {
             fd: AsyncFd::new(unsafe { DeviceIo::from_raw_fd(raw_fd) })?,
             #[cfg(feature = "stats")]
             stats: Stats::default().into(),
+            interface_name: interface.to_string(),
         })
     }
 
@@ -423,11 +430,16 @@ impl Device {
                 mac_address,
                 fd,
                 stats: Stats::default().into(),
+                interface_name: "bench".to_string(),
             }
         }
         #[cfg(not(feature = "stats"))]
         {
-            Device { mac_address, fd }
+            Device { 
+                mac_address, 
+                fd,
+                interface_name: "bench".to_string(),
+            }
         }
     }
 
@@ -548,6 +560,7 @@ mod tests {
                 mac_address: mac,
                 fd,
                 stats: Stats::default().into(),
+                interface_name: "test".to_string(),
             }
         }
         #[cfg(not(feature = "stats"))]
@@ -555,6 +568,7 @@ mod tests {
             Device {
                 mac_address: mac,
                 fd,
+                interface_name: "test".to_string(),
             }
         }
     }

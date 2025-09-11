@@ -1,4 +1,4 @@
-mod client_cache;
+pub mod client_cache;
 pub mod node;
 pub mod obu;
 mod route;

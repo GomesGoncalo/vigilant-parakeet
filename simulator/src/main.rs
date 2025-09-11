@@ -24,6 +24,7 @@ use tokio::signal;
 // Context is unused in current builds; remove the import.
 #[cfg(not(feature = "test_helpers"))]
 use tokio_tun::Tun as TokioTun;
+use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 #[cfg(feature = "webview")]
 use warp::Filter;
@@ -85,7 +86,9 @@ async fn main() -> Result<()> {
     }
 
     let devices = Arc::new(Mutex::new(HashMap::new()));
-    let simulator = Simulator::new(&args, |name, config| {
+    let devices_for_closure = devices.clone();
+    let server_addr = Some(args.server_address);
+    let simulator = Simulator::new(&args, move |name, config| {
         let Some(config) = config.get("config_path") else {
             bail!("no config for node");
         };
@@ -138,6 +141,10 @@ async fn main() -> Result<()> {
                     .flatten(),
                 cached_candidates,
                 enable_encryption: settings.get_bool("enable_encryption").unwrap_or(false),
+                server_address: settings
+                    .get::<std::net::SocketAddr>("server_address")
+                    .ok()
+                    .or(server_addr), // Use config file setting or command line arg
             },
         };
 
@@ -171,13 +178,58 @@ async fn main() -> Result<()> {
         };
 
         let dev = Arc::new(Device::new(tun.name())?);
-        let node = node_lib::create_with_vdev(args, virtual_tun, dev.clone())?;
-        devices
-            .lock()
-            .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
-            .insert(name.to_string(), (dev.clone(), tun.clone()));
+        
+        // Handle different node types with different device architectures
+        let node = match args.node_params.node_type {
+            NodeType::Rsu => {
+                // RSUs need dual interfaces: virtual for OBU communication, infrastructure for server communication  
+                // Create infrastructure TUN for server communication
+                #[cfg(not(feature = "test_helpers"))]
+                let infra_tun = Arc::new(Tun::new({
+                    TokioTun::builder()
+                        .tap()
+                        .name(&format!("{}-infra", name))
+                        .mtu(args.mtu)
+                        .up()
+                        .build()?
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("no infra tun devices returned from TokioTun builder"))?
+                }));
+                #[cfg(feature = "test_helpers")]
+                let infra_tun = {
+                    let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+                    Arc::new(tun_a)
+                };
+                
+                let infra_dev = Arc::new(Device::new(infra_tun.name())?);
+                
+                // Store both devices for routing
+                devices_for_closure
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
+                    .insert(name.to_string(), (dev.clone(), tun.clone()));
+                devices_for_closure
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
+                    .insert(format!("{}-infra", name), (infra_dev.clone(), infra_tun.clone()));
+                
+                node_lib::create_rsu_with_dual_devices(args, virtual_tun, dev.clone(), infra_dev)?
+            },
+            _ => {
+                devices_for_closure
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
+                    .insert(name.to_string(), (dev.clone(), tun.clone()));
+                node_lib::create_with_vdev(args, virtual_tun, dev.clone())?
+            }
+        };
         Ok((dev, tun, node))
     })?;
+
+    // Server is now created as a node in the simulator configuration
+    // No need to create it separately
+    info!("Server will be created as configured node in topology");
 
     #[cfg(feature = "webview")]
     {

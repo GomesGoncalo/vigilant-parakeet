@@ -5,6 +5,7 @@ pub mod crypto;
 mod data;
 pub mod messages;
 pub mod metrics;
+pub mod server;
 // Re-export test helpers for integration tests.
 // Make this available unconditionally so integration tests can import
 // `node_lib::test_helpers::hub` without passing a feature flag.
@@ -42,14 +43,50 @@ impl Node for control::obu::Obu {
     }
 }
 
+impl Node for server::Server {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 pub fn create_with_vdev(
     args: Args,
     tun: Arc<Tun>,
     node_device: Arc<Device>,
 ) -> Result<Arc<dyn Node>> {
     match args.node_params.node_type {
-        NodeType::Rsu => Ok(control::rsu::Rsu::new(args, tun, node_device)?),
+        NodeType::Rsu => {
+            // RSUs need dual interfaces - use same device for both for now
+            // Simulator should call create_rsu_with_dual_devices instead
+            Err(anyhow::anyhow!("RSUs require dual interface architecture - use create_rsu_with_dual_devices"))
+        },
         NodeType::Obu => Ok(control::obu::Obu::new(args, tun, node_device)?),
+        NodeType::Server => {
+            // For server nodes, we need to extract the server address from the args
+            let server_addr = args.node_params.server_address
+                .ok_or_else(|| anyhow::anyhow!("Server node requires server_address"))?;
+            let server_ip = args.ip
+                .ok_or_else(|| anyhow::anyhow!("Server node requires ip address"))?;
+                
+            // Create server with node devices for simulator integration
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    server::Server::new(server_addr, server_ip, tun, node_device).await
+                })
+            }).map(|s| s as Arc<dyn Node>)
+        }
+    }
+}
+
+pub fn create_rsu_with_dual_devices(
+    args: Args,
+    virtual_tun: Arc<Tun>,
+    virtual_device: Arc<Device>,
+    infra_device: Arc<Device>,
+) -> Result<Arc<dyn Node>> {
+    match args.node_params.node_type {
+        NodeType::Rsu => Ok(control::rsu::Rsu::new_with_infra(args, virtual_tun, virtual_device, infra_device)?),
+        _ => Err(anyhow::anyhow!("create_rsu_with_dual_devices only supports RSU nodes")),
     }
 }
 
@@ -142,6 +179,7 @@ mod tests {
                 hello_periodicity: Some(100),
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: Some("127.0.0.1:8080".parse().unwrap()),
             },
         };
         let args_obu = Args {
@@ -155,10 +193,11 @@ mod tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
 
-        let rsu = create_with_vdev(args_rsu, tun_a, dev_rsu).expect("rsu created");
+        let rsu = create_rsu_with_dual_devices(args_rsu, tun_a.clone(), dev_rsu.clone(), dev_rsu).expect("rsu created");
         let obu = create_with_vdev(args_obu, tun_b, dev_obu).expect("obu created");
 
         // Downcast via Node::as_any to ensure trait object works
@@ -180,6 +219,7 @@ mod tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let res = crate::create(args);

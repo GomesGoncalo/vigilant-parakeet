@@ -359,6 +359,7 @@ mod obu_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let boot = Instant::now();
@@ -389,6 +390,7 @@ mod obu_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let boot = Instant::now();
@@ -431,6 +433,7 @@ mod obu_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let boot = Instant::now();
@@ -485,6 +488,7 @@ mod obu_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let boot = Instant::now();
@@ -524,6 +528,7 @@ mod obu_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let boot = Instant::now();
@@ -578,6 +583,7 @@ mod obu_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let boot = Instant::now();
@@ -634,6 +640,7 @@ mod obu_tests {
                 hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_address: None,
             },
         };
         let boot = Instant::now();

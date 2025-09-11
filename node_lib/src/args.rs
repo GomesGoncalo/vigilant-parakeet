@@ -1,10 +1,11 @@
 use clap::{Parser, ValueEnum};
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 pub enum NodeType {
     Rsu,
     Obu,
+    Server,
 }
 
 #[derive(clap::Args, Clone, Debug)]
@@ -29,6 +30,11 @@ pub struct NodeParameters {
     /// Enable payload encryption between OBUs and upstream RSUs
     #[arg(long, default_value_t = false)]
     pub enable_encryption: bool,
+
+    /// Server address for RSUs to forward encrypted traffic to
+    /// If not provided, RSUs will decrypt traffic locally (legacy mode)
+    #[arg(long)]
+    pub server_address: Option<SocketAddr>,
 }
 
 #[derive(Parser, Debug, Clone)]
