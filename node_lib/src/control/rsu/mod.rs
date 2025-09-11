@@ -22,7 +22,9 @@ use std::{
     io::IoSlice,
     sync::{Arc, RwLock},
     time::Duration,
+    net::SocketAddr,
 };
+use tokio::net::UdpSocket;
 
 pub struct Rsu {
     args: Args,
@@ -34,8 +36,10 @@ pub struct Rsu {
     cache: Arc<ClientCache>,
     /// Infrastructure interface for server communication (wired connection to cloud)
     infra_device: Arc<Device>,
-    /// Server MAC address for infrastructure communication
-    server_mac: MacAddress,
+    /// Server address for UDP communication
+    server_address: SocketAddr,
+    /// Channel sender for sending messages to server
+    server_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
 }
 
 impl Rsu {
@@ -46,17 +50,16 @@ impl Rsu {
     }
 
     pub fn new_with_infra(args: Args, tun: Arc<Tun>, device: Arc<Device>, infra_device: Arc<Device>) -> Result<Arc<Self>> {
-        // Server address is mandatory for RSUs - we'll need it to know server MAC
-        let _server_address = args
+        // Server address is mandatory for RSUs
+        let server_address = args
             .node_params
             .server_address
             .as_ref()
-            .ok_or_else(|| anyhow!("RSU requires server_address to be configured"))?;
+            .ok_or_else(|| anyhow!("RSU requires server_address to be configured"))?
+            .clone();
 
-        // RSUs communicate with server via infrastructure device using ethernet protocol
-        // No UDP socket needed - everything goes through simulator's layer-2 routing
-        // For now, use a well-known server MAC address - in production this would be discovered via ARP
-        let server_mac = MacAddress::from([0x02, 0x00, 0x00, 0x00, 0x00, 0xFF]); // Well-known server MAC
+        // Create channel for server communication
+        let (server_tx, server_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let rsu = Arc::new(Self {
             routing: Arc::new(RwLock::new(Routing::new(&args)?)),
@@ -65,17 +68,17 @@ impl Rsu {
             device,
             cache: ClientCache::default().into(),
             infra_device,
-            server_mac,
+            server_address: server_address,
+            server_tx,
         });
 
-        tracing::info!(?rsu.args, "Setup Rsu with infrastructure device");
+        tracing::info!(?rsu.args, "Setup Rsu with infrastructure device for UDP server communication");
         rsu.hello_task()?;
         rsu.process_tap_traffic()?;
         Self::wire_traffic_task(rsu.clone())?;
 
-        // Start server communication tasks
-        Self::server_registration_task(rsu.clone())?;
-        Self::process_infra_traffic(rsu.clone())?;
+        // Start server communication tasks using UDP
+        Self::server_communication_task(rsu.clone(), server_rx)?;
 
         Ok(rsu)
     }
@@ -150,37 +153,70 @@ impl Rsu {
         Ok(())
     }
 
-    /// Process traffic from server via infrastructure device
-    fn process_infra_traffic(rsu: Arc<Self>) -> Result<()> {
-        let infra_device = rsu.infra_device.clone();
+    /// Handle all server communication via UDP socket
+    fn server_communication_task(rsu: Arc<Self>, mut server_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) -> Result<()> {
+        let routing = rsu.routing.clone();
+        let device_mac = rsu.device.mac_address();
+        let server_address = rsu.server_address;
         let tun = rsu.tun.clone();
         let device = rsu.device.clone();
-        let routing = rsu.routing.clone();
 
         tokio::task::spawn(async move {
+            // Create UDP socket for server communication
+            let server_socket = match UdpSocket::bind("0.0.0.0:0").await {
+                Ok(socket) => {
+                    tracing::info!("RSU UDP socket bound for server communication");
+                    Arc::new(socket)
+                },
+                Err(e) => {
+                    tracing::error!("Failed to bind UDP socket for server communication: {:?}", e);
+                    return;
+                }
+            };
+
+            // Start registration task
+            let socket_clone = server_socket.clone();
+            let routing_clone = routing.clone();
+            tokio::spawn(async move {
+                // Send initial registration
+                let _ = Self::send_registration(&socket_clone, &routing_clone, device_mac, server_address).await;
+
+                // Periodic registration updates (every 30 seconds)
+                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                interval.tick().await; // Skip first tick
+
+                loop {
+                    interval.tick().await;
+                    let _ = Self::send_registration(&socket_clone, &routing_clone, device_mac, server_address).await;
+                }
+            });
+
+            // Main loop handling both outgoing messages and incoming responses
             let mut buffer = vec![0u8; 65536];
-
             loop {
-                match infra_device.recv(&mut buffer).await {
-                    Ok(len) => {
-                        let data = &buffer[..len];
-                        
-                        // Try to parse as Message from server
-                        if let Ok(msg) = Message::try_from(data) {
-                            // Check if this is a message for us (infrastructure interface)
-                            if let Ok(to_mac) = msg.to() {
-                                if to_mac != infra_device.mac_address() {
-                                    continue; // Not for us
-                                }
-                            } else {
-                                continue; // Invalid destination
+                tokio::select! {
+                    // Handle outgoing messages to server
+                    msg = server_rx.recv() => {
+                        if let Some(data) = msg {
+                            if let Err(e) = server_socket.send_to(&data, server_address).await {
+                                tracing::warn!("Failed to send to server: {:?}", e);
                             }
-
-                            if let PacketType::Data(Data::Downstream(downstream)) = msg.get_packet_type() {
-                                // This should be a server response
-                                if let Ok(server_msg) = crate::server::ServerToRsuMessage::from_wire(downstream.data()) {
+                        } else {
+                            tracing::info!("Server communication channel closed");
+                            break;
+                        }
+                    }
+                    
+                    // Handle incoming server responses
+                    result = server_socket.recv(&mut buffer) => {
+                        match result {
+                            Ok(len) => {
+                                let data = &buffer[..len];
+                                
+                                // Parse server response message
+                                if let Ok(server_msg) = crate::server::ServerToRsuMessage::from_wire(data) {
                                     tracing::debug!(
-                                        "Received server response via infrastructure: destination={:?}",
+                                        "Received server response via UDP: destination={:?}",
                                         server_msg.destination_mac
                                     );
 
@@ -231,38 +267,16 @@ impl Rsu {
                                         let _ = node::handle_messages(messages, &tun, &device, None).await;
                                     }
                                 } else {
-                                    tracing::debug!("Received non-server message on infrastructure interface");
+                                    tracing::debug!("Failed to parse server response message");
                                 }
+                            }
+                            Err(e) => {
+                                tracing::error!("Error receiving UDP from server: {:?}", e);
+                                break;
                             }
                         }
                     }
-                    Err(e) => {
-                        tracing::error!("Error receiving from infrastructure device: {:?}", e);
-                        break;
-                    }
                 }
-            }
-        });
-        Ok(())
-    }
-
-    fn server_registration_task(rsu: Arc<Self>) -> Result<()> {
-        let infra_device = rsu.infra_device.clone();
-        let routing = rsu.routing.clone();
-        let device_mac = rsu.device.mac_address();
-        let server_mac = rsu.server_mac;
-
-        tokio::task::spawn(async move {
-            // Send initial registration
-            let _ = Self::send_registration(&infra_device, &routing, device_mac, server_mac).await;
-
-            // Periodic registration updates (every 30 seconds)
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
-            interval.tick().await; // Skip first tick
-
-            loop {
-                interval.tick().await;
-                let _ = Self::send_registration(&infra_device, &routing, device_mac, server_mac).await;
             }
         });
 
@@ -270,10 +284,10 @@ impl Rsu {
     }
 
     async fn send_registration(
-        infra_device: &Device,
+        server_socket: &UdpSocket,
         routing: &RwLock<Routing>,
         device_mac: MacAddress,
-        server_mac: MacAddress,
+        server_address: SocketAddr,
     ) {
         // Get all next hops from routing table (these are connected OBUs)
         let connected_obus: HashSet<MacAddress> = {
@@ -284,29 +298,11 @@ impl Rsu {
         let registration = crate::server::RsuRegistrationMessage::new(device_mac, connected_obus);
         let wire_data = registration.to_wire();
 
-        // Create a Message to send to server via infrastructure device
-        // Use Data::Upstream to encapsulate the registration data
-        let upstream_data = crate::messages::data::ToUpstream::new(
-            device_mac,
-            &wire_data,
-        );
-        
-        let server_message = crate::messages::message::Message::new(
-            device_mac,
-            server_mac,
-            crate::messages::packet_type::PacketType::Data(
-                crate::messages::data::Data::Upstream(upstream_data)
-            ),
-        );
-        
-        let msg_wire: Vec<Vec<u8>> = (&server_message).into();
-        let flat_wire: Vec<u8> = msg_wire.iter().flat_map(|x| x.iter()).copied().collect();
-        
-        if let Err(e) = infra_device.send(&flat_wire).await {
-            tracing::warn!("Failed to send registration to server via infrastructure device: {:?}", e);
+        if let Err(e) = server_socket.send_to(&wire_data, server_address).await {
+            tracing::warn!("Failed to send registration to server: {:?}", e);
         } else {
             tracing::debug!(
-                "Sent registration to server with {} connected OBUs via infrastructure device",
+                "Sent registration to server with {} connected OBUs",
                 registration.connected_obus.len()
             );
         }
@@ -331,26 +327,9 @@ impl Rsu {
 
                 let wire_data = server_msg.to_wire();
 
-                // Create a Message to send to server via infrastructure device
-                // Use Data::Upstream to encapsulate the server message
-                let upstream_data = crate::messages::data::ToUpstream::new(
-                    self.device.mac_address(),
-                    &wire_data,
-                );
-                
-                let server_message = crate::messages::message::Message::new(
-                    self.device.mac_address(),
-                    self.server_mac,
-                    crate::messages::packet_type::PacketType::Data(
-                        crate::messages::data::Data::Upstream(upstream_data)
-                    ),
-                );
-                
-                let msg_wire: Vec<Vec<u8>> = (&server_message).into();
-                let flat_wire: Vec<u8> = msg_wire.iter().flat_map(|x| x.iter()).copied().collect();
-                
-                if let Err(e) = self.infra_device.send(&flat_wire).await {
-                    tracing::warn!("Failed to send to server via infrastructure device: {:?}", e);
+                // Send data to server via channel (which will use UDP socket)
+                if let Err(e) = self.server_tx.send(wire_data) {
+                    tracing::warn!("Failed to send to server via channel: {:?}", e);
                 }
 
                 // Return None since server will handle the processing

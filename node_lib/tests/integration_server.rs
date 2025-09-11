@@ -4,6 +4,7 @@ use node_lib::{
     server::{RsuRegistrationMessage, RsuToServerMessage, Server, ServerToRsuMessage},
     test_helpers::util::{mk_node_params, mk_shim_pair, make_test_device},
 };
+use common::device::Device;
 use std::{
     collections::HashSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -119,7 +120,11 @@ async fn test_rsu_server_configuration() {
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345);
     args_server.node_params.server_address = Some(server_addr);
 
-    let _rsu_server = node_lib::control::rsu::Rsu::new(args_server, tun_a.clone(), device.clone())
+    // Create infrastructure device for dual interface architecture
+    let (_infra_dev_a, _infra_dev_b) = mk_shim_pair();
+    let infra_device = Arc::new(make_test_device([0xAA; 6].into()));
+
+    let _rsu_server = node_lib::control::rsu::Rsu::new_with_infra(args_server, tun_a.clone(), device.clone(), infra_device)
         .expect("Failed to create RSU with server configuration");
 
     println!("✓ RSU mandatory server configuration validated");
