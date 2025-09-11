@@ -178,11 +178,52 @@ async fn main() -> Result<()> {
         };
 
         let dev = Arc::new(Device::new(tun.name())?);
-        let node = node_lib::create_with_vdev(args, virtual_tun, dev.clone())?;
-        devices_for_closure
-            .lock()
-            .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
-            .insert(name.to_string(), (dev.clone(), tun.clone()));
+        
+        // Handle different node types with different device architectures
+        let node = match args.node_params.node_type {
+            NodeType::Rsu => {
+                // RSUs need dual interfaces: virtual for OBU communication, infrastructure for server communication  
+                // Create infrastructure TUN for server communication
+                #[cfg(not(feature = "test_helpers"))]
+                let infra_tun = Arc::new(Tun::new({
+                    TokioTun::builder()
+                        .tap()
+                        .name(&format!("{}-infra", name))
+                        .mtu(args.mtu)
+                        .up()
+                        .build()?
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("no infra tun devices returned from TokioTun builder"))?
+                }));
+                #[cfg(feature = "test_helpers")]
+                let infra_tun = {
+                    let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+                    Arc::new(tun_a)
+                };
+                
+                let infra_dev = Arc::new(Device::new(infra_tun.name())?);
+                
+                // Store both devices for routing
+                devices_for_closure
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
+                    .insert(name.to_string(), (dev.clone(), tun.clone()));
+                devices_for_closure
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
+                    .insert(format!("{}-infra", name), (infra_dev.clone(), infra_tun.clone()));
+                
+                node_lib::create_rsu_with_dual_devices(args, virtual_tun, dev.clone(), infra_dev)?
+            },
+            _ => {
+                devices_for_closure
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
+                    .insert(name.to_string(), (dev.clone(), tun.clone()));
+                node_lib::create_with_vdev(args, virtual_tun, dev.clone())?
+            }
+        };
         Ok((dev, tun, node))
     })?;
 

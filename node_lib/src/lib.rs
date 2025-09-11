@@ -55,7 +55,11 @@ pub fn create_with_vdev(
     node_device: Arc<Device>,
 ) -> Result<Arc<dyn Node>> {
     match args.node_params.node_type {
-        NodeType::Rsu => Ok(control::rsu::Rsu::new(args, tun, node_device)?),
+        NodeType::Rsu => {
+            // RSUs need dual interfaces - use same device for both for now
+            // Simulator should call create_rsu_with_dual_devices instead
+            Err(anyhow::anyhow!("RSUs require dual interface architecture - use create_rsu_with_dual_devices"))
+        },
         NodeType::Obu => Ok(control::obu::Obu::new(args, tun, node_device)?),
         NodeType::Server => {
             // For server nodes, we need to extract the server address from the args
@@ -71,6 +75,18 @@ pub fn create_with_vdev(
                 })
             }).map(|s| s as Arc<dyn Node>)
         }
+    }
+}
+
+pub fn create_rsu_with_dual_devices(
+    args: Args,
+    virtual_tun: Arc<Tun>,
+    virtual_device: Arc<Device>,
+    infra_device: Arc<Device>,
+) -> Result<Arc<dyn Node>> {
+    match args.node_params.node_type {
+        NodeType::Rsu => Ok(control::rsu::Rsu::new_with_infra(args, virtual_tun, virtual_device, infra_device)?),
+        _ => Err(anyhow::anyhow!("create_rsu_with_dual_devices only supports RSU nodes")),
     }
 }
 
@@ -181,7 +197,7 @@ mod tests {
             },
         };
 
-        let rsu = create_with_vdev(args_rsu, tun_a, dev_rsu).expect("rsu created");
+        let rsu = create_rsu_with_dual_devices(args_rsu, tun_a.clone(), dev_rsu.clone(), dev_rsu).expect("rsu created");
         let obu = create_with_vdev(args_obu, tun_b, dev_obu).expect("obu created");
 
         // Downcast via Node::as_any to ensure trait object works

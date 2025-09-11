@@ -28,21 +28,21 @@ use tokio::net::UdpSocket;
 pub struct Rsu {
     args: Args,
     routing: Arc<RwLock<Routing>>,
-    /// Virtual interface for OBU communication
+    /// Virtual interface for OBU communication (WiFi simulation - open medium)
     tun: Arc<Tun>,
-    /// Real interface for OBU communication (used by node lib)
+    /// Real interface for OBU communication (used by node lib for routing)
     device: Arc<Device>,
     cache: Arc<ClientCache>,
-    /// Infrastructure interface for server communication (real device)
+    /// Infrastructure interface for server communication (wired connection to cloud)
     infra_device: Arc<Device>,
     server_socket: Arc<UdpSocket>,
 }
 
 impl Rsu {
-    pub fn new(args: Args, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
-        // For backward compatibility, create RSU without infrastructure device
-        // This will use the same device for both OBU and server communication
-        Self::new_with_infra(args, tun, device.clone(), device)
+    pub fn new(_args: Args, _tun: Arc<Tun>, _device: Arc<Device>) -> Result<Arc<Self>> {
+        // RSUs require separate infrastructure device for server communication
+        // This single-device method is deprecated
+        return Err(anyhow!("RSUs require separate infrastructure device - use new_with_infra instead"));
     }
 
     pub fn new_with_infra(args: Args, tun: Arc<Tun>, device: Arc<Device>, infra_device: Arc<Device>) -> Result<Arc<Self>> {
@@ -54,8 +54,35 @@ impl Rsu {
             .ok_or_else(|| anyhow!("RSU requires server_address to be configured"))?;
 
         // Create UDP socket for server communication - bind to infrastructure interface
+        // For proper routing, we need to use the infrastructure device's network
         let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
         socket.set_nonblocking(true)?;
+        
+        // Try to bind socket to infrastructure device for proper routing
+        // This ensures traffic goes through the infrastructure interface
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::io::AsRawFd;
+            let device_name = infra_device.name();
+            let device_bytes = device_name.as_bytes();
+            if device_bytes.len() < 16 { // IFNAMSIZ is typically 16
+                unsafe {
+                    let ret = libc::setsockopt(
+                        socket.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_BINDTODEVICE,
+                        device_bytes.as_ptr() as *const libc::c_void,
+                        device_bytes.len() as libc::socklen_t,
+                    );
+                    if ret != 0 {
+                        tracing::warn!("Could not bind socket to infrastructure device {}: errno {}", device_name, ret);
+                    } else {
+                        tracing::info!("Bound server socket to infrastructure device {}", device_name);
+                    }
+                }
+            }
+        }
+        
         let server_socket = Arc::new(UdpSocket::from_std(socket)?);
 
         let rsu = Arc::new(Self {
@@ -537,7 +564,6 @@ pub(crate) fn handle_msg_for_test(
 #[cfg(test)]
 mod rsu_tests {
     use super::handle_msg_for_test;
-    use crate::control::node::ReplyType;
     use crate::args::{NodeParameters, NodeType};
     use crate::messages::control::Control;
     use crate::messages::{

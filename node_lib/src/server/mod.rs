@@ -9,9 +9,6 @@ use std::{
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, warn};
 
-#[cfg(not(feature = "test_helpers"))]
-use tokio_tun;
-
 use crate::{
     control::client_cache::ClientCache,
     messages::{
@@ -255,54 +252,15 @@ impl ServerToRsuMessage {
 
 impl Server {
     /// Create server as infrastructure-only service (no TAP device for OBU ping)
-    pub async fn new_infrastructure_only(bind_addr: SocketAddr) -> Result<Arc<Self>> {
-        let socket = UdpSocket::bind(bind_addr).await?;
-        info!("Infrastructure server bound to {}", bind_addr);
+    pub async fn new_infrastructure_only(_bind_addr: SocketAddr) -> Result<Arc<Self>> {
+        let _socket = UdpSocket::bind(_bind_addr).await?;
+        info!("Infrastructure server bound to {}", _bind_addr);
 
-        // Create a dummy TUN device for compatibility
-        #[cfg(not(feature = "test_helpers"))]
-        let dummy_tun = {
-            use tokio_tun::Tun as TokioTun;
-            Arc::new(Tun::new(
-                TokioTun::builder()
-                    .name("server-dummy")
-                    .mtu(1436)
-                    .build()?
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder for server"))?,
-            ))
-        };
-        
-        #[cfg(feature = "test_helpers")]
-        let dummy_tun = {
-            let (tun_a, _peer) = crate::test_helpers::util::mk_shim_pair();
-            Arc::new(tun_a)
-        };
+        // Server should receive TUN device from outside, not create its own
+        // This is handled by the simulator when creating server as a node
 
-        let dummy_device = Arc::new(Device::new(dummy_tun.name())?);
-
-        let server = Arc::new(Self {
-            socket: Arc::new(socket),
-            cache: Arc::new(ClientCache::default()),
-            rsu_addresses: Arc::new(RwLock::new(HashMap::new())),
-            obu_to_rsu: Arc::new(RwLock::new(HashMap::new())),
-            rsu_to_obus: Arc::new(RwLock::new(HashMap::new())),
-            tun: dummy_tun,
-            device: dummy_device,
-            ip_address: Ipv4Addr::new(127, 0, 0, 1),  // Infrastructure server on localhost
-            arp_cache: Arc::new(RwLock::new(HashMap::new())),
-        });
-
-        // Start the server task for RSU communication
-        let server_clone = server.clone();
-        tokio::spawn(async move {
-            if let Err(e) = server_clone.run().await {
-                error!("Server error: {:?}", e);
-            }
-        });
-
-        Ok(server)
+        // This method is deprecated - server should be created as regular node
+        return Err(anyhow!("Server should be created through create_with_vdev as a regular node"));
     }
 
     /// Create server with routing integration to simulator nodes
