@@ -23,7 +23,6 @@ use std::{
     sync::{Arc, RwLock},
     time::Duration,
 };
-use tokio::net::UdpSocket;
 
 pub struct Rsu {
     args: Args,
@@ -35,7 +34,8 @@ pub struct Rsu {
     cache: Arc<ClientCache>,
     /// Infrastructure interface for server communication (wired connection to cloud)
     infra_device: Arc<Device>,
-    server_socket: Arc<UdpSocket>,
+    /// Server MAC address for infrastructure communication
+    server_mac: MacAddress,
 }
 
 impl Rsu {
@@ -46,44 +46,17 @@ impl Rsu {
     }
 
     pub fn new_with_infra(args: Args, tun: Arc<Tun>, device: Arc<Device>, infra_device: Arc<Device>) -> Result<Arc<Self>> {
-        // Server address is mandatory for RSUs
+        // Server address is mandatory for RSUs - we'll need it to know server MAC
         let _server_address = args
             .node_params
             .server_address
             .as_ref()
             .ok_or_else(|| anyhow!("RSU requires server_address to be configured"))?;
 
-        // Create UDP socket for server communication - bind to infrastructure interface
-        // For proper routing, we need to use the infrastructure device's network
-        let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
-        socket.set_nonblocking(true)?;
-        
-        // Try to bind socket to infrastructure device for proper routing
-        // This ensures traffic goes through the infrastructure interface
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::io::AsRawFd;
-            let device_name = infra_device.name();
-            let device_bytes = device_name.as_bytes();
-            if device_bytes.len() < 16 { // IFNAMSIZ is typically 16
-                unsafe {
-                    let ret = libc::setsockopt(
-                        socket.as_raw_fd(),
-                        libc::SOL_SOCKET,
-                        libc::SO_BINDTODEVICE,
-                        device_bytes.as_ptr() as *const libc::c_void,
-                        device_bytes.len() as libc::socklen_t,
-                    );
-                    if ret != 0 {
-                        tracing::warn!("Could not bind socket to infrastructure device {}: errno {}", device_name, ret);
-                    } else {
-                        tracing::info!("Bound server socket to infrastructure device {}", device_name);
-                    }
-                }
-            }
-        }
-        
-        let server_socket = Arc::new(UdpSocket::from_std(socket)?);
+        // RSUs communicate with server via infrastructure device using ethernet protocol
+        // No UDP socket needed - everything goes through simulator's layer-2 routing
+        // For now, use a well-known server MAC address - in production this would be discovered via ARP
+        let server_mac = MacAddress::from([0x02, 0x00, 0x00, 0x00, 0x00, 0xFF]); // Well-known server MAC
 
         let rsu = Arc::new(Self {
             routing: Arc::new(RwLock::new(Routing::new(&args)?)),
@@ -92,7 +65,7 @@ impl Rsu {
             device,
             cache: ClientCache::default().into(),
             infra_device,
-            server_socket,
+            server_mac,
         });
 
         tracing::info!(?rsu.args, "Setup Rsu with infrastructure device");
@@ -101,8 +74,8 @@ impl Rsu {
         Self::wire_traffic_task(rsu.clone())?;
 
         // Start server communication tasks
-        Self::server_response_task(rsu.clone())?;
         Self::server_registration_task(rsu.clone())?;
+        Self::process_infra_traffic(rsu.clone())?;
 
         Ok(rsu)
     }
@@ -177,78 +150,94 @@ impl Rsu {
         Ok(())
     }
 
-    fn server_response_task(rsu: Arc<Self>) -> Result<()> {
-        let socket = rsu.server_socket.clone();
+    /// Process traffic from server via infrastructure device
+    fn process_infra_traffic(rsu: Arc<Self>) -> Result<()> {
+        let infra_device = rsu.infra_device.clone();
         let tun = rsu.tun.clone();
         let device = rsu.device.clone();
         let routing = rsu.routing.clone();
-        let _cache = rsu.cache.clone();
 
         tokio::task::spawn(async move {
             let mut buffer = vec![0u8; 65536];
 
             loop {
-                match socket.recv(&mut buffer).await {
+                match infra_device.recv(&mut buffer).await {
                     Ok(len) => {
                         let data = &buffer[..len];
-                        if let Ok(server_msg) = crate::server::ServerToRsuMessage::from_wire(data) {
-                            tracing::debug!(
-                                "Received server response: destination={:?}",
-                                server_msg.destination_mac
-                            );
-
-                            // RSU should not modify payload - just forward encrypted data as-is
-                            let encrypted_payload = &server_msg.encrypted_payload;
-                            let destination_mac = server_msg.destination_mac;
-                            let source_mac = server_msg.source_mac;
-
-                            let is_multicast = destination_mac.bytes()[0] & 0x1 != 0;
-                            let mut messages = Vec::new();
-
-                            // Forward to other nodes based on routing
-                            let forwards: Vec<_> = {
-                                let routing = routing.read().unwrap();
-                                if is_multicast {
-                                    // For multicast, forward to next hops except source
-                                    routing
-                                        .iter_next_hops()
-                                        .filter(|&&mac| mac != source_mac)
-                                        .filter_map(|&next_hop_mac| {
-                                            let route = routing.get_route_to(Some(next_hop_mac))?;
-
-                                            // Forward encrypted payload without modification
-                                            Some(ReplyType::Wire(
-                                                (&Message::new(
-                                                    device.mac_address(),
-                                                    route.mac,
-                                                    PacketType::Data(Data::Downstream(
-                                                        ToDownstream::new(
-                                                            &source_mac.bytes(),
-                                                            destination_mac,
-                                                            encrypted_payload,
-                                                        ),
-                                                    )),
-                                                ))
-                                                    .into(),
-                                            ))
-                                        })
-                                        .collect()
-                                } else {
-                                    // For unicast, the server already determined routing
-                                    Vec::new()
+                        
+                        // Try to parse as Message from server
+                        if let Ok(msg) = Message::try_from(data) {
+                            // Check if this is a message for us (infrastructure interface)
+                            if let Ok(to_mac) = msg.to() {
+                                if to_mac != infra_device.mac_address() {
+                                    continue; // Not for us
                                 }
-                            };
-                            messages.extend(forwards);
-
-                            if !messages.is_empty() {
-                                let _ = node::handle_messages(messages, &tun, &device, None).await;
+                            } else {
+                                continue; // Invalid destination
                             }
-                        } else {
-                            tracing::warn!("Failed to deserialize server response");
+
+                            if let PacketType::Data(Data::Downstream(downstream)) = msg.get_packet_type() {
+                                // This should be a server response
+                                if let Ok(server_msg) = crate::server::ServerToRsuMessage::from_wire(downstream.data()) {
+                                    tracing::debug!(
+                                        "Received server response via infrastructure: destination={:?}",
+                                        server_msg.destination_mac
+                                    );
+
+                                    // RSU should not modify payload - just forward encrypted data as-is
+                                    let encrypted_payload = &server_msg.encrypted_payload;
+                                    let destination_mac = server_msg.destination_mac;
+                                    let source_mac = server_msg.source_mac;
+
+                                    let is_multicast = destination_mac.bytes()[0] & 0x1 != 0;
+                                    let mut messages = Vec::new();
+
+                                    // Forward to other nodes based on routing
+                                    let forwards: Vec<_> = {
+                                        let routing = routing.read().unwrap();
+                                        if is_multicast {
+                                            // For multicast, forward to next hops except source
+                                            routing
+                                                .iter_next_hops()
+                                                .filter(|&&mac| mac != source_mac)
+                                                .filter_map(|&next_hop_mac| {
+                                                    let route = routing.get_route_to(Some(next_hop_mac))?;
+
+                                                    // Forward encrypted payload without modification
+                                                    Some(ReplyType::Wire(
+                                                        (&Message::new(
+                                                            device.mac_address(),
+                                                            route.mac,
+                                                            PacketType::Data(Data::Downstream(
+                                                                ToDownstream::new(
+                                                                    &source_mac.bytes(),
+                                                                    destination_mac,
+                                                                    encrypted_payload,
+                                                                ),
+                                                            )),
+                                                        ))
+                                                            .into(),
+                                                    ))
+                                                })
+                                                .collect()
+                                        } else {
+                                            // For unicast, the server already determined routing
+                                            Vec::new()
+                                        }
+                                    };
+                                    messages.extend(forwards);
+
+                                    if !messages.is_empty() {
+                                        let _ = node::handle_messages(messages, &tun, &device, None).await;
+                                    }
+                                } else {
+                                    tracing::debug!("Received non-server message on infrastructure interface");
+                                }
+                            }
                         }
                     }
                     Err(e) => {
-                        tracing::error!("Error receiving from server socket: {:?}", e);
+                        tracing::error!("Error receiving from infrastructure device: {:?}", e);
                         break;
                     }
                 }
@@ -258,15 +247,14 @@ impl Rsu {
     }
 
     fn server_registration_task(rsu: Arc<Self>) -> Result<()> {
-        let socket = rsu.server_socket.clone();
+        let infra_device = rsu.infra_device.clone();
         let routing = rsu.routing.clone();
         let device_mac = rsu.device.mac_address();
-        let server_addr = rsu.args.node_params.server_address
-            .expect("RSU must have server_address configured");
+        let server_mac = rsu.server_mac;
 
         tokio::task::spawn(async move {
             // Send initial registration
-            let _ = Self::send_registration(&socket, &routing, device_mac, server_addr).await;
+            let _ = Self::send_registration(&infra_device, &routing, device_mac, server_mac).await;
 
             // Periodic registration updates (every 30 seconds)
             let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -274,7 +262,7 @@ impl Rsu {
 
             loop {
                 interval.tick().await;
-                let _ = Self::send_registration(&socket, &routing, device_mac, server_addr).await;
+                let _ = Self::send_registration(&infra_device, &routing, device_mac, server_mac).await;
             }
         });
 
@@ -282,10 +270,10 @@ impl Rsu {
     }
 
     async fn send_registration(
-        socket: &UdpSocket,
+        infra_device: &Device,
         routing: &RwLock<Routing>,
         device_mac: MacAddress,
-        server_addr: std::net::SocketAddr,
+        server_mac: MacAddress,
     ) {
         // Get all next hops from routing table (these are connected OBUs)
         let connected_obus: HashSet<MacAddress> = {
@@ -296,11 +284,29 @@ impl Rsu {
         let registration = crate::server::RsuRegistrationMessage::new(device_mac, connected_obus);
         let wire_data = registration.to_wire();
 
-        if let Err(e) = socket.send_to(&wire_data, server_addr).await {
-            tracing::warn!("Failed to send registration to server: {:?}", e);
+        // Create a Message to send to server via infrastructure device
+        // Use Data::Upstream to encapsulate the registration data
+        let upstream_data = crate::messages::data::ToUpstream::new(
+            device_mac,
+            &wire_data,
+        );
+        
+        let server_message = crate::messages::message::Message::new(
+            device_mac,
+            server_mac,
+            crate::messages::packet_type::PacketType::Data(
+                crate::messages::data::Data::Upstream(upstream_data)
+            ),
+        );
+        
+        let msg_wire: Vec<Vec<u8>> = (&server_message).into();
+        let flat_wire: Vec<u8> = msg_wire.iter().flat_map(|x| x.iter()).copied().collect();
+        
+        if let Err(e) = infra_device.send(&flat_wire).await {
+            tracing::warn!("Failed to send registration to server via infrastructure device: {:?}", e);
         } else {
             tracing::debug!(
-                "Sent registration to server with {} connected OBUs",
+                "Sent registration to server with {} connected OBUs via infrastructure device",
                 registration.connected_obus.len()
             );
         }
@@ -309,10 +315,7 @@ impl Rsu {
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
         match msg.get_packet_type() {
             PacketType::Data(Data::Upstream(buf)) => {
-                // Forward encrypted upstream traffic to server (server address is mandatory)
-                let server_addr = self.args.node_params.server_address
-                    .expect("RSU must have server_address configured");
-                
+                // Forward encrypted upstream traffic to server via infrastructure device
                 let source_bytes: [u8; 6] = buf
                     .source()
                     .get(0..6)
@@ -328,9 +331,26 @@ impl Rsu {
 
                 let wire_data = server_msg.to_wire();
 
-                // Send to server (fire and forget) - RSU just forwards encrypted data
-                if let Err(e) = self.server_socket.send_to(&wire_data, server_addr).await {
-                    tracing::warn!("Failed to send to server: {:?}", e);
+                // Create a Message to send to server via infrastructure device
+                // Use Data::Upstream to encapsulate the server message
+                let upstream_data = crate::messages::data::ToUpstream::new(
+                    self.device.mac_address(),
+                    &wire_data,
+                );
+                
+                let server_message = crate::messages::message::Message::new(
+                    self.device.mac_address(),
+                    self.server_mac,
+                    crate::messages::packet_type::PacketType::Data(
+                        crate::messages::data::Data::Upstream(upstream_data)
+                    ),
+                );
+                
+                let msg_wire: Vec<Vec<u8>> = (&server_message).into();
+                let flat_wire: Vec<u8> = msg_wire.iter().flat_map(|x| x.iter()).copied().collect();
+                
+                if let Err(e) = self.infra_device.send(&flat_wire).await {
+                    tracing::warn!("Failed to send to server via infrastructure device: {:?}", e);
                 }
 
                 // Return None since server will handle the processing
