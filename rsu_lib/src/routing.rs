@@ -200,27 +200,25 @@ impl Routing {
 
 #[cfg(test)]
 mod tests {
-    use crate::messages::control::heartbeat::{Heartbeat, HeartbeatReply};
-    use crate::{
-        args::{NodeParameters, NodeType},
-        control::rsu::Routing,
+    use node_lib::messages::control::heartbeat::{Heartbeat, HeartbeatReply};
+    use crate::RsuArgs;
+    use node_lib::{
         messages::{control::Control, message::Message, packet_type::PacketType},
-        Args,
     };
+    use super::Routing;
     use mac_address::MacAddress;
     use std::time::Duration;
 
     #[test]
     fn can_generate_heartbeat() {
-        let args = Args {
+        let args = RsuArgs {
             bind: String::default(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Rsu,
+            rsu_params: crate::RsuParameters {
                 hello_history: 1,
-                hello_periodicity: None,
+                hello_periodicity: 100,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
@@ -258,15 +256,14 @@ mod tests {
 
     #[test]
     fn rsu_handle_heartbeat_reply_inserts_route() {
-        let args = Args {
+        let args = RsuArgs {
             bind: String::default(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Rsu,
+            rsu_params: crate::RsuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
+                hello_periodicity: 100,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
@@ -305,21 +302,19 @@ mod tests {
 #[cfg(test)]
 mod more_tests {
     use super::Routing;
-    use crate::args::{NodeParameters, NodeType};
-    use crate::Args;
+    use crate::RsuArgs;
     use mac_address::MacAddress;
 
     #[test]
     fn iter_next_hops_empty_and_get_route_none_when_empty() {
-        let args = Args {
+        let args = RsuArgs {
             bind: String::default(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Rsu,
+            rsu_params: crate::RsuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
+                hello_periodicity: 100,
                 cached_candidates: 3,
                 enable_encryption: false,
             },

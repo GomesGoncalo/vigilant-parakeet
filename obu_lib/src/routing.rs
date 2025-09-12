@@ -299,16 +299,16 @@ mod cache_tests {
         let hb_source: MacAddress = [7u8; 6].into();
         let pkt_from: MacAddress = [8u8; 6].into();
         let our_mac: MacAddress = [9u8; 6].into();
-        let hb = crate::messages::control::heartbeat::Heartbeat::new(
+        let hb = node_lib::messages::control::heartbeat::Heartbeat::new(
             std::time::Duration::from_millis(1),
             1u32,
             hb_source,
         );
-        let hb_msg = crate::messages::message::Message::new(
+        let hb_msg = node_lib::messages::message::Message::new(
             pkt_from,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb.clone()),
             ),
         );
         // Insert heartbeat via routing handle
@@ -347,16 +347,16 @@ mod cache_tests {
         let hb_source: MacAddress = [7u8; 6].into();
         let pkt_from: MacAddress = [8u8; 6].into();
         let our_mac: MacAddress = [9u8; 6].into();
-        let hb = crate::messages::control::heartbeat::Heartbeat::new(
+        let hb = node_lib::messages::control::heartbeat::Heartbeat::new(
             std::time::Duration::from_millis(1),
             1u32,
             hb_source,
         );
-        let hb_msg = crate::messages::message::Message::new(
+        let hb_msg = node_lib::messages::message::Message::new(
             pkt_from,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb.clone()),
             ),
         );
         let _ = routing
@@ -390,8 +390,8 @@ mod cache_tests {
 #[cfg(test)]
 mod regression_tests {
     use super::Routing;
-    use crate::messages::control::heartbeat::{Heartbeat, HeartbeatReply};
-    use crate::messages::{control::Control, message::Message, packet_type::PacketType};
+    use node_lib::messages::control::heartbeat::{Heartbeat, HeartbeatReply};
+    use node_lib::messages::{control::Control, message::Message, packet_type::PacketType};
     use crate::{
         args::{NodeParameters, NodeType},
         Args,
@@ -518,7 +518,7 @@ mod more_tests {
     use super::Routing;
     use super::Target;
     use crate::args::{NodeParameters, NodeType};
-    use crate::Args;
+    use crate::ObuArgs;
     use mac_address::MacAddress;
     use tokio::time::{Duration, Instant};
 
@@ -690,16 +690,16 @@ mod more_tests {
         let hb_source: MacAddress = [5u8; 6].into();
         let pkt_from: MacAddress = [6u8; 6].into();
         let our_mac: MacAddress = [7u8; 6].into();
-        let hb = crate::messages::control::heartbeat::Heartbeat::new(
+        let hb = node_lib::messages::control::heartbeat::Heartbeat::new(
             std::time::Duration::from_millis(1),
             123u32,
             hb_source,
         );
-        let hb_msg = crate::messages::message::Message::new(
+        let hb_msg = node_lib::messages::message::Message::new(
             pkt_from,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb.clone()),
             ),
         );
 
@@ -730,30 +730,30 @@ mod more_tests {
         let pkt_from: MacAddress = [2u8, 2, 2, 2, 2, 2].into();
         let our_mac: MacAddress = [9u8; 6].into();
 
-        let hb1 = crate::messages::control::heartbeat::Heartbeat::new(
+        let hb1 = node_lib::messages::control::heartbeat::Heartbeat::new(
             std::time::Duration::from_millis(1),
             1u32,
             hb_source,
         );
-        let msg1 = crate::messages::message::Message::new(
+        let msg1 = node_lib::messages::message::Message::new(
             pkt_from,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb1.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb1.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
 
-        let hb2 = crate::messages::control::heartbeat::Heartbeat::new(
+        let hb2 = node_lib::messages::control::heartbeat::Heartbeat::new(
             std::time::Duration::from_millis(2),
             2u32,
             hb_source,
         );
-        let msg2 = crate::messages::message::Message::new(
+        let msg2 = node_lib::messages::message::Message::new(
             pkt_from,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb2.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb2.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
@@ -787,31 +787,31 @@ mod more_tests {
         let our_mac: MacAddress = [0u8; 6].into();
 
         // Insert id 10 first
-        let hb10 = crate::messages::control::heartbeat::Heartbeat::new(
+        let hb10 = node_lib::messages::control::heartbeat::Heartbeat::new(
             std::time::Duration::from_millis(10),
             10u32,
             hb_source,
         );
-        let msg10 = crate::messages::message::Message::new(
+        let msg10 = node_lib::messages::message::Message::new(
             pkt_from,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb10.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb10.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg10, our_mac).unwrap();
 
         // Now insert smaller id 5, which should clear existing entries
-        let hb5 = crate::messages::control::heartbeat::Heartbeat::new(
+        let hb5 = node_lib::messages::control::heartbeat::Heartbeat::new(
             std::time::Duration::from_millis(5),
             5u32,
             hb_source,
         );
-        let msg5 = crate::messages::message::Message::new(
+        let msg5 = node_lib::messages::message::Message::new(
             pkt_from,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb5.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb5.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg5, our_mac).unwrap();
@@ -863,16 +863,16 @@ mod more_tests {
         let pkt_from: MacAddress = [8u8; 6].into();
         let our_mac: MacAddress = [9u8; 6].into();
 
-        let hb = crate::messages::control::heartbeat::Heartbeat::new(
+        let hb = node_lib::messages::control::heartbeat::Heartbeat::new(
             std::time::Duration::from_millis(1),
             1u32,
             hb_source,
         );
-        let hb_msg = crate::messages::message::Message::new(
+        let hb_msg = node_lib::messages::message::Message::new(
             pkt_from,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&hb_msg, our_mac).unwrap();
@@ -905,16 +905,16 @@ mod more_tests {
         let our_mac: MacAddress = [9u8; 6].into();
 
         // Heartbeat from RSU via B with 2 hops
-        let hb1 = crate::messages::control::heartbeat::Heartbeat::new(
+        let hb1 = node_lib::messages::control::heartbeat::Heartbeat::new(
             std::time::Duration::from_millis(1),
             1u32,
             rsu,
         );
-        let msg1 = crate::messages::message::Message::new(
+        let msg1 = node_lib::messages::message::Message::new(
             via_b,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb1.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb1.clone()),
             ),
         );
         // Insert, then cache selection chooses B
@@ -923,16 +923,16 @@ mod more_tests {
         assert_eq!(sel1.mac, via_b);
 
         // Another Heartbeat from RSU via C with same hops (2)
-        let hb2 = crate::messages::control::heartbeat::Heartbeat::new(
+        let hb2 = node_lib::messages::control::heartbeat::Heartbeat::new(
             std::time::Duration::from_millis(2),
             2u32,
             rsu,
         );
-        let msg2 = crate::messages::message::Message::new(
+        let msg2 = node_lib::messages::message::Message::new(
             via_c,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb2.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb2.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
@@ -970,13 +970,13 @@ mod more_tests {
         hb1_bytes.extend_from_slice(&1u32.to_be_bytes()); // id
         hb1_bytes.extend_from_slice(&2u32.to_be_bytes()); // hops = 2
         hb1_bytes.extend_from_slice(&rsu.bytes()); // source
-        let hb1 = crate::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..])
+        let hb1 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..])
             .expect("hb1 bytes to heartbeat");
-        let msg1 = crate::messages::message::Message::new(
+        let msg1 = node_lib::messages::message::Message::new(
             via_b,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb1.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb1.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
@@ -989,13 +989,13 @@ mod more_tests {
         hb2_bytes.extend_from_slice(&2u32.to_be_bytes()); // id
         hb2_bytes.extend_from_slice(&1u32.to_be_bytes()); // hops = 1
         hb2_bytes.extend_from_slice(&rsu.bytes()); // source
-        let hb2 = crate::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..])
+        let hb2 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..])
             .expect("hb2 bytes to heartbeat");
-        let msg2 = crate::messages::message::Message::new(
+        let msg2 = node_lib::messages::message::Message::new(
             via_c,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb2.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb2.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
@@ -1035,12 +1035,12 @@ mod more_tests {
         hb1_bytes.extend_from_slice(&2u32.to_be_bytes()); // higher hops for cached
         hb1_bytes.extend_from_slice(&rsu.bytes());
         let hb1 =
-            crate::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..]).expect("hb1");
-        let msg1 = crate::messages::message::Message::new(
+            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..]).expect("hb1");
+        let msg1 = node_lib::messages::message::Message::new(
             via_b,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb1.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb1.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
@@ -1048,12 +1048,12 @@ mod more_tests {
 
         // Advance 25ms between HB and HBR for B
         tokio::time::advance(Duration::from_millis(25)).await;
-        let hbr1 = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb1, rsu);
-        let reply1 = crate::messages::message::Message::new(
+        let hbr1 = node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb1, rsu);
+        let reply1 = node_lib::messages::message::Message::new(
             via_b,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::HeartbeatReply(hbr1.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::HeartbeatReply(hbr1.clone()),
             ),
         );
         let _ = routing
@@ -1067,23 +1067,23 @@ mod more_tests {
         hb2_bytes.extend_from_slice(&2u32.to_be_bytes()); // same hops as cached
         hb2_bytes.extend_from_slice(&rsu.bytes());
         let hb2 =
-            crate::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..]).expect("hb2");
-        let msg2 = crate::messages::message::Message::new(
+            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..]).expect("hb2");
+        let msg2 = node_lib::messages::message::Message::new(
             via_c,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb2.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb2.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
         // Advance 23ms for C (less than 10% better than 25ms)
         tokio::time::advance(Duration::from_millis(23)).await;
-        let hbr2 = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb2, rsu);
-        let reply2 = crate::messages::message::Message::new(
+        let hbr2 = node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb2, rsu);
+        let reply2 = node_lib::messages::message::Message::new(
             via_c,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::HeartbeatReply(hbr2.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::HeartbeatReply(hbr2.clone()),
             ),
         );
         let _ = routing
@@ -1125,12 +1125,12 @@ mod more_tests {
         hb1_bytes.extend_from_slice(&0u32.to_be_bytes());
         hb1_bytes.extend_from_slice(&rsu.bytes());
         let hb1 =
-            crate::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..]).expect("hb1");
-        let msg1 = crate::messages::message::Message::new(
+            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..]).expect("hb1");
+        let msg1 = node_lib::messages::message::Message::new(
             via_b,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb1.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb1.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
@@ -1138,12 +1138,12 @@ mod more_tests {
 
         // Advance 40ms for B
         tokio::time::advance(Duration::from_millis(40)).await;
-        let hbr1 = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb1, rsu);
-        let reply1 = crate::messages::message::Message::new(
+        let hbr1 = node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb1, rsu);
+        let reply1 = node_lib::messages::message::Message::new(
             via_b,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::HeartbeatReply(hbr1.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::HeartbeatReply(hbr1.clone()),
             ),
         );
         let _ = routing
@@ -1157,24 +1157,24 @@ mod more_tests {
         hb2_bytes.extend_from_slice(&0u32.to_be_bytes());
         hb2_bytes.extend_from_slice(&rsu.bytes());
         let hb2 =
-            crate::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..]).expect("hb2");
-        let msg2 = crate::messages::message::Message::new(
+            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..]).expect("hb2");
+        let msg2 = node_lib::messages::message::Message::new(
             via_c,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb2.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb2.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
 
         // Advance 20ms for C (>= 10% better than 40ms)
         tokio::time::advance(Duration::from_millis(20)).await;
-        let hbr2 = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb2, rsu);
-        let reply2 = crate::messages::message::Message::new(
+        let hbr2 = node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb2, rsu);
+        let reply2 = node_lib::messages::message::Message::new(
             via_c,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::HeartbeatReply(hbr2.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::HeartbeatReply(hbr2.clone()),
             ),
         );
         let _ = routing
@@ -1220,12 +1220,12 @@ mod more_tests {
         hb1_bytes.extend_from_slice(&0u32.to_be_bytes());
         hb1_bytes.extend_from_slice(&rsu.bytes());
         let hb1 =
-            crate::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..]).expect("hb1");
-        let msg1 = crate::messages::message::Message::new(
+            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..]).expect("hb1");
+        let msg1 = node_lib::messages::message::Message::new(
             via_b,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb1.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb1.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
@@ -1239,24 +1239,24 @@ mod more_tests {
         hb2_bytes.extend_from_slice(&0u32.to_be_bytes());
         hb2_bytes.extend_from_slice(&rsu.bytes());
         let hb2 =
-            crate::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..]).expect("hb2");
-        let msg2 = crate::messages::message::Message::new(
+            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..]).expect("hb2");
+        let msg2 = node_lib::messages::message::Message::new(
             via_c,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb2.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb2.clone()),
             ),
         );
         let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
 
         // Advance time so the reply records a measurable latency for via_c
         tokio::time::advance(Duration::from_millis(30)).await;
-        let hbr2 = crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb2, rsu);
-        let reply2 = crate::messages::message::Message::new(
+        let hbr2 = node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb2, rsu);
+        let reply2 = node_lib::messages::message::Message::new(
             via_c,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::HeartbeatReply(hbr2.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::HeartbeatReply(hbr2.clone()),
             ),
         );
         // This will record latency for via_c and also trigger select_and_cache_upstream
@@ -1316,13 +1316,13 @@ mod more_tests {
         hb_fast_bytes.extend_from_slice(&1u32.to_be_bytes()); // sequence id
         hb_fast_bytes.extend_from_slice(&1u32.to_be_bytes()); // 1 hop
         hb_fast_bytes.extend_from_slice(&rsu.bytes());
-        let hb_fast = crate::messages::control::heartbeat::Heartbeat::try_from(&hb_fast_bytes[..])
+        let hb_fast = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_fast_bytes[..])
             .expect("hb_fast");
-        let msg_fast = crate::messages::message::Message::new(
+        let msg_fast = node_lib::messages::message::Message::new(
             via_fast,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb_fast.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb_fast.clone()),
             ),
         );
         let _ = obu_routing.handle_heartbeat(&msg_fast, our_mac).unwrap();
@@ -1330,12 +1330,12 @@ mod more_tests {
         // Advance 10ms and reply
         tokio::time::advance(Duration::from_millis(10)).await;
         let hbr_fast =
-            crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_fast, rsu);
-        let reply_fast = crate::messages::message::Message::new(
+            node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_fast, rsu);
+        let reply_fast = node_lib::messages::message::Message::new(
             via_fast,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::HeartbeatReply(hbr_fast.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::HeartbeatReply(hbr_fast.clone()),
             ),
         );
         let _ = obu_routing
@@ -1348,13 +1348,13 @@ mod more_tests {
         hb_slow_bytes.extend_from_slice(&2u32.to_be_bytes()); // different sequence id
         hb_slow_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
         hb_slow_bytes.extend_from_slice(&rsu.bytes());
-        let hb_slow = crate::messages::control::heartbeat::Heartbeat::try_from(&hb_slow_bytes[..])
+        let hb_slow = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_slow_bytes[..])
             .expect("hb_slow");
-        let msg_slow = crate::messages::message::Message::new(
+        let msg_slow = node_lib::messages::message::Message::new(
             via_slow,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb_slow.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb_slow.clone()),
             ),
         );
         let _ = obu_routing.handle_heartbeat(&msg_slow, our_mac).unwrap();
@@ -1362,12 +1362,12 @@ mod more_tests {
         // Advance 30ms and reply
         tokio::time::advance(Duration::from_millis(30)).await;
         let hbr_slow =
-            crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_slow, rsu);
-        let reply_slow = crate::messages::message::Message::new(
+            node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_slow, rsu);
+        let reply_slow = node_lib::messages::message::Message::new(
             via_slow,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::HeartbeatReply(hbr_slow.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::HeartbeatReply(hbr_slow.clone()),
             ),
         );
         let _ = obu_routing
@@ -1398,13 +1398,13 @@ mod more_tests {
         hb_slightly_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
         hb_slightly_bytes.extend_from_slice(&rsu.bytes());
         let hb_slightly =
-            crate::messages::control::heartbeat::Heartbeat::try_from(&hb_slightly_bytes[..])
+            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_slightly_bytes[..])
                 .expect("hb_slightly");
-        let msg_slightly = crate::messages::message::Message::new(
+        let msg_slightly = node_lib::messages::message::Message::new(
             via_slightly_better,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb_slightly.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb_slightly.clone()),
             ),
         );
         let _ = obu_routing
@@ -1417,12 +1417,12 @@ mod more_tests {
         // Advance only 9.5ms for slightly better latency
         tokio::time::advance(Duration::from_millis(9) + Duration::from_micros(500)).await;
         let hbr_slightly =
-            crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_slightly, rsu);
-        let reply_slightly = crate::messages::message::Message::new(
+            node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_slightly, rsu);
+        let reply_slightly = node_lib::messages::message::Message::new(
             via_slightly_better,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::HeartbeatReply(hbr_slightly.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::HeartbeatReply(hbr_slightly.clone()),
             ),
         );
         let _ = obu_routing
@@ -1445,13 +1445,13 @@ mod more_tests {
         hb_much_bytes.extend_from_slice(&4u32.to_be_bytes());
         hb_much_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
         hb_much_bytes.extend_from_slice(&rsu.bytes());
-        let hb_much = crate::messages::control::heartbeat::Heartbeat::try_from(&hb_much_bytes[..])
+        let hb_much = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_much_bytes[..])
             .expect("hb_much");
-        let msg_much = crate::messages::message::Message::new(
+        let msg_much = node_lib::messages::message::Message::new(
             via_much_better,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::Heartbeat(hb_much.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::Heartbeat(hb_much.clone()),
             ),
         );
         let _ = obu_routing.handle_heartbeat(&msg_much, our_mac).unwrap();
@@ -1459,12 +1459,12 @@ mod more_tests {
         // Advance 8ms for significantly better latency (>10% improvement)
         tokio::time::advance(Duration::from_millis(8)).await;
         let hbr_much =
-            crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_much, rsu);
-        let reply_much = crate::messages::message::Message::new(
+            node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_much, rsu);
+        let reply_much = node_lib::messages::message::Message::new(
             via_much_better,
             [255u8; 6].into(),
-            crate::messages::packet_type::PacketType::Control(
-                crate::messages::control::Control::HeartbeatReply(hbr_much.clone()),
+            node_lib::messages::packet_type::PacketType::Control(
+                node_lib::messages::control::Control::HeartbeatReply(hbr_much.clone()),
             ),
         );
         let _ = obu_routing

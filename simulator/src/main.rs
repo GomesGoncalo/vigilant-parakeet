@@ -14,8 +14,7 @@ use config::Config;
 use itertools::Itertools;
 use node_lib::test_helpers;
 mod node_factory;
-use node_factory::NodeType;
-use std::any::Any;
+use node_factory::{NodeType, UnifiedNode};
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -288,20 +287,14 @@ async fn main() -> Result<()> {
                 let mut upstream_map: HashMap<String, UpstreamInfo> = HashMap::new();
                 for (name, (_dev, _tun, node)) in sim_nodes.iter() {
                     // try downcast to obu to get a cached route
-                    let node_type = if node.is::<rsu_lib::Rsu>() {
-                        "Rsu".to_string()
-                    } else if node.is::<obu_lib::Obu>() {
-                        "Obu".to_string()
-                    } else {
-                        "Unknown".to_string()
-                    };
-                    let upstream_route = node
-                        .downcast_ref::<obu_lib::Obu>()
-                        .and_then(|obu| obu.cached_upstream_route())
-                        .map(|r| UpstreamInfo {
-                            hops: r.hops,
-                            mac: format!("{}", r.mac),
-                            node_name: mac_map.get(&r.mac).cloned(),
+                    let node_type = node.node_type_name().to_string();
+                    let upstream_route = node.cached_upstream_route()
+                        .and_then(|r| {
+                            Some(UpstreamInfo {
+                                hops: r.hops,
+                                mac: format!("{}", r.mac),
+                                node_name: mac_map.get(&r.mac).cloned(),
+                            })
                         });
 
                     if let Some(ref u) = upstream_route {

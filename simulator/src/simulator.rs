@@ -12,7 +12,7 @@ use futures::StreamExt;
 use itertools::Itertools;
 use mac_address::MacAddress;
 use netns_rs::NetNs;
-use std::any::Any;
+use crate::node_factory::UnifiedNode;
 use rand::Rng;
 use std::collections::VecDeque;
 use std::str::FromStr;
@@ -165,10 +165,10 @@ pub struct Simulator {
     /// Keep created nodes so external code (e.g. webview) may query node state.
     #[allow(dead_code)]
     #[allow(clippy::type_complexity)]
-    nodes: HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Any + Send + Sync>)>,
+    nodes: HashMap<String, (Arc<Device>, Arc<Tun>, UnifiedNode)>,
 }
 
-type CallbackReturn = Result<(Arc<Device>, Arc<Tun>, Arc<dyn Any + Send + Sync>)>;
+type CallbackReturn = Result<(Arc<Device>, Arc<Tun>, UnifiedNode)>;
 
 impl Simulator {
     #[allow(clippy::type_complexity)]
@@ -178,7 +178,7 @@ impl Simulator {
     ) -> Result<(
         HashMap<String, HashMap<String, Arc<Channel>>>,
         Vec<NamespaceWrapper>,
-        HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Any + Send + Sync>)>,
+        HashMap<String, (Arc<Device>, Arc<Tun>, UnifiedNode)>,
     )> {
         let settings = Config::builder()
             .add_source(config::File::with_name(config_file))
@@ -327,7 +327,7 @@ impl Simulator {
 
     /// Return a clone of the created nodes (name -> (dev, tun, node)).
     #[allow(dead_code, clippy::type_complexity)]
-    pub fn get_nodes(&self) -> HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Any + Send + Sync>)> {
+    pub fn get_nodes(&self) -> HashMap<String, (Arc<Device>, Arc<Tun>, UnifiedNode)> {
         self.nodes.clone()
     }
 }

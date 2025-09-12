@@ -1,6 +1,8 @@
 use anyhow::Result;
 use common::{device::Device, tun::Tun};
 use std::{any::Any, sync::Arc, str::FromStr};
+use rsu_lib::Node as RsuNode;
+use obu_lib::Node as ObuNode;
 
 /// Node type enum for configuration
 #[derive(Clone, Debug, PartialEq)]
@@ -21,8 +23,45 @@ impl FromStr for NodeType {
     }
 }
 
+/// Unified node enum that can hold either RSU or OBU
+#[derive(Clone)]
+pub enum UnifiedNode {
+    Rsu(Arc<rsu_lib::Rsu>),
+    Obu(Arc<obu_lib::Obu>),
+}
+
+impl UnifiedNode {
+    pub fn as_any(&self) -> &dyn Any {
+        match self {
+            UnifiedNode::Rsu(rsu) => rsu.as_any(),
+            UnifiedNode::Obu(obu) => obu.as_any(),
+        }
+    }
+    
+    pub fn is_rsu(&self) -> bool {
+        matches!(self, UnifiedNode::Rsu(_))
+    }
+    
+    pub fn is_obu(&self) -> bool {
+        matches!(self, UnifiedNode::Obu(_))
+    }
+    
+    pub fn cached_upstream_route(&self) -> Option<node_lib::control::route::Route> {
+        match self {
+            UnifiedNode::Obu(obu) => obu.cached_upstream_route(),
+            UnifiedNode::Rsu(_) => None, // RSUs don't have upstream routes
+        }
+    }
+    
+    pub fn node_type_name(&self) -> &'static str {
+        match self {
+            UnifiedNode::Rsu(_) => "Rsu",
+            UnifiedNode::Obu(_) => "Obu",
+        }
+    }
+}
+
 /// Factory function to create nodes based on configuration
-/// Returns either Arc<rsu_lib::Rsu> or Arc<obu_lib::Obu> wrapped in Any
 pub fn create_node_with_vdev(
     node_type: NodeType,
     bind: String,
@@ -35,7 +74,7 @@ pub fn create_node_with_vdev(
     enable_encryption: bool,
     tun: Arc<Tun>,
     device: Arc<Device>,
-) -> Result<Arc<dyn Any + Send + Sync>> {
+) -> Result<UnifiedNode> {
     match node_type {
         NodeType::Rsu => {
             let hello_periodicity = hello_periodicity
@@ -54,12 +93,9 @@ pub fn create_node_with_vdev(
                 },
             };
             
-            let rsu_node = rsu_lib::create_with_vdev(rsu_args, tun, device)?;
-            // Extract the concrete RSU from the trait object
-            let rsu_any = rsu_node.as_any();
-            let rsu_concrete = rsu_any.downcast_ref::<rsu_lib::Rsu>()
-                .ok_or_else(|| anyhow::anyhow!("Failed to downcast RSU"))?;
-            Ok(Arc::new(rsu_concrete.clone()) as Arc<dyn Any + Send + Sync>)
+            // Create RSU directly and wrap it
+            let rsu = rsu_lib::Rsu::new(rsu_args, tun, device)?;
+            Ok(UnifiedNode::Rsu(rsu))
         }
         NodeType::Obu => {
             let obu_args = obu_lib::ObuArgs {
@@ -74,12 +110,9 @@ pub fn create_node_with_vdev(
                 },
             };
             
-            let obu_node = obu_lib::create_with_vdev(obu_args, tun, device)?;
-            // Extract the concrete OBU from the trait object
-            let obu_any = obu_node.as_any();
-            let obu_concrete = obu_any.downcast_ref::<obu_lib::Obu>()
-                .ok_or_else(|| anyhow::anyhow!("Failed to downcast OBU"))?;
-            Ok(Arc::new(obu_concrete.clone()) as Arc<dyn Any + Send + Sync>)
+            // Create OBU directly and wrap it
+            let obu = obu_lib::Obu::new(obu_args, tun, device)?;
+            Ok(UnifiedNode::Obu(obu))
         }
     }
 }
