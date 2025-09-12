@@ -3,9 +3,6 @@ pub use args::{RsuArgs, RsuParameters};
 
 pub mod control;
 
-mod routing;
-use routing::Routing;
-
 pub use control::Rsu;
 
 use anyhow::Result;

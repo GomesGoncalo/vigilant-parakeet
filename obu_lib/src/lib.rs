@@ -3,21 +3,15 @@ pub use args::{ObuArgs, ObuParameters};
 
 pub mod control;
 
-mod routing;
 mod session;
 
 pub use control::Obu;
 
 use anyhow::Result;
 use common::tun::Tun;
-use common::{device::Device, network_interface::NetworkInterface};
-use mac_address::MacAddress;
+use common::device::Device;
 use std::any::Any;
-use std::{
-    io::IoSlice,
-    sync::{Arc, RwLock},
-};
-use tokio::time::Instant;
+use std::sync::Arc;
 
 pub trait Node: Send + Sync {
     /// For runtime downcasting to concrete node types.
