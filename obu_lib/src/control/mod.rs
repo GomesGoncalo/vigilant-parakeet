@@ -88,6 +88,7 @@ impl Obu {
                         while offset < data.len() {
                             match Message::try_from(&data[offset..]) {
                                 Ok(msg) => {
+                                    tracing::debug!("OBU received protocol message: {:?}", msg);
                                     let response = obu.handle_msg(&msg).await;
                                     let has_response = response.as_ref().map(|r| r.is_some()).unwrap_or(false);
                                     tracing::trace!(has_response = has_response, incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
@@ -103,6 +104,16 @@ impl Obu {
                                 }
                                 Err(e) => {
                                     tracing::trace!(offset = offset, remaining = data.len() - offset, error = ?e, "could not parse message at offset");
+                                    // Log additional context about the packet type for debugging
+                                    if data.len() >= 14 {
+                                        let eth_type = u16::from_be_bytes([data[12], data[13]]);
+                                        match eth_type {
+                                            0x86dd => tracing::trace!("Received IPv6 packet (expected behavior, will be ignored)"),
+                                            0x0800 => tracing::trace!("Received IPv4 packet (expected behavior, will be ignored)"),
+                                            0x3030 => tracing::warn!("Received packet with protocol marker but failed to parse - possible protocol issue"),
+                                            _ => tracing::trace!(eth_type = eth_type, "Received non-protocol packet with EtherType 0x{:04x}", eth_type),
+                                        }
+                                    }
                                     break;
                                 }
                             }
