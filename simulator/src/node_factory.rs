@@ -46,7 +46,7 @@ impl UnifiedNode {
         matches!(self, UnifiedNode::Obu(_))
     }
 
-    pub fn cached_upstream_route(&self) -> Option<node_lib::control::route::Route> {
+    pub fn cached_upstream_route(&self) -> Option<obu_lib::control::route::Route> {
         match self {
             UnifiedNode::Obu(obu) => obu.cached_upstream_route(),
             UnifiedNode::Rsu(_) => None, // RSUs don't have upstream routes
