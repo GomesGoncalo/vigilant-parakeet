@@ -19,6 +19,8 @@ rand = "*"
 mac_address = "*"
 tokio-timerfd = "*"
 node_lib = { path = "../node_lib/" }
+rsu_lib = { path = "../rsu_lib/" }
+obu_lib = { path = "../obu_lib/" }
 itertools = "*"
 warp = {version = "*", features = ["server"], optional = true}
 serde = { version = "*", features = ["derive"]}

@@ -12,7 +12,10 @@ use common::tun::Tun;
 use config::Config;
 #[cfg(feature = "webview")]
 use itertools::Itertools;
-use node_lib::args::{Args, NodeParameters, NodeType};
+use node_lib::test_helpers;
+mod node_factory;
+use node_factory::NodeType;
+use std::any::Any;
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -122,56 +125,48 @@ async fn main() -> Result<()> {
             .and_then(|x| u32::try_from(x).ok())
             .unwrap_or(3u32);
 
-        let args = Args {
-            bind: tun.name().to_string(),
-            tap_name: Some("virtual".to_string()),
-            ip: Some(Ipv4Addr::from_str(&settings.get_string("ip")?)?),
-            mtu: 1436,
-            node_params: NodeParameters {
-                node_type: NodeType::from_str(&settings.get_string("node_type")?, true)
-                    .or_else(|_| bail!("invalid node type"))?,
-                hello_history: settings.get_int("hello_history")?.try_into()?,
-                hello_periodicity: settings
-                    .get_int("hello_periodicity")
-                    .map(|x| u32::try_from(x).ok())
-                    .ok()
-                    .flatten(),
-                cached_candidates,
-                enable_encryption: settings.get_bool("enable_encryption").unwrap_or(false),
-            },
-        };
+        let node_type = NodeType::from_str(&settings.get_string("node_type")?)?;
+        let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
+        let hello_periodicity = settings
+            .get_int("hello_periodicity")
+            .map(|x| u32::try_from(x).ok())
+            .ok()
+            .flatten();
+        let enable_encryption = settings.get_bool("enable_encryption").unwrap_or(false);
+        let ip = Some(Ipv4Addr::from_str(&settings.get_string("ip")?)?);
 
         #[cfg(not(feature = "test_helpers"))]
-        let virtual_tun = Arc::new(Tun::new(if let Some(ref name) = args.tap_name {
-            TokioTun::builder()
-                .tap()
-                .name(name)
-                .address(args.ip.context("")?)
-                .mtu(args.mtu)
-                .up()
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
-        } else {
-            TokioTun::builder()
-                .tap()
-                .address(args.ip.context("")?)
-                .mtu(args.mtu)
-                .up()
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
-        }));
+        let virtual_tun = Arc::new(Tun::new(TokioTun::builder()
+            .tap()
+            .name("virtual")
+            .address(ip.unwrap())
+            .mtu(1436)
+            .up()
+            .build()?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?));
+            
         #[cfg(feature = "test_helpers")]
         let virtual_tun = {
-            let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+            let (tun_a, _peer) = test_helpers::util::mk_shim_pair();
             Arc::new(tun_a)
         };
 
-        let dev = Arc::new(Device::new(tun.name())?);
-        let node = node_lib::create_with_vdev(args, virtual_tun, dev.clone())?;
+        let dev = Arc::new(Device::new(virtual_tun.name())?);
+        let node = node_factory::create_node_with_vdev(
+            node_type,
+            virtual_tun.name().to_string(),
+            Some("virtual".to_string()),
+            ip,
+            1436,
+            hello_history,
+            hello_periodicity,
+            cached_candidates,
+            enable_encryption,
+            virtual_tun.clone(),
+            dev.clone(),
+        )?;
         devices
             .lock()
             .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
@@ -293,16 +288,15 @@ async fn main() -> Result<()> {
                 let mut upstream_map: HashMap<String, UpstreamInfo> = HashMap::new();
                 for (name, (_dev, _tun, node)) in sim_nodes.iter() {
                     // try downcast to obu to get a cached route
-                    let node_type = if node.as_any().is::<node_lib::control::obu::Obu>() {
-                        "Obu".to_string()
-                    } else if node.as_any().is::<node_lib::control::rsu::Rsu>() {
+                    let node_type = if node.is::<rsu_lib::Rsu>() {
                         "Rsu".to_string()
+                    } else if node.is::<obu_lib::Obu>() {
+                        "Obu".to_string()
                     } else {
                         "Unknown".to_string()
                     };
                     let upstream_route = node
-                        .as_any()
-                        .downcast_ref::<node_lib::control::obu::Obu>()
+                        .downcast_ref::<obu_lib::Obu>()
                         .and_then(|obu| obu.cached_upstream_route())
                         .map(|r| UpstreamInfo {
                             hops: r.hops,
