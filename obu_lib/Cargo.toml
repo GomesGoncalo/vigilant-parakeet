@@ -1,0 +1,36 @@
+[package]
+name = "obu_lib"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+tokio = {version = "*", features = ["full", "test-util"]}
+tokio-tun = "*"
+anyhow = "*"
+socket2 = {version = "*", features = ["all"]}
+uninit = "*"
+libc = "*"
+nix = {version = "0.29", features = ["socket", "net", "ioctl"]}
+tracing = "*"
+clap = { version = "*", features = ["derive"] }
+futures = "*"
+mac_address = "*"
+indexmap = "*"
+tokio-timerfd = "*"
+itertools = "*"
+serde = { version = "*", features = ["derive"]}
+common = { path = "../common/" }
+node_lib = { path = "../node_lib/" }
+arc-swap = { version = "*" }
+tracing-subscriber = { version = "*", features = ["env-filter"] }
+aes-gcm = { version = "0.10", features = ["aes"] }
+
+[features]
+stats = [ "common/stats", "node_lib/stats" ]
+test_helpers = [ "common/test_helpers", "node_lib/test_helpers" ]
+
+[dev-dependencies]
+criterion = "0.5"
+common = { path = "../common/" }
+proptest = "1.0"
