@@ -1,7 +1,7 @@
-use node_lib::control::node::ReplyType;
 use anyhow::Result;
 use common::tun::Tun;
 use futures::Future;
+use node_lib::control::node::ReplyType;
 use std::sync::Arc;
 
 #[allow(dead_code)]

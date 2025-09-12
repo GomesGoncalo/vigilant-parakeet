@@ -1,4 +1,8 @@
 use crate::RsuArgs;
+use anyhow::{bail, Result};
+use indexmap::IndexMap;
+use itertools::Itertools;
+use mac_address::MacAddress;
 use node_lib::{
     control::{node::ReplyType, route::Route},
     messages::{
@@ -7,10 +11,6 @@ use node_lib::{
         packet_type::PacketType,
     },
 };
-use anyhow::{bail, Result};
-use indexmap::IndexMap;
-use itertools::Itertools;
-use mac_address::MacAddress;
 use std::{
     collections::{hash_map::Entry, HashMap},
     fmt::Debug,
@@ -180,8 +180,9 @@ impl Routing {
             entry.3 = min_hops;
         }
 
-        let (mac, avg_us) =
-            node_lib::control::routing_utils::pick_best_from_latency_candidates(latency_candidates)?;
+        let (mac, avg_us) = node_lib::control::routing_utils::pick_best_from_latency_candidates(
+            latency_candidates,
+        )?;
         Some(Route {
             hops: min_hops,
             mac,
@@ -200,13 +201,11 @@ impl Routing {
 
 #[cfg(test)]
 mod tests {
-    use node_lib::messages::control::heartbeat::{Heartbeat, HeartbeatReply};
-    use crate::RsuArgs;
-    use node_lib::{
-        messages::{control::Control, message::Message, packet_type::PacketType},
-    };
     use super::Routing;
+    use crate::RsuArgs;
     use mac_address::MacAddress;
+    use node_lib::messages::control::heartbeat::{Heartbeat, HeartbeatReply};
+    use node_lib::messages::{control::Control, message::Message, packet_type::PacketType};
     use std::time::Duration;
 
     #[test]

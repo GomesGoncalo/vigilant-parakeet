@@ -1,3 +1,4 @@
+use crate::node_factory::UnifiedNode;
 use crate::sim_args::SimArgs;
 use anyhow::Context;
 use anyhow::{bail, Error, Result};
@@ -12,7 +13,6 @@ use futures::StreamExt;
 use itertools::Itertools;
 use mac_address::MacAddress;
 use netns_rs::NetNs;
-use crate::node_factory::UnifiedNode;
 use rand::Rng;
 use std::collections::VecDeque;
 use std::str::FromStr;

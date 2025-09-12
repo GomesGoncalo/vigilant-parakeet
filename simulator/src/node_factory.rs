@@ -1,8 +1,8 @@
 use anyhow::Result;
 use common::{device::Device, tun::Tun};
-use std::{any::Any, sync::Arc, str::FromStr};
-use rsu_lib::Node as RsuNode;
 use obu_lib::Node as ObuNode;
+use rsu_lib::Node as RsuNode;
+use std::{any::Any, str::FromStr, sync::Arc};
 
 /// Node type enum for configuration
 #[derive(Clone, Debug, PartialEq)]
@@ -37,22 +37,22 @@ impl UnifiedNode {
             UnifiedNode::Obu(obu) => obu.as_any(),
         }
     }
-    
+
     pub fn is_rsu(&self) -> bool {
         matches!(self, UnifiedNode::Rsu(_))
     }
-    
+
     pub fn is_obu(&self) -> bool {
         matches!(self, UnifiedNode::Obu(_))
     }
-    
+
     pub fn cached_upstream_route(&self) -> Option<node_lib::control::route::Route> {
         match self {
             UnifiedNode::Obu(obu) => obu.cached_upstream_route(),
             UnifiedNode::Rsu(_) => None, // RSUs don't have upstream routes
         }
     }
-    
+
     pub fn node_type_name(&self) -> &'static str {
         match self {
             UnifiedNode::Rsu(_) => "Rsu",
@@ -79,7 +79,7 @@ pub fn create_node_with_vdev(
         NodeType::Rsu => {
             let hello_periodicity = hello_periodicity
                 .ok_or_else(|| anyhow::anyhow!("RSU requires hello_periodicity"))?;
-                
+
             let rsu_args = rsu_lib::RsuArgs {
                 bind,
                 tap_name,
@@ -92,7 +92,7 @@ pub fn create_node_with_vdev(
                     enable_encryption,
                 },
             };
-            
+
             // Create RSU directly and wrap it
             let rsu = rsu_lib::Rsu::new(rsu_args, tun, device)?;
             Ok(UnifiedNode::Rsu(rsu))
@@ -109,7 +109,7 @@ pub fn create_node_with_vdev(
                     enable_encryption,
                 },
             };
-            
+
             // Create OBU directly and wrap it
             let obu = obu_lib::Obu::new(obu_args, tun, device)?;
             Ok(UnifiedNode::Obu(obu))

@@ -4,7 +4,7 @@ use std::net::Ipv4Addr;
 #[derive(clap::Args, Clone, Debug)]
 pub struct ObuParameters {
     /// Hello history
-    #[arg(short, long, default_value_t = 10)]
+    #[arg(long, default_value_t = 10)]
     pub hello_history: u32,
 
     /// Number of cached upstream candidates to keep for fast failover

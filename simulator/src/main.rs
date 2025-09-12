@@ -135,17 +135,19 @@ async fn main() -> Result<()> {
         let ip = Some(Ipv4Addr::from_str(&settings.get_string("ip")?)?);
 
         #[cfg(not(feature = "test_helpers"))]
-        let virtual_tun = Arc::new(Tun::new(TokioTun::builder()
-            .tap()
-            .name("virtual")
-            .address(ip.unwrap())
-            .mtu(1436)
-            .up()
-            .build()?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?));
-            
+        let virtual_tun = Arc::new(Tun::new(
+            TokioTun::builder()
+                .tap()
+                .name("virtual")
+                .address(ip.unwrap())
+                .mtu(1436)
+                .up()
+                .build()?
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?,
+        ));
+
         #[cfg(feature = "test_helpers")]
         let virtual_tun = {
             let (tun_a, _peer) = test_helpers::util::mk_shim_pair();
@@ -288,14 +290,13 @@ async fn main() -> Result<()> {
                 for (name, (_dev, _tun, node)) in sim_nodes.iter() {
                     // try downcast to obu to get a cached route
                     let node_type = node.node_type_name().to_string();
-                    let upstream_route = node.cached_upstream_route()
-                        .and_then(|r| {
-                            Some(UpstreamInfo {
-                                hops: r.hops,
-                                mac: format!("{}", r.mac),
-                                node_name: mac_map.get(&r.mac).cloned(),
-                            })
-                        });
+                    let upstream_route = node.cached_upstream_route().and_then(|r| {
+                        Some(UpstreamInfo {
+                            hops: r.hops,
+                            mac: format!("{}", r.mac),
+                            node_name: mac_map.get(&r.mac).cloned(),
+                        })
+                    });
 
                     if let Some(ref u) = upstream_route {
                         upstream_map.insert(name.clone(), u.clone());

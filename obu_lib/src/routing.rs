@@ -1,5 +1,9 @@
-use node_lib::control::node::ReplyType;
 use crate::ObuArgs;
+use anyhow::{bail, Result};
+use arc_swap::ArcSwapOption;
+use indexmap::IndexMap;
+use mac_address::MacAddress;
+use node_lib::control::node::ReplyType;
 use node_lib::{
     control::route::Route,
     messages::{
@@ -8,10 +12,6 @@ use node_lib::{
         packet_type::PacketType,
     },
 };
-use anyhow::{bail, Result};
-use arc_swap::ArcSwapOption;
-use indexmap::IndexMap;
-use mac_address::MacAddress;
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
@@ -165,13 +165,10 @@ mod extra_tests {
 #[cfg(test)]
 mod tests {
     use super::Routing;
-    use crate::{
-        args::{NodeParameters, NodeType},
-        messages::{
-            control::heartbeat::Heartbeat, control::heartbeat::HeartbeatReply, control::Control,
-            message::Message, packet_type::PacketType,
-        },
-        Args,
+    use crate::{args::ObuParameters, ObuArgs};
+    use node_lib::messages::{
+        control::heartbeat::Heartbeat, control::heartbeat::HeartbeatReply, control::Control,
+        message::Message, packet_type::PacketType,
     };
     // ReplyType is not used in these test helpers; remove unused import.
     use mac_address::MacAddress;
@@ -271,10 +268,7 @@ mod tests {
 #[cfg(test)]
 mod cache_tests {
     use super::Routing;
-    use crate::{
-        args::{NodeParameters, NodeType},
-        Args,
-    };
+    use crate::{args::ObuParameters, ObuArgs};
     use mac_address::MacAddress;
     use tokio::time::{Duration, Instant};
 
@@ -390,13 +384,10 @@ mod cache_tests {
 #[cfg(test)]
 mod regression_tests {
     use super::Routing;
+    use crate::{args::ObuParameters, ObuArgs};
+    use mac_address::MacAddress;
     use node_lib::messages::control::heartbeat::{Heartbeat, HeartbeatReply};
     use node_lib::messages::{control::Control, message::Message, packet_type::PacketType};
-    use crate::{
-        args::{NodeParameters, NodeType},
-        Args,
-    };
-    use mac_address::MacAddress;
     use tokio::time::Instant;
 
     // Regression test for the case where a HeartbeatReply arrives from the
@@ -517,7 +508,7 @@ mod regression_tests {
 mod more_tests {
     use super::Routing;
     use super::Target;
-    use crate::args::{NodeParameters, NodeType};
+    use crate::args::ObuParameters;
     use crate::ObuArgs;
     use mac_address::MacAddress;
     use tokio::time::{Duration, Instant};
@@ -1034,8 +1025,8 @@ mod more_tests {
         hb1_bytes.extend_from_slice(&1u32.to_be_bytes());
         hb1_bytes.extend_from_slice(&2u32.to_be_bytes()); // higher hops for cached
         hb1_bytes.extend_from_slice(&rsu.bytes());
-        let hb1 =
-            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..]).expect("hb1");
+        let hb1 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..])
+            .expect("hb1");
         let msg1 = node_lib::messages::message::Message::new(
             via_b,
             [255u8; 6].into(),
@@ -1066,8 +1057,8 @@ mod more_tests {
         hb2_bytes.extend_from_slice(&2u32.to_be_bytes());
         hb2_bytes.extend_from_slice(&2u32.to_be_bytes()); // same hops as cached
         hb2_bytes.extend_from_slice(&rsu.bytes());
-        let hb2 =
-            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..]).expect("hb2");
+        let hb2 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..])
+            .expect("hb2");
         let msg2 = node_lib::messages::message::Message::new(
             via_c,
             [255u8; 6].into(),
@@ -1124,8 +1115,8 @@ mod more_tests {
         hb1_bytes.extend_from_slice(&1u32.to_be_bytes());
         hb1_bytes.extend_from_slice(&0u32.to_be_bytes());
         hb1_bytes.extend_from_slice(&rsu.bytes());
-        let hb1 =
-            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..]).expect("hb1");
+        let hb1 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..])
+            .expect("hb1");
         let msg1 = node_lib::messages::message::Message::new(
             via_b,
             [255u8; 6].into(),
@@ -1156,8 +1147,8 @@ mod more_tests {
         hb2_bytes.extend_from_slice(&2u32.to_be_bytes());
         hb2_bytes.extend_from_slice(&0u32.to_be_bytes());
         hb2_bytes.extend_from_slice(&rsu.bytes());
-        let hb2 =
-            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..]).expect("hb2");
+        let hb2 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..])
+            .expect("hb2");
         let msg2 = node_lib::messages::message::Message::new(
             via_c,
             [255u8; 6].into(),
@@ -1219,8 +1210,8 @@ mod more_tests {
         hb1_bytes.extend_from_slice(&1u32.to_be_bytes());
         hb1_bytes.extend_from_slice(&0u32.to_be_bytes());
         hb1_bytes.extend_from_slice(&rsu.bytes());
-        let hb1 =
-            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..]).expect("hb1");
+        let hb1 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..])
+            .expect("hb1");
         let msg1 = node_lib::messages::message::Message::new(
             via_b,
             [255u8; 6].into(),
@@ -1238,8 +1229,8 @@ mod more_tests {
         hb2_bytes.extend_from_slice(&2u32.to_be_bytes());
         hb2_bytes.extend_from_slice(&0u32.to_be_bytes());
         hb2_bytes.extend_from_slice(&rsu.bytes());
-        let hb2 =
-            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..]).expect("hb2");
+        let hb2 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..])
+            .expect("hb2");
         let msg2 = node_lib::messages::message::Message::new(
             via_c,
             [255u8; 6].into(),
@@ -1316,8 +1307,9 @@ mod more_tests {
         hb_fast_bytes.extend_from_slice(&1u32.to_be_bytes()); // sequence id
         hb_fast_bytes.extend_from_slice(&1u32.to_be_bytes()); // 1 hop
         hb_fast_bytes.extend_from_slice(&rsu.bytes());
-        let hb_fast = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_fast_bytes[..])
-            .expect("hb_fast");
+        let hb_fast =
+            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_fast_bytes[..])
+                .expect("hb_fast");
         let msg_fast = node_lib::messages::message::Message::new(
             via_fast,
             [255u8; 6].into(),
@@ -1348,8 +1340,9 @@ mod more_tests {
         hb_slow_bytes.extend_from_slice(&2u32.to_be_bytes()); // different sequence id
         hb_slow_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
         hb_slow_bytes.extend_from_slice(&rsu.bytes());
-        let hb_slow = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_slow_bytes[..])
-            .expect("hb_slow");
+        let hb_slow =
+            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_slow_bytes[..])
+                .expect("hb_slow");
         let msg_slow = node_lib::messages::message::Message::new(
             via_slow,
             [255u8; 6].into(),
@@ -1445,8 +1438,9 @@ mod more_tests {
         hb_much_bytes.extend_from_slice(&4u32.to_be_bytes());
         hb_much_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
         hb_much_bytes.extend_from_slice(&rsu.bytes());
-        let hb_much = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_much_bytes[..])
-            .expect("hb_much");
+        let hb_much =
+            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_much_bytes[..])
+                .expect("hb_much");
         let msg_much = node_lib::messages::message::Message::new(
             via_much_better,
             [255u8; 6].into(),
@@ -2356,9 +2350,10 @@ impl Routing {
                 }
             }
             if !latency_candidates.is_empty() {
-                let scored_full = node_lib::control::routing_utils::score_and_sort_latency_candidates(
-                    latency_candidates,
-                );
+                let scored_full =
+                    node_lib::control::routing_utils::score_and_sort_latency_candidates(
+                        latency_candidates,
+                    );
                 let mut out: Vec<MacAddress> = scored_full
                     .into_iter()
                     .map(|(_score, _hops, mac, _avg)| mac)

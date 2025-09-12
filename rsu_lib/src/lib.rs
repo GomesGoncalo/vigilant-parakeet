@@ -4,6 +4,11 @@ pub use args::{RsuArgs, RsuParameters};
 mod routing;
 use routing::Routing;
 
+use anyhow::{anyhow, bail, Result};
+use common::tun::Tun;
+use common::{device::Device, network_interface::NetworkInterface};
+use itertools::Itertools;
+use mac_address::MacAddress;
 use node_lib::{
     control::{client_cache::ClientCache, node::ReplyType},
     messages::{
@@ -13,17 +18,12 @@ use node_lib::{
         packet_type::PacketType,
     },
 };
-use anyhow::{anyhow, bail, Result};
-use common::tun::Tun;
-use common::{device::Device, network_interface::NetworkInterface};
-use itertools::Itertools;
-use mac_address::MacAddress;
+use std::any::Any;
 use std::{
     io::IoSlice,
     sync::{Arc, RwLock},
     time::Duration,
 };
-use std::any::Any;
 
 pub struct Rsu {
     args: RsuArgs,
@@ -129,7 +129,8 @@ impl Rsu {
                                 }
                             }
                             ReplyType::Wire(wire_vec) => {
-                                let vec: Vec<IoSlice> = wire_vec.iter().map(|x| IoSlice::new(x)).collect();
+                                let vec: Vec<IoSlice> =
+                                    wire_vec.iter().map(|x| IoSlice::new(x)).collect();
                                 let _ = device.send_vectored(&vec).await;
                             }
                         }
@@ -211,13 +212,15 @@ impl Rsu {
                         }
                     }
                     Ok(None)
-                }).await;
+                })
+                .await;
 
                 if let Ok(Some(messages)) = result {
                     // Send the wire messages
                     for message in messages {
                         if let ReplyType::Wire(wire_msgs) = message {
-                            let vec: Vec<IoSlice> = wire_msgs.iter().map(|x| IoSlice::new(x)).collect();
+                            let vec: Vec<IoSlice> =
+                                wire_msgs.iter().map(|x| IoSlice::new(x)).collect();
                             let _ = device.send_vectored(&vec).await;
                         }
                     }
@@ -234,7 +237,7 @@ impl Rsu {
         match packet {
             PacketType::Data(Data::Upstream(to_upstream)) => {
                 tracing::trace!(?msg, "rsu handling ToUpstream");
-                
+
                 // Decrypt the entire frame if encryption is enabled
                 let decrypted_payload = if self.args.rsu_params.enable_encryption {
                     match node_lib::crypto::decrypt_payload(to_upstream.data()) {
@@ -336,12 +339,11 @@ impl Rsu {
 
                 Ok(Some(messages))
             }
-            PacketType::Control(Control::HeartbeatReply(reply)) => {
-                self.routing
-                    .write()
-                    .unwrap()
-                    .handle_heartbeat_reply(msg, from)
-            }
+            PacketType::Control(Control::HeartbeatReply(reply)) => self
+                .routing
+                .write()
+                .unwrap()
+                .handle_heartbeat_reply(msg, from),
             PacketType::Data(Data::Downstream(_)) | PacketType::Control(Control::Heartbeat(_)) => {
                 Ok(None)
             }
@@ -379,7 +381,7 @@ pub fn create(args: RsuArgs) -> Result<Arc<dyn Node>> {
 
     let tun = Arc::new(Tun::new(real_tun));
 
-    let device = Arc::new(Device::new(&args.bind)?);  // Changed from bind_to_interface to new
+    let device = Arc::new(Device::new(&args.bind)?); // Changed from bind_to_interface to new
 
     Ok(Rsu::new(args, tun, device)?)
 }

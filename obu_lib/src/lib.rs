@@ -7,6 +7,10 @@ mod session;
 use routing::Routing;
 use session::Session;
 
+use anyhow::{anyhow, Result};
+use common::tun::Tun;
+use common::{device::Device, network_interface::NetworkInterface};
+use mac_address::MacAddress;
 use node_lib::{
     control::node::ReplyType,
     messages::{
@@ -16,15 +20,11 @@ use node_lib::{
         packet_type::PacketType,
     },
 };
-use anyhow::{anyhow, Result};
-use common::tun::Tun;
-use common::{device::Device, network_interface::NetworkInterface};
-use mac_address::MacAddress;
+use std::any::Any;
 use std::{
     io::IoSlice,
     sync::{Arc, RwLock},
 };
-use std::any::Any;
 use tokio::time::Instant;
 
 pub struct Obu {
@@ -143,7 +143,8 @@ impl Obu {
                                 }
                             }
                             ReplyType::Wire(wire_vec) => {
-                                let vec: Vec<IoSlice> = wire_vec.iter().map(|x| IoSlice::new(x)).collect();
+                                let vec: Vec<IoSlice> =
+                                    wire_vec.iter().map(|x| IoSlice::new(x)).collect();
                                 let _ = device.send_vectored(&vec).await;
                             }
                         }
