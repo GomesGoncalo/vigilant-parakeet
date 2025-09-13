@@ -25,6 +25,7 @@ itertools = "*"
 warp = {version = "*", features = ["server"], optional = true}
 serde = { version = "*", features = ["derive"]}
 common = { path = "../common/" }
+libc = "*"
 
 [features]
 webview = [ "dep:warp", "node_lib/stats" ]

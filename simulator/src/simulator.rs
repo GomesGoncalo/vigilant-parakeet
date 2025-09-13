@@ -281,6 +281,8 @@ impl Simulator {
             })
             .collect::<HashMap<_, _>>();
 
+        tracing::debug!("Parsed nodes: {:?}", nodes.keys().collect::<Vec<_>>());
+
         let topology = settings.get_table("topology")?;
         let topology: HashMap<String, HashMap<String, ChannelParameters>> = topology
             .iter()
@@ -299,39 +301,53 @@ impl Simulator {
             })
             .collect();
 
+        tracing::debug!("Parsed topology: {:#?}", topology);
+
         Ok(nodes.iter().fold(
             (HashMap::default(), Vec::default(), HashMap::default()),
             |(channels, mut namespaces, mut node_map), (node, node_params)| {
+                tracing::debug!("Processing node: {}", node);
                 let Ok(device) =
                     Self::create_namespaces(&mut namespaces, node, node_params, callback.clone())
                 else {
+                    tracing::error!("Failed to create namespace for node: {}", node);
                     return (channels, namespaces, node_map);
                 };
+
+                tracing::debug!("Successfully created device for node: {}", node);
 
                 // Insert node into node_map for later querying.
                 node_map.insert(node.clone(), device.clone());
 
-                (
-                    topology
-                        .iter()
-                        .fold(channels, |mut channels, (tnode, connections)| {
-                            let Some(parameters) = connections.get(node) else {
-                                return channels;
-                            };
+                let new_channels = topology
+                    .iter()
+                    .fold(channels, |mut channels, (tnode, connections)| {
+                        tracing::debug!("Checking topology from {} to {}", tnode, node);
+                        let Some(parameters) = connections.get(node) else {
+                            tracing::debug!("No connection from {} to {}", tnode, node);
+                            return channels;
+                        };
 
-                            channels.entry(tnode.to_string()).or_default().insert(
-                                node.to_string(),
-                                Channel::new(
-                                    *parameters,
-                                    device.0.mac_address(),
-                                    device.1.clone(),
-                                    device.0.clone(),
-                                    tnode,
-                                    node,
-                                ),
-                            );
-                            channels
-                        }),
+                        tracing::debug!("Creating channel from {} to {} with params: {:?}", tnode, node, parameters);
+
+                        channels.entry(tnode.to_string()).or_default().insert(
+                            node.to_string(),
+                            Channel::new(
+                                *parameters,
+                                device.0.mac_address(),
+                                device.1.clone(),
+                                device.0.clone(),
+                                tnode,
+                                node,
+                            ),
+                        );
+                        channels
+                    });
+                
+                tracing::debug!("Channels after processing node {}: {:?}", node, new_channels.keys().collect::<Vec<_>>());
+                
+                (
+                    new_channels,
                     namespaces,
                     node_map,
                 )
@@ -346,14 +362,30 @@ impl Simulator {
         callback: impl Fn(&str, &HashMap<String, Value>) -> CallbackReturn,
     ) -> CallbackReturn {
         let node_name = format!("sim_ns_{node}");
-        let ns = NamespaceWrapper::new(NetNs::new(node_name.clone())?);
+        tracing::debug!("Creating namespace: {}", node_name);
+        
+        let ns = match NetNs::new(node_name.clone()) {
+            Ok(ns) => NamespaceWrapper::new(ns),
+            Err(e) => {
+                tracing::error!("Failed to create namespace {}: {}", node_name, e);
+                bail!("no namespace creation: {}", e);
+            }
+        };
+        
         let Some(nsi) = ns.0.as_ref() else {
+            tracing::error!("Namespace wrapper is empty for {}", node_name);
             bail!("no namespace");
         };
+        
+        tracing::debug!("Running callback in namespace {}", node_name);
         // Avoid creating an &&str by passing `node` directly
-        let Ok(Ok(device)) = nsi.run(|_| callback(node, node_type)) else {
-            bail!("error creating namespace");
+        let result = nsi.run(|_| callback(node, node_type));
+        let Ok(Ok(device)) = result else {
+            tracing::error!("Callback failed in namespace {}", node_name);
+            bail!("error creating namespace callback");
         };
+        
+        tracing::debug!("Successfully created node {} in namespace {}", node, node_name);
         ns_list.push(ns);
         Ok(device)
     }
@@ -371,6 +403,12 @@ impl Simulator {
     }
 
     pub async fn run(&self) -> Result<()> {
+        // Debug: log the channel structure
+        tracing::debug!("Channel structure: {:#?}", self.channels.keys().collect::<Vec<_>>());
+        for (from, to_map) in &self.channels {
+            tracing::debug!("From {}: connections to {:?}", from, to_map.keys().collect::<Vec<_>>());
+        }
+
         // TUN forwarding tasks (existing logic)
         let mut tun_future_set = self
             .channels
