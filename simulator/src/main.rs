@@ -14,8 +14,7 @@ use config::Config;
 use itertools::Itertools;
 use node_lib::test_helpers;
 mod node_factory;
-mod device_bridge;
-use device_bridge::DeviceBridge;
+use node_lib::test_helpers::{util::mk_socketpairs, util::mk_device_from_fd};
 use node_factory::{NodeType, UnifiedNode};
 use serde::Serialize;
 use std::{
@@ -93,7 +92,46 @@ async fn main() -> Result<()> {
 
 async fn run_namespace_simulator(args: &SimArgs) -> Result<()> {
     let devices = Arc::new(Mutex::new(HashMap::new()));
-    let simulator = Simulator::new(&args, |name, config| {
+    
+    // Parse topology to get node names and count, and build delay matrix
+    let topology_config = Config::builder()
+        .add_source(config::File::with_name(&args.config_file))
+        .build()?;
+    
+    let nodes = topology_config.get_table("nodes")?;
+    let node_names: Vec<String> = nodes.keys().cloned().collect();
+    let node_count = node_names.len();
+    
+    tracing::info!("Creating {} nodes: {:?}", node_count, node_names);
+    
+    // Create socketpairs for device communication - one pair per node
+    let (node_fds, hub_fds) = mk_socketpairs(node_count)?;
+    
+    // Create MAC addresses for each node
+    let node_macs: Vec<mac_address::MacAddress> = (0..node_count)
+        .map(|i| {
+            let mut bytes = [0u8; 6];
+            bytes[0] = 0x02; // locally administered bit
+            bytes[1] = (i as u8) + 1;
+            bytes[2] = (i as u8) + 1;
+            bytes[3] = (i as u8) + 1;
+            bytes[4] = (i as u8) + 1;
+            bytes[5] = (i as u8) + 1;
+            bytes.into()
+        })
+        .collect();
+    
+    tracing::info!("Assigned MAC addresses: {:?}", node_macs);
+    
+    let node_names = Arc::new(node_names);
+    let node_fds = Arc::new(node_fds);
+    let node_macs = Arc::new(node_macs);
+    
+    let simulator = Simulator::new(&args, {
+        let node_names = node_names.clone();
+        let node_fds = node_fds.clone();
+        let node_macs = node_macs.clone();
+        move |name, config| {
         let Some(config) = config.get("config_path") else {
             bail!("no config for node");
         };
@@ -156,11 +194,20 @@ async fn run_namespace_simulator(args: &SimArgs) -> Result<()> {
 
         #[cfg(feature = "test_helpers")]
         let virtual_tun = {
-            let (tun_a, _peer) = test_helpers::util::mk_shim_pair();
+            let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
             Arc::new(tun_a)
         };
 
-        let dev = Arc::new(Device::new(virtual_tun.name())?);
+        // Find the index of this node to get the correct socketpair fd and MAC
+        let node_index = node_names.iter().position(|n| n == name)
+            .ok_or_else(|| anyhow::anyhow!("node {} not found in node list", name))?;
+        let node_fd = node_fds[node_index];
+        let node_mac = node_macs[node_index];
+        
+        tracing::info!("Creating node {} with index {}, MAC {}, fd {}", name, node_index, node_mac, node_fd);
+        
+        // Create device from socketpair fd instead of real network interface
+        let dev = Arc::new(mk_device_from_fd(node_mac, node_fd));
         let node = node_factory::create_node_with_vdev(
             node_type,
             virtual_tun.name().to_string(),
@@ -177,47 +224,36 @@ async fn run_namespace_simulator(args: &SimArgs) -> Result<()> {
         devices
             .lock()
             .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
-            .insert(name.to_string(), (dev.clone(), tun.clone()));
-        Ok((dev, tun, node))
-    })?;
+            .insert(name.to_string(), (dev.clone(), virtual_tun.clone()));
+        Ok((dev, virtual_tun, node))
+    }})?;
 
-    // Extract device map for device bridge
-    let device_map: HashMap<String, Arc<Device>> = {
-        let devices_guard = devices.lock().unwrap();
-        devices_guard
-            .iter()
-            .map(|(name, (device, _tun))| (name.clone(), device.clone()))
-            .collect()
-    };
-
-    // Create device bridge with latency configuration
-    let mut device_bridge = DeviceBridge::new(device_map);
-    
-    // Build latency map from topology configuration
-    let topology_config = Config::builder()
-        .add_source(config::File::with_name(&args.config_file))
-        .build()?;
-    
+    // Build delay matrix from topology configuration for the Hub
     let topology = topology_config.get_table("topology")?;
-    let mut latency_map: HashMap<String, HashMap<String, std::time::Duration>> = HashMap::new();
+    let mut delay_matrix: Vec<Vec<u64>> = vec![vec![0; node_count]; node_count];
     
     for (from_node, connections) in topology {
-        let connections = connections.into_table().unwrap_or_default();
-        let mut node_latencies = HashMap::new();
+        let from_index = node_names.iter().position(|n| n == &from_node)
+            .ok_or_else(|| anyhow::anyhow!("from_node {} not found", from_node))?;
         
+        let connections = connections.into_table().unwrap_or_default();
         for (to_node, params) in connections {
+            let to_index = node_names.iter().position(|n| n == &to_node)
+                .ok_or_else(|| anyhow::anyhow!("to_node {} not found", to_node))?;
+                
             let params = params.into_table().unwrap_or_default();
             if let Ok(latency_ms) = params.get("latency").unwrap_or(&config::Value::from(0)).clone().into_int() {
-                node_latencies.insert(to_node, std::time::Duration::from_millis(latency_ms as u64));
+                delay_matrix[from_index][to_index] = latency_ms as u64;
             }
         }
-        
-        latency_map.insert(from_node, node_latencies);
     }
+    
+    tracing::info!("Delay matrix: {:?}", delay_matrix);
 
-    // Start device bridge
-    device_bridge.start(latency_map).await?;
-    tracing::info!("Device bridge started for cross-namespace communication");
+    // Create and start the Hub for device communication
+    let hub = node_lib::test_helpers::hub::Hub::new_with_mocked_time(hub_fds, delay_matrix);
+    hub.spawn();
+    tracing::info!("Device hub started for cross-namespace communication");
 
     #[cfg(feature = "webview")]
     {
