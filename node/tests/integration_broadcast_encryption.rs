@@ -1,16 +1,16 @@
-use node_lib::args::NodeType;
-use node_lib::control::obu::Obu;
-use node_lib::control::rsu::Rsu;
+use rsu_lib::Rsu;
+use obu_lib::Obu;
 use node_lib::test_helpers::hub::HubCheck;
 use node_lib::test_helpers::util::{
-    await_condition_with_time_advance, mk_device_from_fd, mk_node_params, mk_shim_pairs,
+    await_condition_with_time_advance, mk_device_from_fd, mk_shim_pairs,
 };
-use node_lib::Args;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use std::time::Duration;
+
+mod common;
 
 // Type alias to simplify complex type
 type CapturedPackets = Arc<Mutex<Vec<(usize, Vec<u8>)>>>;
@@ -93,32 +93,9 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
     );
 
     // Create nodes with encryption enabled
-    let mut args_rsu = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Rsu, Some(50)),
-    };
-    args_rsu.node_params.enable_encryption = true;
-
-    let mut args_obu1 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Obu, None),
-    };
-    args_obu1.node_params.enable_encryption = true;
-
-    let mut args_obu2 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Obu, None),
-    };
-    args_obu2.node_params.enable_encryption = true;
+    let args_rsu = common::mk_rsu_args_encrypted(50);
+    let args_obu1 = common::mk_obu_args_encrypted();
+    let args_obu2 = common::mk_obu_args_encrypted();
 
     // Create nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();
@@ -287,32 +264,9 @@ async fn test_rsu_broadcast_individual_encryption() {
     );
 
     // Create nodes with encryption enabled
-    let mut args_rsu = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Rsu, Some(50)),
-    };
-    args_rsu.node_params.enable_encryption = true;
-
-    let mut args_obu1 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Obu, None),
-    };
-    args_obu1.node_params.enable_encryption = true;
-
-    let mut args_obu2 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Obu, None),
-    };
-    args_obu2.node_params.enable_encryption = true;
+    let args_rsu = common::mk_rsu_args_encrypted(50);
+    let args_obu1 = common::mk_obu_args_encrypted();
+    let args_obu2 = common::mk_obu_args_encrypted();
 
     // Create nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();

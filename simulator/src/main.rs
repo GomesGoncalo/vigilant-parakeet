@@ -1,18 +1,17 @@
 #[cfg(feature = "webview")]
 use crate::simulator::Channel;
-#[cfg(not(feature = "test_helpers"))]
-use anyhow::Context;
 use anyhow::{bail, Result};
-use clap::{Parser, ValueEnum};
-use common::device::Device;
-#[cfg(feature = "webview")]
-use common::network_interface::NetworkInterface;
+use clap::Parser;
 #[cfg(not(feature = "test_helpers"))]
 use common::tun::Tun;
+#[cfg(feature = "webview")]
+use common::network_interface::NetworkInterface;
 use config::Config;
 #[cfg(feature = "webview")]
 use itertools::Itertools;
-use node_lib::args::{Args, NodeParameters, NodeType};
+use node_lib::test_helpers::{util::mk_socketpairs, util::mk_device_from_fd, hub::Hub};
+mod node_factory;
+use node_factory::NodeType;
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -21,7 +20,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::signal;
-// Context is unused in current builds; remove the import.
 #[cfg(not(feature = "test_helpers"))]
 use tokio_tun::Tun as TokioTun;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -84,8 +82,52 @@ async fn main() -> Result<()> {
             .init();
     }
 
+    run_namespace_simulator(&args).await
+}
+
+async fn run_namespace_simulator(args: &SimArgs) -> Result<()> {
     let devices = Arc::new(Mutex::new(HashMap::new()));
-    let simulator = Simulator::new(&args, |name, config| {
+    
+    // Parse topology to get node names and count, and build delay matrix
+    let topology_config = Config::builder()
+        .add_source(config::File::with_name(&args.config_file))
+        .build()?;
+    
+    let nodes = topology_config.get_table("nodes")?;
+    let node_names: Vec<String> = nodes.keys().cloned().collect();
+    let node_count = node_names.len();
+    
+    tracing::info!("Creating {} nodes: {:?}", node_count, node_names);
+    
+    // Create socketpairs for device communication - one pair per node
+    let (node_fds, hub_fds) = mk_socketpairs(node_count)?;
+    
+    // Create MAC addresses for each node
+    let node_macs: Vec<mac_address::MacAddress> = (0..node_count)
+        .map(|i| {
+            let mut bytes = [0u8; 6];
+            bytes[0] = 0x02; // locally administered bit
+            bytes[1] = (i as u8) + 1;
+            bytes[2] = (i as u8) + 1;
+            bytes[3] = (i as u8) + 1;
+            bytes[4] = (i as u8) + 1;
+            bytes[5] = (i as u8) + 1;
+            bytes.into()
+        })
+        .collect();
+    
+    tracing::info!("Assigned MAC addresses: {:?}", node_macs);
+    
+    let node_names = Arc::new(node_names);
+    let node_fds = Arc::new(node_fds);
+    let node_macs = Arc::new(node_macs);
+    
+    let simulator = Simulator::new(&args, {
+        let node_names = node_names.clone();
+        let node_fds = node_fds.clone();
+        let node_macs = node_macs.clone();
+        let devices_clone = devices.clone();
+        move |name, config| {
         let Some(config) = config.get("config_path") else {
             bail!("no config for node");
         };
@@ -111,7 +153,7 @@ async fn main() -> Result<()> {
         #[cfg(feature = "test_helpers")]
         let tun = {
             // test build: use shared test helper to construct a shim Tun and take one end.
-            let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+            let (tun_a, _peer) = test_helpers::util::mk_shim_pair();
             Arc::new(tun_a)
         };
 
@@ -122,62 +164,91 @@ async fn main() -> Result<()> {
             .and_then(|x| u32::try_from(x).ok())
             .unwrap_or(3u32);
 
-        let args = Args {
-            bind: tun.name().to_string(),
-            tap_name: Some("virtual".to_string()),
-            ip: Some(Ipv4Addr::from_str(&settings.get_string("ip")?)?),
-            mtu: 1436,
-            node_params: NodeParameters {
-                node_type: NodeType::from_str(&settings.get_string("node_type")?, true)
-                    .or_else(|_| bail!("invalid node type"))?,
-                hello_history: settings.get_int("hello_history")?.try_into()?,
-                hello_periodicity: settings
-                    .get_int("hello_periodicity")
-                    .map(|x| u32::try_from(x).ok())
-                    .ok()
-                    .flatten(),
-                cached_candidates,
-                enable_encryption: settings.get_bool("enable_encryption").unwrap_or(false),
-            },
-        };
+        let node_type = NodeType::from_str(&settings.get_string("node_type")?)?;
+        let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
+        let hello_periodicity = settings
+            .get_int("hello_periodicity")
+            .map(|x| u32::try_from(x).ok())
+            .ok()
+            .flatten();
+        let enable_encryption = settings.get_bool("enable_encryption").unwrap_or(false);
+        let ip = Some(Ipv4Addr::from_str(&settings.get_string("ip")?)?);
 
         #[cfg(not(feature = "test_helpers"))]
-        let virtual_tun = Arc::new(Tun::new(if let Some(ref name) = args.tap_name {
+        let virtual_tun = Arc::new(Tun::new(
             TokioTun::builder()
                 .tap()
-                .name(name)
-                .address(args.ip.context("")?)
-                .mtu(args.mtu)
+                .name("virtual")
+                .address(ip.unwrap())
+                .mtu(1436)
                 .up()
                 .build()?
                 .into_iter()
                 .next()
-                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
-        } else {
-            TokioTun::builder()
-                .tap()
-                .address(args.ip.context("")?)
-                .mtu(args.mtu)
-                .up()
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
-        }));
+                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?,
+        ));
+
         #[cfg(feature = "test_helpers")]
         let virtual_tun = {
-            let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+            let (tun_a, _peer) = test_helpers::util::mk_shim_pair();
             Arc::new(tun_a)
         };
 
-        let dev = Arc::new(Device::new(tun.name())?);
-        let node = node_lib::create_with_vdev(args, virtual_tun, dev.clone())?;
-        devices
+        // Find the index of this node to get the correct socketpair fd and MAC
+        let node_index = node_names.iter().position(|n| n == name)
+            .ok_or_else(|| anyhow::anyhow!("node {} not found in node list", name))?;
+        let node_fd = node_fds[node_index];
+        let node_mac = node_macs[node_index];
+        
+        tracing::info!("Creating node {} with index {}, MAC {}, fd {}", name, node_index, node_mac, node_fd);
+        
+        // Create device from socketpair fd instead of real network interface
+        let dev = Arc::new(mk_device_from_fd(node_mac, node_fd));
+        let node = node_factory::create_node_with_vdev(
+            node_type,
+            virtual_tun.name().to_string(),
+            Some("virtual".to_string()),
+            ip,
+            1436,
+            hello_history,
+            hello_periodicity,
+            cached_candidates,
+            enable_encryption,
+            virtual_tun.clone(),
+            dev.clone(),
+        )?;
+        devices_clone
             .lock()
             .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
-            .insert(name.to_string(), (dev.clone(), tun.clone()));
-        Ok((dev, tun, node))
+            .insert(name.to_string(), (dev.clone(), virtual_tun.clone()));
+        Ok((dev, virtual_tun, node))
+        }
     })?;
+
+    // Create Hub for device communication with latency matrix
+    let topology = topology_config.get_table("topology")?;
+    let mut delays_ms = vec![vec![0u64; node_count]; node_count];
+    
+    // Build delay matrix from topology configuration
+    for (from_node, connections) in &topology {
+        if let Some(from_index) = node_names.iter().position(|n| n == from_node) {
+            let connections = connections.clone().into_table().unwrap_or_default();
+            for (to_node, params) in connections {
+                if let Some(to_index) = node_names.iter().position(|n| n == &to_node) {
+                    let params = params.into_table().unwrap_or_default();
+                    if let Ok(latency_ms) = params.get("latency").unwrap_or(&config::Value::from(0)).clone().into_int() {
+                        delays_ms[from_index][to_index] = latency_ms as u64;
+                        tracing::info!("Set delay from {} to {}: {}ms", from_node, to_node, latency_ms);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Create and start Hub with latency configuration
+    let hub = Hub::new_with_mocked_time(hub_fds, delays_ms);
+    hub.spawn();
+    tracing::info!("Hub started for device communication with {} nodes", node_count);
 
     #[cfg(feature = "webview")]
     {
@@ -293,22 +364,14 @@ async fn main() -> Result<()> {
                 let mut upstream_map: HashMap<String, UpstreamInfo> = HashMap::new();
                 for (name, (_dev, _tun, node)) in sim_nodes.iter() {
                     // try downcast to obu to get a cached route
-                    let node_type = if node.as_any().is::<node_lib::control::obu::Obu>() {
-                        "Obu".to_string()
-                    } else if node.as_any().is::<node_lib::control::rsu::Rsu>() {
-                        "Rsu".to_string()
-                    } else {
-                        "Unknown".to_string()
-                    };
-                    let upstream_route = node
-                        .as_any()
-                        .downcast_ref::<node_lib::control::obu::Obu>()
-                        .and_then(|obu| obu.cached_upstream_route())
-                        .map(|r| UpstreamInfo {
+                    let node_type = node.node_type_name().to_string();
+                    let upstream_route = node.cached_upstream_route().and_then(|r| {
+                        Some(UpstreamInfo {
                             hops: r.hops,
                             mac: format!("{}", r.mac),
                             node_name: mac_map.get(&r.mac).cloned(),
-                        });
+                        })
+                    });
 
                     if let Some(ref u) = upstream_route {
                         upstream_map.insert(name.clone(), u.clone());

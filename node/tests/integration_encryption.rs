@@ -1,17 +1,16 @@
-use node_lib::args::NodeType;
-use node_lib::control::obu::Obu;
-use node_lib::control::rsu::Rsu;
+use rsu_lib::Rsu;
+use obu_lib::Obu;
 use node_lib::test_helpers::hub::HubCheck;
 use node_lib::test_helpers::util::{
-    advance_until, await_condition_with_time_advance, mk_device_from_fd, mk_node_params,
-    mk_shim_pairs,
+    advance_until, await_condition_with_time_advance, mk_device_from_fd, mk_shim_pairs,
 };
-use node_lib::Args;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use std::time::Duration;
+
+mod common;
 
 /// Common payload checker that can be used to inspect packets for test payloads
 struct PayloadChecker {
@@ -101,32 +100,9 @@ async fn test_payload_encryption_prevents_inspection() {
     );
 
     // Create nodes with encryption enabled
-    let mut args_rsu = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Rsu, Some(100)),
-    };
-    args_rsu.node_params.enable_encryption = true;
-
-    let mut args_obu1 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Obu, None),
-    };
-    args_obu1.node_params.enable_encryption = true;
-
-    let mut args_obu2 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Obu, None),
-    };
-    args_obu2.node_params.enable_encryption = true;
+    let args_rsu = common::mk_rsu_args_encrypted(100);
+    let args_obu1 = common::mk_obu_args_encrypted();
+    let args_obu2 = common::mk_obu_args_encrypted();
 
     // Create nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();
@@ -245,21 +221,8 @@ async fn test_encryption_disabled_allows_inspection() {
     );
 
     // Create nodes with encryption DISABLED
-    let args_rsu = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Rsu, Some(100)), // encryption defaults to false
-    };
-
-    let args_obu1 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Obu, None), // encryption defaults to false
-    };
+    let args_rsu = common::mk_rsu_args(100); // encryption defaults to false
+    let args_obu1 = common::mk_obu_args(); // encryption defaults to false
 
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();
     let obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1)).unwrap();
@@ -356,32 +319,9 @@ async fn test_ping_encryption_prevents_inspection_but_rsu_receives_correctly() {
     );
 
     // Create nodes with encryption enabled
-    let mut args_rsu = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Rsu, Some(100)),
-    };
-    args_rsu.node_params.enable_encryption = true;
-
-    let mut args_obu1 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Obu, None),
-    };
-    args_obu1.node_params.enable_encryption = true;
-
-    let mut args_obu2 = Args {
-        bind: String::from("unused"),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        node_params: mk_node_params(NodeType::Obu, None),
-    };
-    args_obu2.node_params.enable_encryption = true;
+    let args_rsu = common::mk_rsu_args_encrypted(100);
+    let args_obu1 = common::mk_obu_args_encrypted();
+    let args_obu2 = common::mk_obu_args_encrypted();
 
     // Create nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();

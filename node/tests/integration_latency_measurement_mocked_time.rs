@@ -1,11 +1,13 @@
-use node_lib::args::NodeType;
-use node_lib::control::obu::Obu;
-use node_lib::control::rsu::Rsu;
+use rsu_lib::Rsu;
+use obu_lib::Obu;
 use node_lib::test_helpers::util::{
-    await_condition_with_time_advance, mk_args, mk_device_from_fd, mk_hub_with_checks_mocked_time,
+    await_condition_with_time_advance, mk_device_from_fd, mk_hub_with_checks_mocked_time,
     mk_shim_pairs,
 };
 use std::time::Duration;
+use std::sync::Arc;
+
+mod common;
 
 /// Test that demonstrates latency measurement with mocked time in a realistic scenario.
 ///
@@ -53,8 +55,8 @@ async fn test_latency_measurement_with_mocked_time() {
     let dev_obu = mk_device_from_fd(mac_obu, node_fds[1]);
 
     // Build Args - RSU sends heartbeats every 50ms
-    let args_rsu = mk_args(NodeType::Rsu, Some(50));
-    let args_obu = mk_args(NodeType::Obu, None);
+    let args_rsu = common::mk_rsu_args(50);
+    let args_obu = common::mk_obu_args();
 
     // Construct nodes
     let rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).expect("Rsu::new failed");
@@ -130,5 +132,3 @@ async fn test_latency_measurement_with_mocked_time() {
         }
     }
 }
-
-use std::sync::Arc;

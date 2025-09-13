@@ -1,15 +1,19 @@
 pub mod routing;
+pub mod client_cache;
+pub mod node;
+pub mod route;
+pub mod routing_utils;
 
-use super::{client_cache::ClientCache, node::ReplyType};
-use crate::{
-    control::node,
+use client_cache::ClientCache;
+use node::ReplyType;
+use crate::args::RsuArgs;
+use node_lib::{
     messages::{
         control::Control,
         data::{Data, ToDownstream},
         message::Message,
         packet_type::PacketType,
     },
-    Args,
 };
 use anyhow::{anyhow, bail, Result};
 use common::tun::Tun;
@@ -24,7 +28,7 @@ use std::{
 };
 
 pub struct Rsu {
-    args: Args,
+    args: RsuArgs,
     routing: Arc<RwLock<Routing>>,
     tun: Arc<Tun>,
     device: Arc<Device>,
@@ -32,7 +36,7 @@ pub struct Rsu {
 }
 
 impl Rsu {
-    pub fn new(args: Args, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
+    pub fn new(args: RsuArgs, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
         let rsu = Arc::new(Self {
             routing: Arc::new(RwLock::new(Routing::new(&args)?)),
             args,
@@ -49,7 +53,7 @@ impl Rsu {
     }
 
     /// Get route to a specific MAC address. Used for testing latency measurement.
-    pub fn get_route_to(&self, mac: MacAddress) -> Option<crate::control::route::Route> {
+    pub fn get_route_to(&self, mac: MacAddress) -> Option<route::Route> {
         self.routing.read().unwrap().get_route_to(Some(mac))
     }
 
@@ -75,6 +79,7 @@ impl Rsu {
                         while offset < data.len() {
                             match Message::try_from(&data[offset..]) {
                                 Ok(msg) => {
+                                    tracing::debug!("RSU received protocol message: {:?}", msg);
                                     tracing::trace!(offset = offset, parsed = ?msg, "rsu wire_traffic parsed message");
                                     let response = rsu.handle_msg(&msg).await;
                                     let has_response = response.as_ref().map(|r| r.is_some()).unwrap_or(false);
@@ -91,6 +96,16 @@ impl Rsu {
                                 }
                                 Err(e) => {
                                     tracing::trace!(offset = offset, remaining = data.len() - offset, error = ?e, "could not parse message at offset");
+                                    // Log additional context about the packet type for debugging
+                                    if data.len() >= 14 {
+                                        let eth_type = u16::from_be_bytes([data[12], data[13]]);
+                                        match eth_type {
+                                            0x86dd => tracing::trace!("Received IPv6 packet (expected behavior, will be ignored)"),
+                                            0x0800 => tracing::trace!("Received IPv4 packet (expected behavior, will be ignored)"),
+                                            0x3030 => tracing::warn!("Received packet with protocol marker but failed to parse - possible protocol issue"),
+                                            _ => tracing::trace!(eth_type = eth_type, "Received non-protocol packet with EtherType 0x{:04x}", eth_type),
+                                        }
+                                    }
                                     break;
                                 }
                             }
@@ -122,8 +137,8 @@ impl Rsu {
         match msg.get_packet_type() {
             PacketType::Data(Data::Upstream(buf)) => {
                 // Decrypt the entire frame if encryption is enabled
-                let decrypted_payload = if self.args.node_params.enable_encryption {
-                    match crate::crypto::decrypt_payload(buf.data()) {
+                let decrypted_payload = if self.args.rsu_params.enable_encryption {
+                    match node_lib::crypto::decrypt_payload(buf.data()) {
                         Ok(decrypted_data) => decrypted_data,
                         Err(_) => return Ok(None),
                     }
@@ -169,8 +184,8 @@ impl Rsu {
                         })
                         .filter_map(|(_target, next_hop)| {
                             // For broadcast traffic, encrypt the entire decrypted frame individually for each recipient
-                            let downstream_data = if self.args.node_params.enable_encryption {
-                                match crate::crypto::encrypt_payload(&decrypted_payload) {
+                            let downstream_data = if self.args.rsu_params.enable_encryption {
+                                match node_lib::crypto::encrypt_payload(&decrypted_payload) {
                                     Ok(encrypted_data) => encrypted_data,
                                     Err(_) => return None, // Skip this recipient on encryption failure
                                 }
@@ -199,8 +214,8 @@ impl Rsu {
                     };
 
                     // For unicast traffic, encrypt the entire decrypted frame for the specific recipient
-                    let downstream_data = if self.args.node_params.enable_encryption {
-                        match crate::crypto::encrypt_payload(&decrypted_payload) {
+                    let downstream_data = if self.args.rsu_params.enable_encryption {
+                        match node_lib::crypto::encrypt_payload(&decrypted_payload) {
                             Ok(encrypted_data) => encrypted_data,
                             Err(_) => return Ok(None),
                         }
@@ -243,10 +258,7 @@ impl Rsu {
     }
 
     fn hello_task(&self) -> Result<()> {
-        let Some(periodicity) = self.args.node_params.hello_periodicity else {
-            bail!("cannot generate heartbeat");
-        };
-
+        let periodicity = self.args.rsu_params.hello_periodicity;
         let periodicity = Duration::from_millis(periodicity.into());
         let routing = self.routing.clone();
         let device = self.device.clone();
@@ -256,18 +268,24 @@ impl Rsu {
                 let msg: Vec<Vec<u8>> = {
                     let mut routing = routing.write().unwrap();
                     let msg = routing.send_heartbeat(device.mac_address());
+                    tracing::info!("RSU generating heartbeat message: {:?}", msg);
                     tracing::trace!(?msg, "generated hello");
                     (&msg).into()
                 };
                 // Flatten and log the generated bytes as hex so we can compare
                 // what the RSU writes vs what the OBU reads in wire_traffic.
                 let flat: Vec<u8> = msg.iter().flat_map(|x| x.iter()).copied().collect();
-                tracing::trace!(n = flat.len(), raw = %crate::control::node::bytes_to_hex(&flat), "rsu generated raw");
+                tracing::info!(n = flat.len(), raw = %node::bytes_to_hex(&flat), mac = %device.mac_address(), "RSU sending heartbeat to device");
                 let vec: Vec<IoSlice> = msg.iter().map(|x| IoSlice::new(x)).collect();
-                let _ = device
-                    .send_vectored(&vec)
-                    .await
-                    .inspect_err(|e| tracing::error!(?e, "error sending hello"));
+                match device.send_vectored(&vec).await {
+                    Ok(bytes_sent) => {
+                        tracing::info!(bytes_sent = bytes_sent, "RSU successfully sent heartbeat");
+                    }
+                    Err(e) => {
+                        tracing::error!(?e, "RSU failed to send heartbeat");
+                    }
+                }
+                tracing::debug!("RSU sent heartbeat, sleeping for {}ms", periodicity.as_millis());
                 let _ = tokio_timerfd::sleep(periodicity).await;
             }
         });
@@ -279,7 +297,7 @@ impl Rsu {
         let device = self.device.clone();
         let cache = self.cache.clone();
         let routing = self.routing.clone();
-        let enable_encryption = self.args.node_params.enable_encryption;
+        let enable_encryption = self.args.rsu_params.enable_encryption;
         tokio::task::spawn(async move {
             loop {
                 let devicec = device.clone();
@@ -312,7 +330,7 @@ impl Rsu {
                             .filter_map(|(_x, next_hop)| {
                                 // Encrypt the entire frame individually for each recipient when encryption is enabled
                                 let downstream_data = if enable_encryption {
-                                    match crate::crypto::encrypt_payload(data) {
+                                    match node_lib::crypto::encrypt_payload(data) {
                                         Ok(encrypted_data) => encrypted_data,
                                         Err(_) => return None, // Skip this recipient on encryption failure
                                     }
@@ -335,7 +353,7 @@ impl Rsu {
                     } else if let Some(target) = target {
                         // Encrypt entire frame for unicast traffic if encryption is enabled
                         let downstream_data = if enable_encryption {
-                            match crate::crypto::encrypt_payload(data) {
+                            match node_lib::crypto::encrypt_payload(data) {
                                 Ok(encrypted_data) => encrypted_data,
                                 Err(_) => return Ok(None),
                             }
@@ -387,7 +405,7 @@ impl Rsu {
                                     .filter_map(|(_x, next_hop)| {
                                         // Encrypt the entire frame individually for each recipient when encryption is enabled
                                         let downstream_data = if enable_encryption {
-                                            match crate::crypto::encrypt_payload(data) {
+                                            match node_lib::crypto::encrypt_payload(data) {
                                                 Ok(encrypted_data) => encrypted_data,
                                                 Err(_) => return None, // Skip this recipient on encryption failure
                                             }
@@ -424,7 +442,7 @@ impl Rsu {
                             .filter_map(|(_x, next_hop)| {
                                 // Encrypt the entire frame individually for each recipient when encryption is enabled
                                 let downstream_data = if enable_encryption {
-                                    match crate::crypto::encrypt_payload(data) {
+                                    match node_lib::crypto::encrypt_payload(data) {
                                         Ok(encrypted_data) => encrypted_data,
                                         Err(_) => return None, // Skip this recipient on encryption failure
                                     }
@@ -463,10 +481,10 @@ impl Rsu {
 pub(crate) fn handle_msg_for_test(
     routing: std::sync::Arc<std::sync::RwLock<Routing>>,
     device_mac: mac_address::MacAddress,
-    cache: std::sync::Arc<crate::control::client_cache::ClientCache>,
-    msg: &crate::messages::message::Message<'_>,
+    cache: std::sync::Arc<ClientCache>,
+    msg: &node_lib::messages::message::Message<'_>,
 ) -> anyhow::Result<Option<Vec<ReplyType>>> {
-    use crate::messages::{control::Control, data::Data, packet_type::PacketType};
+    use node_lib::messages::{control::Control, data::Data, packet_type::PacketType};
 
     match msg.get_packet_type() {
         PacketType::Data(Data::Upstream(buf)) => {
@@ -508,11 +526,11 @@ pub(crate) fn handle_msg_for_test(
                     })
                     .map(|(target, next_hop)| {
                         ReplyType::Wire(
-                            (&crate::messages::message::Message::new(
+                            (&node_lib::messages::message::Message::new(
                                 device_mac,
                                 next_hop,
                                 PacketType::Data(Data::Downstream(
-                                    crate::messages::data::ToDownstream::new(
+                                    node_lib::messages::data::ToDownstream::new(
                                         buf.source(),
                                         target,
                                         buf.data(),
@@ -529,11 +547,11 @@ pub(crate) fn handle_msg_for_test(
                 };
 
                 vec![ReplyType::Wire(
-                    (&crate::messages::message::Message::new(
+                    (&node_lib::messages::message::Message::new(
                         device_mac,
                         next_hop.mac,
                         PacketType::Data(Data::Downstream(
-                            crate::messages::data::ToDownstream::new(
+                            node_lib::messages::data::ToDownstream::new(
                                 buf.source(),
                                 target,
                                 buf.data(),
@@ -566,37 +584,35 @@ pub(crate) fn handle_msg_for_test(
 
 #[cfg(test)]
 mod rsu_tests {
-    use super::handle_msg_for_test;
-    use super::ReplyType;
-    use crate::args::{NodeParameters, NodeType};
-    use crate::messages::control::Control;
-    use crate::messages::{
+    use super::{handle_msg_for_test, ReplyType, routing::Routing, ClientCache};
+    use crate::args::{RsuParameters};
+    use node_lib::messages::control::Control;
+    use node_lib::messages::{
         data::{Data, ToUpstream},
         message::Message,
         packet_type::PacketType,
     };
-    use crate::Args;
+    use crate::args::RsuArgs;
     use mac_address::MacAddress;
 
     #[test]
     fn upstream_broadcast_generates_tap() {
-        let args = Args {
+        let args = crate::args::RsuArgs {
             bind: String::new(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Rsu,
+            rsu_params: crate::args::RsuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
+                hello_periodicity: 5000,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
-            super::routing::Routing::new(&args).expect("routing"),
+            Routing::new(&args).expect("routing"),
         ));
-        let cache = std::sync::Arc::new(crate::control::client_cache::ClientCache::default());
+        let cache = std::sync::Arc::new(ClientCache::default());
 
         let from_mac: MacAddress = [1u8; 6].into();
         let dest_bytes = [255u8; 6];
@@ -623,34 +639,33 @@ mod rsu_tests {
 
     #[test]
     fn heartbeat_reply_for_other_source_returns_none() {
-        let args = Args {
+        let args = crate::args::RsuArgs {
             bind: String::new(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Rsu,
+            rsu_params: crate::args::RsuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
+                hello_periodicity: 5000,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
-            super::routing::Routing::new(&args).expect("routing"),
+            Routing::new(&args).expect("routing"),
         ));
-        let cache = std::sync::Arc::new(crate::control::client_cache::ClientCache::default());
+        let cache = std::sync::Arc::new(ClientCache::default());
 
         // Build a Heartbeat/Reply with a source different from RSU device_mac
         let src: MacAddress = [1u8; 6].into();
-        let hb = crate::messages::control::heartbeat::Heartbeat::new(
+        let hb = node_lib::messages::control::heartbeat::Heartbeat::new(
             std::time::Duration::from_millis(0),
             0u32,
             src,
         );
         let reply_sender: MacAddress = [2u8; 6].into();
         let hbr =
-            crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb, reply_sender);
+            node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb, reply_sender);
         let msg = Message::new(
             [3u8; 6].into(),
             [255u8; 6].into(),
@@ -664,23 +679,22 @@ mod rsu_tests {
 
     #[test]
     fn upstream_unicast_to_self_yields_tap_only() {
-        let args = Args {
+        let args = crate::args::RsuArgs {
             bind: String::new(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Rsu,
+            rsu_params: crate::args::RsuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
+                hello_periodicity: 5000,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
-            super::routing::Routing::new(&args).expect("routing"),
+            Routing::new(&args).expect("routing"),
         ));
-        let cache = std::sync::Arc::new(crate::control::client_cache::ClientCache::default());
+        let cache = std::sync::Arc::new(ClientCache::default());
 
         let device_mac: MacAddress = [9u8; 6].into();
         let dest_client: MacAddress = [10u8; 6].into();
@@ -714,23 +728,22 @@ mod rsu_tests {
     #[test]
     fn upstream_unicast_forwards_via_route() {
         // Setup RSU args and routing/cache
-        let args = Args {
+        let args = crate::args::RsuArgs {
             bind: String::new(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Rsu,
+            rsu_params: crate::args::RsuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
+                hello_periodicity: 5000,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
-            super::routing::Routing::new(&args).expect("routing"),
+            Routing::new(&args).expect("routing"),
         ));
-        let cache = std::sync::Arc::new(crate::control::client_cache::ClientCache::default());
+        let cache = std::sync::Arc::new(ClientCache::default());
 
         // Seed RSU routing with a sent heartbeat and a reply indicating a next hop for target_node
         let target_node: MacAddress = [77u8; 6].into();
@@ -742,18 +755,18 @@ mod rsu_tests {
         }
         // Now create and handle a HeartbeatReply in a separate mutable scope
         {
-            let hb0 = crate::messages::control::heartbeat::Heartbeat::new(
+            let hb0 = node_lib::messages::control::heartbeat::Heartbeat::new(
                 std::time::Duration::from_millis(0),
                 0u32,
                 [9u8; 6].into(),
             );
             let hbr =
-                crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb0, target_node);
-            let reply = crate::messages::message::Message::new(
+                node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb0, target_node);
+            let reply = node_lib::messages::message::Message::new(
                 next_hop,
                 [255u8; 6].into(),
-                crate::messages::packet_type::PacketType::Control(
-                    crate::messages::control::Control::HeartbeatReply(hbr),
+                node_lib::messages::packet_type::PacketType::Control(
+                    node_lib::messages::control::Control::HeartbeatReply(hbr),
                 ),
             );
             let mut w = routing.write().unwrap();

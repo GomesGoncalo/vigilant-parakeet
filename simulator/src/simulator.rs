@@ -1,3 +1,4 @@
+use crate::node_factory::UnifiedNode;
 use crate::sim_args::SimArgs;
 use anyhow::Context;
 use anyhow::{bail, Error, Result};
@@ -7,12 +8,8 @@ use common::network_interface::NetworkInterface;
 use common::tun::Tun;
 use config::Config;
 use config::Value;
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
-use itertools::Itertools;
 use mac_address::MacAddress;
 use netns_rs::NetNs;
-use node_lib::Node;
 use rand::Rng;
 use std::collections::VecDeque;
 use std::str::FromStr;
@@ -25,6 +22,15 @@ use std::{
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 // uninit_array is not used here
+
+/// Return a compact hex string for a byte slice (e.g. "01 02 aa ...").
+pub fn bytes_to_hex(slice: &[u8]) -> String {
+    slice
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 pub struct NamespaceWrapper(Option<NetNs>);
 
@@ -90,10 +96,12 @@ impl Channel {
             tx,
             parameters: parameters.into(),
             mac,
-            tun,
+            tun: tun.clone(),
             queue: VecDeque::with_capacity(1024).into(),
         });
         let thisc = this.clone();
+        
+        // TUN forwarding task
         tokio::spawn(async move {
             loop {
                 let Some(packet) = thisc.queue.lock().unwrap().pop_front() else {
@@ -118,6 +126,7 @@ impl Channel {
                 }
             }
         });
+        
         this
     }
 
@@ -165,10 +174,10 @@ pub struct Simulator {
     /// Keep created nodes so external code (e.g. webview) may query node state.
     #[allow(dead_code)]
     #[allow(clippy::type_complexity)]
-    nodes: HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Node>)>,
+    nodes: HashMap<String, (Arc<Device>, Arc<Tun>, UnifiedNode)>,
 }
 
-type CallbackReturn = Result<(Arc<Device>, Arc<Tun>, Arc<dyn Node>)>;
+type CallbackReturn = Result<(Arc<Device>, Arc<Tun>, UnifiedNode)>;
 
 impl Simulator {
     #[allow(clippy::type_complexity)]
@@ -178,7 +187,7 @@ impl Simulator {
     ) -> Result<(
         HashMap<String, HashMap<String, Arc<Channel>>>,
         Vec<NamespaceWrapper>,
-        HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Node>)>,
+        HashMap<String, (Arc<Device>, Arc<Tun>, UnifiedNode)>,
     )> {
         let settings = Config::builder()
             .add_source(config::File::with_name(config_file))
@@ -194,6 +203,8 @@ impl Simulator {
                 Some((node.clone(), param))
             })
             .collect::<HashMap<_, _>>();
+
+        tracing::debug!("Parsed nodes: {:?}", nodes.keys().collect::<Vec<_>>());
 
         let topology = settings.get_table("topology")?;
         let topology: HashMap<String, HashMap<String, ChannelParameters>> = topology
@@ -213,38 +224,52 @@ impl Simulator {
             })
             .collect();
 
+        tracing::debug!("Parsed topology: {:#?}", topology);
+
         Ok(nodes.iter().fold(
             (HashMap::default(), Vec::default(), HashMap::default()),
             |(channels, mut namespaces, mut node_map), (node, node_params)| {
+                tracing::debug!("Processing node: {}", node);
                 let Ok(device) =
                     Self::create_namespaces(&mut namespaces, node, node_params, callback.clone())
                 else {
+                    tracing::error!("Failed to create namespace for node: {}", node);
                     return (channels, namespaces, node_map);
                 };
+
+                tracing::debug!("Successfully created device for node: {}", node);
 
                 // Insert node into node_map for later querying.
                 node_map.insert(node.clone(), device.clone());
 
-                (
-                    topology
-                        .iter()
-                        .fold(channels, |mut channels, (tnode, connections)| {
-                            let Some(parameters) = connections.get(node) else {
-                                return channels;
-                            };
+                let new_channels = topology
+                    .iter()
+                    .fold(channels, |mut channels, (tnode, connections)| {
+                        tracing::debug!("Checking topology from {} to {}", tnode, node);
+                        let Some(parameters) = connections.get(node) else {
+                            tracing::debug!("No connection from {} to {}", tnode, node);
+                            return channels;
+                        };
 
-                            channels.entry(tnode.to_string()).or_default().insert(
-                                node.to_string(),
-                                Channel::new(
-                                    *parameters,
-                                    device.0.mac_address(),
-                                    device.1.clone(),
-                                    tnode,
-                                    node,
-                                ),
-                            );
-                            channels
-                        }),
+                        tracing::debug!("Creating channel from {} to {} with params: {:?}", tnode, node, parameters);
+
+                        channels.entry(tnode.to_string()).or_default().insert(
+                            node.to_string(),
+                            Channel::new(
+                                *parameters,
+                                device.0.mac_address(),
+                                device.1.clone(),
+                                tnode,
+                                node,
+                            ),
+                        );
+                        channels
+                    });
+                
+                tracing::debug!("Channels after processing node {}: {:?}", node, new_channels.keys().collect::<Vec<_>>());
+                
+                (
+                    new_channels,
                     namespaces,
                     node_map,
                 )
@@ -259,14 +284,30 @@ impl Simulator {
         callback: impl Fn(&str, &HashMap<String, Value>) -> CallbackReturn,
     ) -> CallbackReturn {
         let node_name = format!("sim_ns_{node}");
-        let ns = NamespaceWrapper::new(NetNs::new(node_name.clone())?);
+        tracing::debug!("Creating namespace: {}", node_name);
+        
+        let ns = match NetNs::new(node_name.clone()) {
+            Ok(ns) => NamespaceWrapper::new(ns),
+            Err(e) => {
+                tracing::error!("Failed to create namespace {}: {}", node_name, e);
+                bail!("no namespace creation: {}", e);
+            }
+        };
+        
         let Some(nsi) = ns.0.as_ref() else {
+            tracing::error!("Namespace wrapper is empty for {}", node_name);
             bail!("no namespace");
         };
+        
+        tracing::debug!("Running callback in namespace {}", node_name);
         // Avoid creating an &&str by passing `node` directly
-        let Ok(Ok(device)) = nsi.run(|_| callback(node, node_type)) else {
-            bail!("error creating namespace");
+        let result = nsi.run(|_| callback(node, node_type));
+        let Ok(Ok(device)) = result else {
+            tracing::error!("Callback failed in namespace {}", node_name);
+            bail!("error creating namespace callback");
         };
+        
+        tracing::debug!("Successfully created node {} in namespace {}", node, node_name);
         ns_list.push(ns);
         Ok(device)
     }
@@ -284,34 +325,21 @@ impl Simulator {
     }
 
     pub async fn run(&self) -> Result<()> {
-        let mut future_set = self
-            .channels
-            .values()
-            .flat_map(|x| x.iter())
-            .unique_by(|(node, _)| *node)
-            .map(|(node, channel)| Self::generate_channel_reads(node.to_string(), channel.clone()))
-            .collect::<FuturesUnordered<_>>();
-
-        let channel_map_vec: HashMap<&String, Vec<Arc<Channel>>> = self
-            .channels
-            .iter()
-            .map(|(from, map_to)| (from, map_to.values().cloned().collect_vec()))
-            .collect();
-
+        // With socketpair Hub architecture, the Hub handles all packet forwarding
+        // including both protocol communication and TUN traffic between namespaces.
+        // The old TUN channel forwarding system is no longer needed and causes
+        // packet duplication when used alongside the Hub.
+        
+        tracing::info!("Simulator running with Hub-based packet forwarding");
+        tracing::info!("Network namespaces are isolated, but communication is handled by Hub");
+        
+        // Keep simulator alive - the Hub spawned in main.rs handles all forwarding
         loop {
-            if let Some(Ok((buf, size, node, channel))) = future_set.next().await {
-                if let Some(connections) = channel_map_vec.get(&node) {
-                    for channel in connections {
-                        let _ = channel.send(buf, size).await;
-                    }
-                }
-
-                future_set.push(Self::generate_channel_reads(node, channel));
-            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     }
 
-    async fn generate_channel_reads(
+    async fn generate_tun_reads(
         node: String,
         channel: Arc<Channel>,
     ) -> Result<([u8; 1500], usize, String, Arc<Channel>), Error> {
@@ -327,7 +355,7 @@ impl Simulator {
 
     /// Return a clone of the created nodes (name -> (dev, tun, node)).
     #[allow(dead_code, clippy::type_complexity)]
-    pub fn get_nodes(&self) -> HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Node>)> {
+    pub fn get_nodes(&self) -> HashMap<String, (Arc<Device>, Arc<Tun>, UnifiedNode)> {
         self.nodes.clone()
     }
 }
