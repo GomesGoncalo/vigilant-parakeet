@@ -8,9 +8,6 @@ use common::network_interface::NetworkInterface;
 use common::tun::Tun;
 use config::Config;
 use config::Value;
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
-use itertools::Itertools;
 use mac_address::MacAddress;
 use netns_rs::NetNs;
 use rand::Rng;
@@ -328,50 +325,17 @@ impl Simulator {
     }
 
     pub async fn run(&self) -> Result<()> {
-        // Debug: log the channel structure
-        tracing::debug!("Channel structure: {:#?}", self.channels.keys().collect::<Vec<_>>());
-        for (from, to_map) in &self.channels {
-            tracing::debug!("From {}: connections to {:?}", from, to_map.keys().collect::<Vec<_>>());
-        }
-
-        // TUN forwarding tasks
-        let mut tun_future_set = self
-            .channels
-            .values()
-            .flat_map(|x| x.iter())
-            .unique_by(|(node, _)| *node)
-            .map(|(node, channel)| Self::generate_tun_reads(node.to_string(), channel.clone()))
-            .collect::<FuturesUnordered<_>>();
-
-        tracing::info!("Starting simulator with {} TUN channels", tun_future_set.len());
-
-        let channel_map_vec: HashMap<&String, Vec<Arc<Channel>>> = self
-            .channels
-            .iter()
-            .map(|(from, map_to)| (from, map_to.values().cloned().collect_vec()))
-            .collect();
-
+        // With socketpair Hub architecture, the Hub handles all packet forwarding
+        // including both protocol communication and TUN traffic between namespaces.
+        // The old TUN channel forwarding system is no longer needed and causes
+        // packet duplication when used alongside the Hub.
+        
+        tracing::info!("Simulator running with Hub-based packet forwarding");
+        tracing::info!("Network namespaces are isolated, but communication is handled by Hub");
+        
+        // Keep simulator alive - the Hub spawned in main.rs handles all forwarding
         loop {
-            tokio::select! {
-                // Handle TUN traffic forwarding
-                tun_result = tun_future_set.next(), if !tun_future_set.is_empty() => {
-                    if let Some(Ok((buf, size, node, channel))) = tun_result {
-                        if let Some(connections) = channel_map_vec.get(&node) {
-                            for target_channel in connections {
-                                let _ = target_channel.send(buf, size).await;
-                            }
-                        }
-                        tun_future_set.push(Self::generate_tun_reads(node, channel));
-                    }
-                }
-                // Fallback in case the set is empty (shouldn't happen in normal operation)
-                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                    if tun_future_set.is_empty() {
-                        tracing::warn!("TUN future set is empty, simulator may have stopped");
-                        return Ok(());
-                    }
-                }
-            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     }
 
