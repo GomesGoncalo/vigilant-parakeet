@@ -14,8 +14,8 @@ use config::Config;
 use itertools::Itertools;
 use node_lib::test_helpers;
 mod node_factory;
-mod device_hub;
-use device_hub::DeviceHub;
+mod device_bridge;
+use device_bridge::DeviceBridge;
 use node_factory::{NodeType, UnifiedNode};
 use serde::Serialize;
 use std::{
@@ -88,106 +88,7 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    if args.simple_mode {
-        // Use simple device hub mode instead of complex network namespaces
-        run_simple_simulator(&args).await
-    } else {
-        run_namespace_simulator(&args).await
-    }
-}
-
-async fn run_simple_simulator(args: &SimArgs) -> Result<()> {
-    tracing::info!("Running simulator in simple mode (no network namespaces)");
-    
-    // Parse configuration
-    let settings = Config::builder()
-        .add_source(config::File::with_name(&args.config_file))
-        .build()?;
-
-    let nodes = settings
-        .get_table("nodes")?
-        .iter()
-        .filter_map(|(node, val)| {
-            let Ok(param) = val.clone().into_table() else {
-                return None;
-            };
-            Some((node.clone(), param))
-        })
-        .collect::<HashMap<_, _>>();
-
-    tracing::info!("Creating device hub for {} nodes: {:?}", nodes.len(), nodes.keys().collect::<Vec<_>>());
-    
-    // Create device hub
-    let node_names: Vec<String> = nodes.keys().cloned().collect();
-    let (_device_hub, hub_devices) = DeviceHub::new(node_names.clone()).await?;
-    
-    // Create nodes using hub devices
-    let mut _created_nodes = Vec::new();
-    
-    for (node_name, node_params) in nodes {
-        let Some(config) = node_params.get("config_path") else {
-            tracing::error!("No config_path for node {}", node_name);
-            continue;
-        };
-
-        let config = config.to_string();
-        let node_settings = Config::builder()
-            .add_source(config::File::with_name(&config))
-            .build()?;
-
-        tracing::info!("Node {} settings: {:?}", node_name, node_settings);
-        
-        // Parse node configuration
-        let node_type = NodeType::from_str(&node_settings.get_string("node_type")?)?;
-        let hello_history: u32 = node_settings.get_int("hello_history")?.try_into()?;
-        let hello_periodicity = node_settings
-            .get_int("hello_periodicity")
-            .map(|x| u32::try_from(x).ok())
-            .ok()
-            .flatten();
-        let cached_candidates = node_settings
-            .get_int("cached_candidates")
-            .ok()
-            .and_then(|x| u32::try_from(x).ok())
-            .unwrap_or(3u32);
-        let enable_encryption = node_settings.get_bool("enable_encryption").unwrap_or(false);
-        let ip = Some(Ipv4Addr::from_str(&node_settings.get_string("ip")?)?);
-
-        // Create TUN interface (using test helper)
-        let (tun_a, _peer) = test_helpers::util::mk_shim_pair();
-        let tun = Arc::new(tun_a);
-        
-        // Get device from hub
-        let device = hub_devices.get(&node_name)
-            .ok_or_else(|| anyhow::anyhow!("No device found for node {}", node_name))?
-            .clone();
-
-        // Create node
-        let node = node_factory::create_node_with_vdev(
-            node_type,
-            "virtual".to_string(),
-            Some("virtual".to_string()),
-            ip,
-            1436,
-            hello_history,
-            hello_periodicity,
-            cached_candidates,
-            enable_encryption,
-            tun,
-            device,
-        )?;
-        
-        _created_nodes.push((node_name.clone(), node));
-        tracing::info!("Created node {} successfully", node_name);
-    }
-    
-    tracing::info!("Simple simulator started with {} nodes", _created_nodes.len());
-    
-    // Keep the simulator running
-    signal::ctrl_c().await?;
-    tracing::info!("Shutting down simple simulator");
-    
-    Ok(())
+    run_namespace_simulator(&args).await
 }
 
 async fn run_namespace_simulator(args: &SimArgs) -> Result<()> {
@@ -280,94 +181,43 @@ async fn run_namespace_simulator(args: &SimArgs) -> Result<()> {
         Ok((dev, tun, node))
     })?;
 
-    let devices = Arc::new(Mutex::new(HashMap::new()));
-    let simulator = Simulator::new(&args, |name, config| {
-        let Some(config) = config.get("config_path") else {
-            bail!("no config for node");
-        };
+    // Extract device map for device bridge
+    let device_map: HashMap<String, Arc<Device>> = {
+        let devices_guard = devices.lock().unwrap();
+        devices_guard
+            .iter()
+            .map(|(name, (device, _tun))| (name.clone(), device.clone()))
+            .collect()
+    };
 
-        let config = config.to_string();
+    // Create device bridge with latency configuration
+    let mut device_bridge = DeviceBridge::new(device_map);
+    
+    // Build latency map from topology configuration
+    let topology_config = Config::builder()
+        .add_source(config::File::with_name(&args.config_file))
+        .build()?;
+    
+    let topology = topology_config.get_table("topology")?;
+    let mut latency_map: HashMap<String, HashMap<String, std::time::Duration>> = HashMap::new();
+    
+    for (from_node, connections) in topology {
+        let connections = connections.into_table().unwrap_or_default();
+        let mut node_latencies = HashMap::new();
+        
+        for (to_node, params) in connections {
+            let params = params.into_table().unwrap_or_default();
+            if let Ok(latency_ms) = params.get("latency").unwrap_or(&config::Value::from(0)).clone().into_int() {
+                node_latencies.insert(to_node, std::time::Duration::from_millis(latency_ms as u64));
+            }
+        }
+        
+        latency_map.insert(from_node, node_latencies);
+    }
 
-        let settings = Config::builder()
-            .add_source(config::File::with_name(&config))
-            .build()?;
-        tracing::info!(?settings, "settings");
-
-        #[cfg(not(feature = "test_helpers"))]
-        let tun = Arc::new(Tun::new(
-            TokioTun::builder()
-                .name("real")
-                .tap()
-                .up()
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?,
-        ));
-        #[cfg(feature = "test_helpers")]
-        let tun = {
-            // test build: use shared test helper to construct a shim Tun and take one end.
-            let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
-            Arc::new(tun_a)
-        };
-
-        // Read optional cached_candidates; default to 3 when not present or invalid.
-        let cached_candidates = settings
-            .get_int("cached_candidates")
-            .ok()
-            .and_then(|x| u32::try_from(x).ok())
-            .unwrap_or(3u32);
-
-        let node_type = NodeType::from_str(&settings.get_string("node_type")?)?;
-        let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
-        let hello_periodicity = settings
-            .get_int("hello_periodicity")
-            .map(|x| u32::try_from(x).ok())
-            .ok()
-            .flatten();
-        let enable_encryption = settings.get_bool("enable_encryption").unwrap_or(false);
-        let ip = Some(Ipv4Addr::from_str(&settings.get_string("ip")?)?);
-
-        #[cfg(not(feature = "test_helpers"))]
-        let virtual_tun = Arc::new(Tun::new(
-            TokioTun::builder()
-                .tap()
-                .name("virtual")
-                .address(ip.unwrap())
-                .mtu(1436)
-                .up()
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?,
-        ));
-
-        #[cfg(feature = "test_helpers")]
-        let virtual_tun = {
-            let (tun_a, _peer) = test_helpers::util::mk_shim_pair();
-            Arc::new(tun_a)
-        };
-
-        let dev = Arc::new(Device::new(virtual_tun.name())?);
-        let node = node_factory::create_node_with_vdev(
-            node_type,
-            virtual_tun.name().to_string(),
-            Some("virtual".to_string()),
-            ip,
-            1436,
-            hello_history,
-            hello_periodicity,
-            cached_candidates,
-            enable_encryption,
-            virtual_tun.clone(),
-            dev.clone(),
-        )?;
-        devices
-            .lock()
-            .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
-            .insert(name.to_string(), (dev.clone(), tun.clone()));
-        Ok((dev, tun, node))
-    })?;
+    // Start device bridge
+    device_bridge.start(latency_map).await?;
+    tracing::info!("Device bridge started for cross-namespace communication");
 
     #[cfg(feature = "webview")]
     {

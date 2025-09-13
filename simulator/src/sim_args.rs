@@ -9,8 +9,4 @@ pub struct SimArgs {
 
     #[arg(short, long, default_value_t = false)]
     pub pretty: bool,
-    
-    /// Use simple mode without network namespaces (for testing/debugging)
-    #[arg(short, long, default_value_t = false)]
-    pub simple_mode: bool,
 }
