@@ -237,8 +237,11 @@ impl Channel {
     }
 
     pub async fn recv_device(&self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
-        let n = self.device.recv(buf).await?;
-        Ok(n)
+        // Add timeout to prevent blocking indefinitely on device reads
+        match tokio::time::timeout(std::time::Duration::from_millis(100), self.device.recv(buf)).await {
+            Ok(result) => result,
+            Err(_) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Device recv timeout")),
+        }
     }
 }
 
@@ -386,6 +389,8 @@ impl Simulator {
             .map(|(node, channel)| Self::generate_device_reads(node.to_string(), channel.clone()))
             .collect::<FuturesUnordered<_>>();
 
+        tracing::info!("Starting simulator with {} TUN channels and {} device channels", tun_future_set.len(), device_future_set.len());
+
         let channel_map_vec: HashMap<&String, Vec<Arc<Channel>>> = self
             .channels
             .iter()
@@ -424,6 +429,13 @@ impl Simulator {
                         device_future_set.push(Self::generate_device_reads(node, channel));
                     }
                 }
+                // Fallback in case both sets are empty (shouldn't happen in normal operation)
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    if tun_future_set.is_empty() && device_future_set.is_empty() {
+                        tracing::warn!("Both TUN and device future sets are empty, simulator may have stopped");
+                        return Ok(());
+                    }
+                }
             }
         }
     }
@@ -442,9 +454,19 @@ impl Simulator {
         channel: Arc<Channel>,
     ) -> Result<([u8; 1500], usize, String, Arc<Channel>), Error> {
         let mut buf: [u8; 1500] = [0u8; 1500];
-        let n = channel.recv_device(&mut buf).await?;
-        tracing::debug!(node = node, size = n, raw = %bytes_to_hex(&buf[..n.min(32)]), "Read device traffic from node");
-        Ok((buf, n, node, channel))
+        loop {
+            match channel.recv_device(&mut buf).await {
+                Ok(n) => {
+                    tracing::debug!(node = node, size = n, raw = %bytes_to_hex(&buf[..n.min(32)]), "Read device traffic from node");
+                    return Ok((buf, n, node, channel));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    // Timeout is expected for device reads, just retry
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
 
     #[allow(dead_code)]
