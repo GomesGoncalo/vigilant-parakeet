@@ -26,6 +26,15 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 // uninit_array is not used here
 
+/// Return a compact hex string for a byte slice (e.g. "01 02 aa ...").
+pub fn bytes_to_hex(slice: &[u8]) -> String {
+    slice
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub struct NamespaceWrapper(Option<NetNs>);
 
 impl NamespaceWrapper {
@@ -55,6 +64,10 @@ pub struct Channel {
     mac: MacAddress,
     tun: Arc<Tun>,
     queue: Mutex<VecDeque<Packet>>,
+    // Add device forwarding
+    device_tx: UnboundedSender<()>,
+    device: Arc<Device>,
+    device_queue: Mutex<VecDeque<Packet>>,
 }
 
 #[allow(dead_code)]
@@ -81,19 +94,26 @@ impl Channel {
         parameters: ChannelParameters,
         mac: MacAddress,
         tun: Arc<Tun>,
+        device: Arc<Device>,
         from: &String,
         to: &String,
     ) -> Arc<Self> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        tracing::info!(from, to, ?parameters, "Created channel");
+        let (device_tx, mut device_rx) = tokio::sync::mpsc::unbounded_channel();
+        tracing::info!(from, to, ?parameters, "Created channel with device forwarding support");
         let this = Arc::new(Self {
             tx,
             parameters: parameters.into(),
             mac,
-            tun,
+            tun: tun.clone(),
             queue: VecDeque::with_capacity(1024).into(),
+            device_tx,
+            device: device.clone(),
+            device_queue: VecDeque::with_capacity(1024).into(),
         });
         let thisc = this.clone();
+        
+        // TUN forwarding task (existing logic)
         tokio::spawn(async move {
             loop {
                 let Some(packet) = thisc.queue.lock().unwrap().pop_front() else {
@@ -118,6 +138,50 @@ impl Channel {
                 }
             }
         });
+
+        let thisc2 = this.clone();
+        // Device forwarding task (new logic)
+        tokio::spawn(async move {
+            loop {
+                let Some(packet) = thisc2.device_queue.lock().unwrap().pop_front() else {
+                    let _ = device_rx.recv().await;
+                    continue;
+                };
+                loop {
+                    let latency = thisc2.parameters.read().unwrap().latency;
+                    let duration = (packet.instant + latency).duration_since(Instant::now());
+                    if duration.is_zero() {
+                        let slices = vec![std::io::IoSlice::new(&packet.packet[..packet.size])];
+                        match thisc2.device.send_vectored(&slices).await {
+                            Ok(bytes_sent) => {
+                                tracing::trace!(bytes_sent = bytes_sent, "Device forwarding sent packet successfully");
+                            }
+                            Err(e) => {
+                                tracing::debug!("Device forwarding failed to send packet: {}", e);
+                            }
+                        }
+                        break;
+                    } else {
+                        tokio::select! {
+                            _ = tokio_timerfd::sleep(duration) => {
+                                let slices = vec![std::io::IoSlice::new(&packet.packet[..packet.size])];
+                                match thisc2.device.send_vectored(&slices).await {
+                                    Ok(bytes_sent) => {
+                                        tracing::trace!(bytes_sent = bytes_sent, "Device forwarding sent delayed packet successfully");
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!("Device forwarding failed to send delayed packet: {}", e);
+                                    }
+                                }
+                                break;
+                            },
+                            _ = device_rx.recv() => {},
+                        }
+                    }
+                }
+            }
+        });
+        
         this
     }
 
@@ -126,6 +190,20 @@ impl Channel {
         let mut queue = self.queue.lock().unwrap();
         if queue.is_empty() {
             let _ = self.tx.send(());
+        }
+        queue.push_back(Packet {
+            packet,
+            size,
+            instant: Instant::now(),
+        });
+        Ok(())
+    }
+
+    pub async fn send_device(&self, packet: [u8; 1500], size: usize) -> Result<()> {
+        self.should_send(&packet[..size])?;
+        let mut queue = self.device_queue.lock().unwrap();
+        if queue.is_empty() {
+            let _ = self.device_tx.send(());
         }
         queue.push_back(Packet {
             packet,
@@ -155,6 +233,11 @@ impl Channel {
 
     pub async fn recv(&self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
         let n = self.tun.recv(buf).await?;
+        Ok(n)
+    }
+
+    pub async fn recv_device(&self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+        let n = self.device.recv(buf).await?;
         Ok(n)
     }
 }
@@ -239,6 +322,7 @@ impl Simulator {
                                     *parameters,
                                     device.0.mac_address(),
                                     device.1.clone(),
+                                    device.0.clone(),
                                     tnode,
                                     node,
                                 ),
@@ -284,12 +368,22 @@ impl Simulator {
     }
 
     pub async fn run(&self) -> Result<()> {
-        let mut future_set = self
+        // TUN forwarding tasks (existing logic)
+        let mut tun_future_set = self
             .channels
             .values()
             .flat_map(|x| x.iter())
             .unique_by(|(node, _)| *node)
-            .map(|(node, channel)| Self::generate_channel_reads(node.to_string(), channel.clone()))
+            .map(|(node, channel)| Self::generate_tun_reads(node.to_string(), channel.clone()))
+            .collect::<FuturesUnordered<_>>();
+
+        // Device forwarding tasks (new logic)
+        let mut device_future_set = self
+            .channels
+            .values()
+            .flat_map(|x| x.iter())
+            .unique_by(|(node, _)| *node)
+            .map(|(node, channel)| Self::generate_device_reads(node.to_string(), channel.clone()))
             .collect::<FuturesUnordered<_>>();
 
         let channel_map_vec: HashMap<&String, Vec<Arc<Channel>>> = self
@@ -299,24 +393,57 @@ impl Simulator {
             .collect();
 
         loop {
-            if let Some(Ok((buf, size, node, channel))) = future_set.next().await {
-                if let Some(connections) = channel_map_vec.get(&node) {
-                    for channel in connections {
-                        let _ = channel.send(buf, size).await;
+            tokio::select! {
+                // Handle TUN traffic forwarding
+                tun_result = tun_future_set.next(), if !tun_future_set.is_empty() => {
+                    if let Some(Ok((buf, size, node, channel))) = tun_result {
+                        if let Some(connections) = channel_map_vec.get(&node) {
+                            for target_channel in connections {
+                                let _ = target_channel.send(buf, size).await;
+                            }
+                        }
+                        tun_future_set.push(Self::generate_tun_reads(node, channel));
                     }
                 }
-
-                future_set.push(Self::generate_channel_reads(node, channel));
+                // Handle device traffic forwarding
+                device_result = device_future_set.next(), if !device_future_set.is_empty() => {
+                    if let Some(Ok((buf, size, node, channel))) = device_result {
+                        tracing::debug!(node = node, size = size, "Forwarding device traffic from node");
+                        if let Some(connections) = channel_map_vec.get(&node) {
+                            for target_channel in connections {
+                                match target_channel.send_device(buf, size).await {
+                                    Ok(_) => {
+                                        tracing::debug!(to_node = %target_channel.mac, "Successfully forwarded device traffic");
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!("Failed to forward device traffic: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        device_future_set.push(Self::generate_device_reads(node, channel));
+                    }
+                }
             }
         }
     }
 
-    async fn generate_channel_reads(
+    async fn generate_tun_reads(
         node: String,
         channel: Arc<Channel>,
     ) -> Result<([u8; 1500], usize, String, Arc<Channel>), Error> {
         let mut buf: [u8; 1500] = [0u8; 1500];
         let n = channel.recv(&mut buf).await?;
+        Ok((buf, n, node, channel))
+    }
+
+    async fn generate_device_reads(
+        node: String,
+        channel: Arc<Channel>,
+    ) -> Result<([u8; 1500], usize, String, Arc<Channel>), Error> {
+        let mut buf: [u8; 1500] = [0u8; 1500];
+        let n = channel.recv_device(&mut buf).await?;
+        tracing::debug!(node = node, size = n, raw = %bytes_to_hex(&buf[..n.min(32)]), "Read device traffic from node");
         Ok((buf, n, node, channel))
     }
 

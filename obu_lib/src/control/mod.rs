@@ -79,7 +79,11 @@ impl Obu {
                 let obu_c = obu.clone();
                 let messages = node::wire_traffic(&device, |pkt, size| {
                     let obu = obu_c.clone();
+                    let device_for_logging = device.clone();
                     async move {
+                        // Log all incoming device traffic for diagnostics
+                        tracing::info!(size = size, mac = %device_for_logging.mac_address(), raw = %node::bytes_to_hex(&pkt[..size.min(64)]), "OBU received device traffic");
+                        
                         // Try to parse multiple messages from the packet
                         let data = &pkt[..size];
                         let mut all_responses = Vec::new();
@@ -88,7 +92,7 @@ impl Obu {
                         while offset < data.len() {
                             match Message::try_from(&data[offset..]) {
                                 Ok(msg) => {
-                                    tracing::debug!("OBU received protocol message: {:?}", msg);
+                                    tracing::info!("OBU successfully parsed protocol message: {:?}", msg);
                                     let response = obu.handle_msg(&msg).await;
                                     let has_response = response.as_ref().map(|r| r.is_some()).unwrap_or(false);
                                     tracing::trace!(has_response = has_response, incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
@@ -103,15 +107,15 @@ impl Obu {
                                     offset += msg_size;
                                 }
                                 Err(e) => {
-                                    tracing::trace!(offset = offset, remaining = data.len() - offset, error = ?e, "could not parse message at offset");
-                                    // Log additional context about the packet type for debugging
+                                    tracing::debug!(offset = offset, remaining = data.len() - offset, error = ?e, "could not parse message at offset");
+                                    // Enhanced packet type identification for debugging
                                     if data.len() >= 14 {
                                         let eth_type = u16::from_be_bytes([data[12], data[13]]);
                                         match eth_type {
-                                            0x86dd => tracing::trace!("Received IPv6 packet (expected behavior, will be ignored)"),
-                                            0x0800 => tracing::trace!("Received IPv4 packet (expected behavior, will be ignored)"),
-                                            0x3030 => tracing::warn!("Received packet with protocol marker but failed to parse - possible protocol issue"),
-                                            _ => tracing::trace!(eth_type = eth_type, "Received non-protocol packet with EtherType 0x{:04x}", eth_type),
+                                            0x86dd => tracing::debug!("Received IPv6 packet (normal network stack behavior, ignored by protocol)"),
+                                            0x0800 => tracing::debug!("Received IPv4 packet (normal network stack behavior, ignored by protocol)"), 
+                                            0x3030 => tracing::error!("Received packet with protocol marker 0x3030 but failed to parse - this indicates a protocol message parsing issue"),
+                                            _ => tracing::debug!(eth_type = eth_type, "Received non-protocol packet with EtherType 0x{:04x} (normal network traffic)", eth_type),
                                         }
                                     }
                                     break;
