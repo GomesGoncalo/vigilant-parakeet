@@ -1,15 +1,14 @@
 use node_lib::test_helpers::hub::{DownstreamFromIdxExpectation, UpstreamExpectation};
-use obu_lib::Obu;
-use rsu_lib::Rsu;
-
 use node_lib::test_helpers::util::{
     await_condition_with_time_advance, await_with_timeout, mk_device_from_fd,
     mk_hub_with_checks_mocked_time, mk_shim_pairs,
 };
-mod common;
-use common::{mk_obu_args, mk_rsu_args};
+use obu_lib::Obu;
+use rsu_lib::Rsu;
 use std::sync::Arc;
 use std::time::Duration;
+
+mod common;
 
 #[tokio::test]
 async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
@@ -55,9 +54,9 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     let dev_obu2 = mk_device_from_fd(mac_obu2, node_fds[2]);
 
     // Build Args
-    let args_rsu = mk_rsu_args(50);
-    let args_obu1 = mk_obu_args();
-    let args_obu2 = mk_obu_args();
+    let args_rsu = common::mk_rsu_args(50);
+    let args_obu1 = common::mk_obu_args();
+    let args_obu2 = common::mk_obu_args();
 
     // Construct nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).expect("Rsu::new failed");
@@ -153,8 +152,8 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let dev_obu2 = mk_device_from_fd(mac_obu2, node_fds[2]);
 
     // Build Args using shared helper
-    let args_rsu = mk_rsu_args(50);
-    let args_obu = mk_obu_args();
+    let args_rsu = common::mk_rsu_args(50);
+    let args_obu = common::mk_obu_args();
 
     // Construct nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).expect("Rsu::new failed");

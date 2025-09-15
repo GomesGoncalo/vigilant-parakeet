@@ -3,10 +3,10 @@ use node_lib::test_helpers::util::{
 };
 use obu_lib::Obu;
 use rsu_lib::Rsu;
-mod common;
-use common::{mk_obu_args, mk_rsu_args};
 use std::sync::Arc;
 use std::time::Duration;
+
+mod common;
 
 /// Integration test: create an RSU and an OBU connected by a bidirectional
 /// socketpair and check that the OBU learns the RSU as its upstream.
@@ -28,8 +28,8 @@ async fn rsu_and_obu_topology_discovery() -> anyhow::Result<()> {
     let dev_b = mk_device_from_fd(mac_b, _hub_fds[0]);
 
     // Build Args for Rsu and Obu with hello periodicity so they exchange heartbeats
-    let args_rsu = mk_rsu_args(100);
-    let args_obu = mk_obu_args();
+    let args_rsu = common::mk_rsu_args(100);
+    let args_obu = common::mk_obu_args();
 
     // Construct nodes (they spawn background tasks)
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_a), Arc::new(dev_a))?;

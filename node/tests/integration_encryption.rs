@@ -4,13 +4,13 @@ use node_lib::test_helpers::util::{
 };
 use obu_lib::Obu;
 use rsu_lib::Rsu;
-mod common;
-use common::{mk_obu_args, mk_obu_args_encrypted, mk_rsu_args, mk_rsu_args_encrypted};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use std::time::Duration;
+
+mod common;
 
 /// Common payload checker that can be used to inspect packets for test payloads
 struct PayloadChecker {
@@ -100,9 +100,9 @@ async fn test_payload_encryption_prevents_inspection() {
     );
 
     // Create nodes with encryption enabled
-    let args_rsu = mk_rsu_args_encrypted(100);
-    let args_obu1 = mk_obu_args_encrypted();
-    let args_obu2 = mk_obu_args_encrypted();
+    let args_rsu = common::mk_rsu_args_encrypted(100);
+    let args_obu1 = common::mk_obu_args_encrypted();
+    let args_obu2 = common::mk_obu_args_encrypted();
 
     // Create nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();
@@ -221,8 +221,8 @@ async fn test_encryption_disabled_allows_inspection() {
     );
 
     // Create nodes with encryption DISABLED
-    let args_rsu = mk_rsu_args(100);
-    let args_obu1 = mk_obu_args();
+    let args_rsu = common::mk_rsu_args(100); // encryption defaults to false
+    let args_obu1 = common::mk_obu_args(); // encryption defaults to false
 
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();
     let obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1)).unwrap();
@@ -319,9 +319,9 @@ async fn test_ping_encryption_prevents_inspection_but_rsu_receives_correctly() {
     );
 
     // Create nodes with encryption enabled
-    let args_rsu = mk_rsu_args_encrypted(100);
-    let args_obu1 = mk_obu_args_encrypted();
-    let args_obu2 = mk_obu_args_encrypted();
+    let args_rsu = common::mk_rsu_args_encrypted(100);
+    let args_obu1 = common::mk_obu_args_encrypted();
+    let args_obu2 = common::mk_obu_args_encrypted();
 
     // Create nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();

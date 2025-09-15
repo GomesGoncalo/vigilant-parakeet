@@ -1,13 +1,13 @@
 use crate::network_interface::NetworkInterface;
 #[cfg(feature = "stats")]
 use crate::stats::Stats;
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "test_helpers")))]
 use anyhow::Context;
 use anyhow::Result;
 #[cfg(feature = "stats")]
 use std::sync::Mutex;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test_helpers"))]
 mod test_fd_registry {
     use std::os::unix::io::RawFd;
 
@@ -26,18 +26,18 @@ mod test_fd_registry {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test_helpers"))]
 use test_fd_registry::{close_raw_fd, register_owned_fd, unregister_owned_fd};
 
 use futures::ready;
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "test_helpers")))]
 use libc::{sockaddr, sockaddr_ll, AF_PACKET};
 use mac_address::MacAddress;
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "test_helpers")))]
 use nix::sys::socket::{bind as nix_bind, LinkAddr, SockaddrLike};
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "test_helpers")))]
 use socket2::{Domain, Protocol, Socket, Type};
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "test_helpers")))]
 use std::convert::TryFrom;
 use std::io;
 use std::io::{ErrorKind, IoSlice, Read, Write};
@@ -50,7 +50,7 @@ use std::task::Poll;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "test_helpers")))]
 const ETH_P_ALL: u16 = 0x0003;
 
 impl AsyncRead for Device {
@@ -243,7 +243,7 @@ pub struct DeviceIo(RawFd);
 
 impl From<RawFd> for DeviceIo {
     fn from(fd: RawFd) -> Self {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test_helpers"))]
         {
             register_owned_fd(fd);
         }
@@ -253,7 +253,7 @@ impl From<RawFd> for DeviceIo {
 
 impl FromRawFd for DeviceIo {
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test_helpers"))]
         {
             register_owned_fd(fd);
         }
@@ -326,7 +326,7 @@ impl DeviceIo {
 
 impl Drop for DeviceIo {
     fn drop(&mut self) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test_helpers"))]
         {
             unregister_owned_fd(self.0);
         }
@@ -349,7 +349,7 @@ impl NetworkInterface for Device {
 
 impl Device {
     // Helper extracted so tests can more easily stub or replace raw socket creation.
-    #[cfg(not(test))]
+    #[cfg(all(not(test), not(feature = "test_helpers")))]
     fn create_packet_socket_and_mac(interface: &str) -> Result<(MacAddress, RawFd)> {
         let fd = Socket::new(
             Domain::PACKET,
@@ -392,7 +392,7 @@ impl Device {
     }
 
     // Test shim: provide a non-privileged socket and dummy MAC when running tests.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test_helpers"))]
     fn create_packet_socket_and_mac(_interface: &str) -> Result<(MacAddress, RawFd)> {
         // create a simple pipe and use the writer end as the 'socket' for tests.
         let mut fds = [0; 2];

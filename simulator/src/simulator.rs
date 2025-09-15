@@ -12,8 +12,9 @@ use futures::StreamExt;
 use itertools::Itertools;
 use mac_address::MacAddress;
 use netns_rs::NetNs;
-use node_lib::Node;
+use obu_lib::Node as ObuNode;
 use rand::Rng;
+use rsu_lib::Node as RsuNode;
 use std::collections::VecDeque;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -31,6 +32,123 @@ pub struct NamespaceWrapper(Option<NetNs>);
 impl NamespaceWrapper {
     fn new(ns: NetNs) -> Self {
         Self(Some(ns))
+    }
+}
+
+#[cfg(test)]
+mod simulator_tests {
+    use super::*;
+    use common::channel_parameters::ChannelParameters;
+    use mac_address::MacAddress;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn channel_set_params_updates_and_allows_send_simfile() {
+        let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+        let tun = Arc::new(tun_a);
+        let params = ChannelParameters::from(std::collections::HashMap::new());
+        let mac = MacAddress::new([0, 1, 2, 3, 4, 5]);
+
+        let ch = Channel::new(
+            params,
+            mac,
+            tun.clone(),
+            &"from".to_string(),
+            &"to".to_string(),
+        );
+
+        let mut map = HashMap::new();
+        map.insert("latency".to_string(), "0".to_string());
+        map.insert("loss".to_string(), "0".to_string());
+
+        assert!(ch.set_params(map).is_ok());
+
+        let mut packet = [0u8; 1500];
+        packet[0..6].copy_from_slice(&mac.bytes());
+        packet[6] = 0x42;
+
+        assert!(ch.send(packet, 7).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn channel_send_wrong_mac_fails() {
+        let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+        let tun = Arc::new(tun_a);
+        let params = ChannelParameters::from(std::collections::HashMap::new());
+        let mac = MacAddress::new([0, 1, 2, 3, 4, 5]);
+
+        let ch = Channel::new(
+            params,
+            mac,
+            tun.clone(),
+            &"from".to_string(),
+            &"to".to_string(),
+        );
+
+        // packet with a different destination MAC
+        let mut packet = [0u8; 1500];
+        packet[0..6].copy_from_slice(&[9u8, 9, 9, 9, 9, 9]);
+        let res = ch.send(packet, 7).await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn channel_send_forced_loss() {
+        let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+        let tun = Arc::new(tun_a);
+        // set params with loss = 1.0 to force packet drop
+        let mut map = HashMap::new();
+        map.insert("latency".to_string(), "0".to_string());
+        map.insert("loss".to_string(), "1.0".to_string());
+
+        let params = ChannelParameters::from(HashMap::new());
+        let mac = MacAddress::new([0, 1, 2, 3, 4, 5]);
+        let ch = Channel::new(
+            params,
+            mac,
+            tun.clone(),
+            &"from".to_string(),
+            &"to".to_string(),
+        );
+        assert!(ch.set_params(map).is_ok());
+
+        let mut packet = [0u8; 1500];
+        packet[0..6].copy_from_slice(&mac.bytes());
+        let res = ch.send(packet, 7).await;
+        // With loss=1.0, should_send will bail and send returns Err
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn generate_channel_reads_returns_packet() {
+        let (tun_a, tun_b) = node_lib::test_helpers::util::mk_shim_pair();
+        let tun = Arc::new(tun_a);
+
+        let params = ChannelParameters::from(HashMap::new());
+        let mac = MacAddress::new([0, 1, 2, 3, 4, 5]);
+        let ch = Channel::new(
+            params,
+            mac,
+            tun.clone(),
+            &"from".to_string(),
+            &"to".to_string(),
+        );
+
+        // send data from peer side so channel.recv will receive it
+        let send_task = tokio::spawn(async move {
+            let _ = tun_b.send_all(b"payload").await;
+        });
+
+        let (buf, n, _node, _channel) =
+            Simulator::generate_channel_reads("node".to_string(), ch.clone())
+                .await
+                .expect("generate ok");
+
+        assert_eq!(n, 7);
+        assert_eq!(&buf[..n], b"payload");
+
+        send_task.await.expect("send task");
     }
 }
 
@@ -159,16 +277,34 @@ impl Channel {
     }
 }
 
+#[derive(Clone)]
+pub enum Node {
+    #[allow(dead_code)]
+    Obu(Arc<dyn ObuNode>),
+    #[allow(dead_code)]
+    Rsu(Arc<dyn RsuNode>),
+}
+
+impl Node {
+    #[allow(dead_code)]
+    pub fn as_any(&self) -> &dyn std::any::Any {
+        match self {
+            Node::Obu(o) => o.as_any(),
+            Node::Rsu(r) => r.as_any(),
+        }
+    }
+}
+
 pub struct Simulator {
     _namespaces: Vec<NamespaceWrapper>,
     channels: HashMap<String, HashMap<String, Arc<Channel>>>,
     /// Keep created nodes so external code (e.g. webview) may query node state.
     #[allow(dead_code)]
     #[allow(clippy::type_complexity)]
-    nodes: HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Node>)>,
+    nodes: HashMap<String, (Arc<Device>, Arc<Tun>, Node)>,
 }
 
-type CallbackReturn = Result<(Arc<Device>, Arc<Tun>, Arc<dyn Node>)>;
+type CallbackReturn = Result<(Arc<Device>, Arc<Tun>, Node)>;
 
 impl Simulator {
     #[allow(clippy::type_complexity)]
@@ -178,7 +314,7 @@ impl Simulator {
     ) -> Result<(
         HashMap<String, HashMap<String, Arc<Channel>>>,
         Vec<NamespaceWrapper>,
-        HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Node>)>,
+        HashMap<String, (Arc<Device>, Arc<Tun>, Node)>,
     )> {
         let settings = Config::builder()
             .add_source(config::File::with_name(config_file))
@@ -327,7 +463,7 @@ impl Simulator {
 
     /// Return a clone of the created nodes (name -> (dev, tun, node)).
     #[allow(dead_code, clippy::type_complexity)]
-    pub fn get_nodes(&self) -> HashMap<String, (Arc<Device>, Arc<Tun>, Arc<dyn Node>)> {
+    pub fn get_nodes(&self) -> HashMap<String, (Arc<Device>, Arc<Tun>, Node)> {
         self.nodes.clone()
     }
 }

@@ -27,3 +27,8 @@ crate-type = ["cdylib"]
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+
+[features]
+# Allow workspace-level `--features test_helpers` without changing visualization behaviour.
+# This is a no-op feature used by CI and workspace feature flags.
+test_helpers = []

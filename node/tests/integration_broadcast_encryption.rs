@@ -4,13 +4,13 @@ use node_lib::test_helpers::util::{
 };
 use obu_lib::Obu;
 use rsu_lib::Rsu;
-mod common;
-use common::{mk_obu_args_encrypted, mk_rsu_args_encrypted};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use std::time::Duration;
+
+mod common;
 
 // Type alias to simplify complex type
 type CapturedPackets = Arc<Mutex<Vec<(usize, Vec<u8>)>>>;
@@ -93,9 +93,9 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
     );
 
     // Create nodes with encryption enabled
-    let args_rsu = mk_rsu_args_encrypted(50);
-    let args_obu1 = mk_obu_args_encrypted();
-    let args_obu2 = mk_obu_args_encrypted();
+    let args_rsu = common::mk_rsu_args_encrypted(50);
+    let args_obu1 = common::mk_obu_args_encrypted();
+    let args_obu2 = common::mk_obu_args_encrypted();
 
     // Create nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();
@@ -264,9 +264,9 @@ async fn test_rsu_broadcast_individual_encryption() {
     );
 
     // Create nodes with encryption enabled
-    let args_rsu = mk_rsu_args_encrypted(50);
-    let args_obu1 = mk_obu_args_encrypted();
-    let args_obu2 = mk_obu_args_encrypted();
+    let args_rsu = common::mk_rsu_args_encrypted(50);
+    let args_obu1 = common::mk_obu_args_encrypted();
+    let args_obu2 = common::mk_obu_args_encrypted();
 
     // Create nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();

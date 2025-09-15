@@ -1,27 +1,26 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use mac_address::MacAddress;
-use node_lib::control::obu::routing::Routing as ObuRouting;
-use node_lib::control::rsu::routing::Routing as RsuRouting;
-use node_lib::Args;
+use obu_lib::control::routing::Routing as ObuRouting;
+use obu_lib::{ObuArgs, ObuParameters};
+use rsu_lib::control::routing::Routing as RsuRouting;
+use rsu_lib::{RsuArgs, RsuParameters};
 use tokio::time::Instant;
 
 fn bench_obu_get_route(_c: &mut Criterion) {
-    let args = Args {
+    let obu_args = ObuArgs {
         bind: String::default(),
         tap_name: None,
         ip: None,
         mtu: 1500,
-        node_params: node_lib::args::NodeParameters {
-            node_type: node_lib::args::NodeType::Obu,
+        obu_params: ObuParameters {
             hello_history: 8,
-            hello_periodicity: None,
             cached_candidates: 3,
             enable_encryption: false,
         },
     };
 
     let boot = Instant::now();
-    let mut routing = ObuRouting::new(&args, &boot).expect("build");
+    let mut routing = ObuRouting::new(&obu_args, &boot).expect("build");
 
     // populate routing with many entries
     for i in 0..100u32 {
@@ -56,22 +55,21 @@ fn bench_obu_get_route(_c: &mut Criterion) {
 }
 
 fn bench_rsu_get_route(_c: &mut Criterion) {
-    let args = Args {
+    let rsu_args = RsuArgs {
         bind: String::default(),
         tap_name: None,
         ip: None,
         mtu: 1500,
-        node_params: node_lib::args::NodeParameters {
-            node_type: node_lib::args::NodeType::Rsu,
+        rsu_params: RsuParameters {
             hello_history: 8,
-            hello_periodicity: None,
+            hello_periodicity: 5000,
             cached_candidates: 3,
             enable_encryption: false,
         },
     };
 
     let _boot = Instant::now();
-    let mut routing = RsuRouting::new(&args).expect("build");
+    let mut routing = RsuRouting::new(&rsu_args).expect("build");
 
     for i in 0..100u32 {
         let src: MacAddress = [i as u8; 6].into();
