@@ -157,6 +157,100 @@ mod extra_tests {
         // And selected primary should match
         assert_eq!(selected.mac, cached[0]);
     }
+
+    #[test]
+    fn test_set_cached_candidates_clears_and_sets() {
+        let args = ObuArgs {
+            bind: String::new(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            obu_params: ObuParameters {
+                hello_history: 2,
+                cached_candidates: 3,
+                enable_encryption: false,
+            },
+        };
+
+        let boot = Instant::now();
+        let routing = Routing::new(&args, &boot).expect("routing built");
+
+        // Start with empty candidates
+        routing.test_set_cached_candidates(vec![]);
+        assert!(routing.get_cached_candidates().is_none());
+        assert!(routing.get_cached_upstream().is_none());
+
+        // Set some candidates
+        let a: MacAddress = [1u8; 6].into();
+        let b: MacAddress = [2u8; 6].into();
+        routing.test_set_cached_candidates(vec![a, b]);
+        let c = routing.get_cached_candidates().expect("cands");
+        assert_eq!(c[0], a);
+        assert_eq!(routing.get_cached_upstream().expect("primary"), a);
+    }
+
+    #[test]
+    fn failover_backfills_from_hops_when_no_latency() {
+        let args = ObuArgs {
+            bind: String::new(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            obu_params: ObuParameters {
+                hello_history: 2,
+                cached_candidates: 3,
+                enable_encryption: false,
+            },
+        };
+
+        let boot = Instant::now();
+        let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+        // Build routes where only hop-count information is available
+    let src: MacAddress = [9u8; 6].into();
+    // Use src as the RSU key so the hops-based backfill path finds entries
+    let rsu: MacAddress = src;
+        let via_a: MacAddress = [11u8; 6].into();
+        let via_b: MacAddress = [12u8; 6].into();
+        let mut seqmap = IndexMap::new();
+
+        seqmap.insert(
+            1u32,
+            (
+                Duration::from_millis(0),
+                via_a,
+                3u32, // more hops
+                IndexMap::new(),
+                HashMap::new(),
+            ),
+        );
+        seqmap.insert(
+            2u32,
+            (
+                Duration::from_millis(0),
+                via_b,
+                1u32, // fewer hops, should be preferred
+                IndexMap::new(),
+                HashMap::new(),
+            ),
+        );
+        routing.routes.insert(rsu, seqmap);
+
+        // Set cached source so failover can rebuild
+        routing.cached_candidates.store(None);
+        routing.cached_upstream.store(None);
+        routing.cached_source.store(Some(src.into()));
+
+    let promoted = routing.failover_cached_upstream();
+    // Should have promoted something
+    assert!(promoted.is_some());
+    let primary = routing.get_cached_upstream().expect("primary");
+    // promoted should match the cached upstream
+    assert_eq!(primary, promoted.unwrap());
+    // And the primary should be one of the candidates we inserted
+    let cands = routing.get_cached_candidates().expect("cands");
+    assert!(cands.contains(&primary));
+    }
 }
 
 #[cfg(test)]

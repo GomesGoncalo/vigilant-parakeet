@@ -181,6 +181,13 @@ mod tests {
     }
 
     #[test]
+    fn pick_best_from_latency_candidates_empty_returns_none() {
+        let m: std::collections::HashMap<MacAddress, (u128, u128, u32, u32)> =
+            std::collections::HashMap::new();
+        assert!(super::pick_best_from_latency_candidates(m).is_none());
+    }
+
+    #[test]
     fn score_and_sort_latency_candidates_hops_and_mac_tie_break() {
         // Create three candidates with equal score but different hops and MACs.
         // Expected sort order: candidates with fewer hops come first; among equal hops, lower MAC wins.
@@ -318,5 +325,12 @@ mod tests {
                 prop_assert_eq!(a.3, e.3);
             }
         });
+    }
+
+    #[test]
+    fn pick_best_next_hop_empty_returns_none() {
+        use std::collections::HashMap;
+        let m: HashMap<MacAddress, NextHopStats> = HashMap::new();
+        assert!(super::pick_best_next_hop(m).is_none());
     }
 }

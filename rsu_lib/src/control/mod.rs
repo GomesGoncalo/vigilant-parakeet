@@ -782,4 +782,86 @@ mod rsu_tests {
             panic!("expected Wire reply");
         }
     }
+
+    #[tokio::test]
+    async fn upstream_with_encryption_bad_cipher_returns_none() -> anyhow::Result<()> {
+        use crate::args::RsuArgs;
+        use crate::Rsu;
+        use mac_address::MacAddress;
+        use node_lib::messages::{
+            data::{Data, ToUpstream},
+            message::Message,
+            packet_type::PacketType,
+        };
+        use std::sync::Arc;
+
+        // Build args with encryption enabled
+        let args = RsuArgs {
+            bind: String::new(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            rsu_params: crate::args::RsuParameters {
+                hello_history: 2,
+                hello_periodicity: 5000,
+                cached_candidates: 3,
+                enable_encryption: true,
+            },
+        };
+
+        // Create shim tun and device using a test pipe (avoid privileged ops)
+        let (tun_a, _tun_b) = node_lib::test_helpers::util::mk_shim_pair();
+        let tun = Arc::new(tun_a);
+        // create a pipe and use the writer fd as the device send end
+        let mut fds = [0; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let reader_fd = fds[0];
+        let writer_fd = fds[1];
+        // set non-blocking for writer_fd
+        unsafe {
+            let flags = libc::fcntl(writer_fd, libc::F_GETFL);
+            if flags >= 0 {
+                let _ = libc::fcntl(writer_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+        }
+        let dev = std::sync::Arc::new(node_lib::test_helpers::util::mk_device_from_fd(
+            [0u8, 1, 2, 3, 4, 5].into(),
+            writer_fd,
+        ));
+
+        // Construct the RSU instance manually without spawning background tasks
+        use super::routing::Routing;
+        use super::ClientCache;
+        use std::sync::RwLock;
+        let routing = Arc::new(RwLock::new(Routing::new(&args)?));
+        let cache = Arc::new(ClientCache::default());
+        let rsu = Arc::new(Rsu {
+            args,
+            routing: routing.clone(),
+            tun: tun.clone(),
+            device: dev.clone(),
+            cache: cache.clone(),
+        });
+
+        // Build an upstream message whose payload is invalid ciphertext so decrypt fails
+        let from_mac: MacAddress = [1u8; 6].into();
+        let dest_mac: MacAddress = [2u8; 6].into();
+        let mut inner = Vec::new();
+        inner.extend_from_slice(&dest_mac.bytes());
+        inner.extend_from_slice(&from_mac.bytes());
+        inner.extend_from_slice(b"not-a-valid-ciphertext");
+
+        let tu = ToUpstream::new(from_mac, &inner);
+        let msg = Message::new(from_mac, dest_mac, PacketType::Data(Data::Upstream(tu)));
+
+        let res = rsu.handle_msg(&msg).await?;
+        // decrypt should fail and the handler returns None
+        assert!(res.is_none());
+        // Close fds to keep OS state clean (don't block attempting to read)
+        unsafe {
+            libc::close(reader_fd);
+            libc::close(writer_fd);
+        }
+        Ok(())
+    }
 }
