@@ -207,9 +207,9 @@ mod extra_tests {
         let mut routing = Routing::new(&args, &boot).expect("routing built");
 
         // Build routes where only hop-count information is available
-    let src: MacAddress = [9u8; 6].into();
-    // Use src as the RSU key so the hops-based backfill path finds entries
-    let rsu: MacAddress = src;
+        let src: MacAddress = [9u8; 6].into();
+        // Use src as the RSU key so the hops-based backfill path finds entries
+        let rsu: MacAddress = src;
         let via_a: MacAddress = [11u8; 6].into();
         let via_b: MacAddress = [12u8; 6].into();
         let mut seqmap = IndexMap::new();
@@ -241,15 +241,15 @@ mod extra_tests {
         routing.cached_upstream.store(None);
         routing.cached_source.store(Some(src.into()));
 
-    let promoted = routing.failover_cached_upstream();
-    // Should have promoted something
-    assert!(promoted.is_some());
-    let primary = routing.get_cached_upstream().expect("primary");
-    // promoted should match the cached upstream
-    assert_eq!(primary, promoted.unwrap());
-    // And the primary should be one of the candidates we inserted
-    let cands = routing.get_cached_candidates().expect("cands");
-    assert!(cands.contains(&primary));
+        let promoted = routing.failover_cached_upstream();
+        // Should have promoted something
+        assert!(promoted.is_some());
+        let primary = routing.get_cached_upstream().expect("primary");
+        // promoted should match the cached upstream
+        assert_eq!(primary, promoted.unwrap());
+        // And the primary should be one of the candidates we inserted
+        let cands = routing.get_cached_candidates().expect("cands");
+        assert!(cands.contains(&primary));
     }
 }
 
