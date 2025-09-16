@@ -1,5 +1,6 @@
-use crate::messages::message::Message;
+use node_lib::messages::message::Message;
 
+use super::routing::Routing;
 use anyhow::{bail, Result};
 use common::device::Device;
 use common::tun::Tun;
@@ -58,27 +59,48 @@ pub async fn handle_messages(
     messages: Vec<ReplyType>,
     tun: &Arc<Tun>,
     dev: &Arc<Device>,
-    _routing: Option<Arc<std::sync::RwLock<dyn std::any::Any + Send + Sync>>>,
+    routing: Option<Arc<std::sync::RwLock<Routing>>>,
 ) -> Result<()> {
     let future_vec = messages
         .iter()
-        .map(|reply| async move {
-            match reply {
-                ReplyType::Tap(buf) => {
-                    let vec: Vec<IoSlice> = buf.iter().map(|x| IoSlice::new(x)).collect();
-                    let _ = tun
-                        .send_vectored(&vec)
-                        .await
-                        .inspect_err(|e| tracing::error!(?e, "error sending to tap"));
-                }
-                ReplyType::Wire(reply) => {
-                    let vec: Vec<IoSlice> = reply.iter().map(|x| IoSlice::new(x)).collect();
-                    let _ = dev
-                        .send_vectored(&vec)
-                        .await
-                        .inspect_err(|e| tracing::error!(?e, "error sending to dev"));
-                }
-            };
+        .map(|reply| {
+            let routing_clone = routing.clone();
+            async move {
+                match reply {
+                    ReplyType::Tap(buf) => {
+                        let vec: Vec<IoSlice> = buf.iter().map(|x| IoSlice::new(x)).collect();
+                        let _ = tun
+                            .send_vectored(&vec)
+                            .await
+                            .inspect_err(|e| tracing::error!(?e, "error sending to tap"));
+                    }
+                    ReplyType::Wire(reply) => {
+                        let vec: Vec<IoSlice> = reply.iter().map(|x| IoSlice::new(x)).collect();
+                        // Attempt to send; on error, if routing is present and this
+                        // wire payload targets the cached upstream for an OBU,
+                        // trigger a failover to the next candidate.
+                        let send_res = dev.send_vectored(&vec).await;
+                        if let Err(e) = send_res {
+                            tracing::error!(?e, "error sending to dev");
+
+                            // Try to parse the wire bytes; if this message's destination
+                            // equals the current cached upstream, trigger a failover.
+                            if let Some(r) = &routing_clone {
+                                let bytes: Vec<u8> = reply.iter().flat_map(|x| x.iter()).copied().collect();
+                                if let Ok(parsed) = Message::try_from(&bytes[..]) {
+                                    if let Ok(dest) = parsed.to() {
+                                        let cached = r.read().unwrap().get_cached_upstream();
+                                        if cached.is_some() && cached.unwrap() == dest {
+                                            let promoted = r.write().unwrap().failover_cached_upstream();
+                                            tracing::info!(promoted = ?promoted, "promoted cached upstream after send error");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+            }
         })
         .collect_vec();
 
@@ -121,8 +143,8 @@ where
 mod tests {
     use super::{get_msgs, ReplyType};
     use crate::control::node::DebugReplyType;
-    use crate::messages::message::Message;
     use anyhow::Result;
+    use node_lib::messages::message::Message;
 
     #[test]
     fn get_msgs_ok_none() {
@@ -143,10 +165,10 @@ mod tests {
 
     #[test]
     fn get_msgs_ok_some_with_parsable_wire() {
-        use crate::messages::data::Data;
-        use crate::messages::data::ToUpstream;
-        use crate::messages::packet_type::PacketType;
         use mac_address::MacAddress;
+        use node_lib::messages::data::Data;
+        use node_lib::messages::data::ToUpstream;
+        use node_lib::messages::packet_type::PacketType;
 
         let from: MacAddress = [2u8; 6].into();
         let to: MacAddress = [3u8; 6].into();

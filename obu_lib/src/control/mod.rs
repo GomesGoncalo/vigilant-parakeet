@@ -1,27 +1,28 @@
+pub mod node;
+pub mod route;
 pub mod routing;
+pub mod routing_utils;
 mod session;
 
-use super::node::ReplyType;
-use crate::{
-    control::{node, obu::session::Session},
-    messages::{
-        control::Control,
-        data::{Data, ToUpstream},
-        message::Message,
-        packet_type::PacketType,
-    },
-    Args,
-};
+use crate::args::ObuArgs;
 use anyhow::{anyhow, Result};
 use common::tun::Tun;
 use common::{device::Device, network_interface::NetworkInterface};
 use mac_address::MacAddress;
+use node::ReplyType;
+use node_lib::messages::{
+    control::Control,
+    data::{Data, ToUpstream},
+    message::Message,
+    packet_type::PacketType,
+};
 use routing::Routing;
+use session::Session;
 use std::sync::{Arc, RwLock};
 use tokio::time::Instant;
 
 pub struct Obu {
-    args: Args,
+    args: ObuArgs,
     routing: Arc<RwLock<Routing>>,
     tun: Arc<Tun>,
     device: Arc<Device>,
@@ -29,7 +30,7 @@ pub struct Obu {
 }
 
 impl Obu {
-    pub fn new(args: Args, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
+    pub fn new(args: ObuArgs, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
         let boot = Instant::now();
         let routing = Arc::new(RwLock::new(Routing::new(&args, &boot)?));
         let obu = Arc::new(Self {
@@ -52,7 +53,7 @@ impl Obu {
     }
 
     /// Return the cached upstream Route if present (hops, mac, latency).
-    pub fn cached_upstream_route(&self) -> Option<crate::control::route::Route> {
+    pub fn cached_upstream_route(&self) -> Option<route::Route> {
         // routing.get_route_to(None) returns Option<Route>
         self.routing.read().unwrap().get_route_to(None)
     }
@@ -77,7 +78,6 @@ impl Obu {
                 let messages = node::wire_traffic(&device, |pkt, size| {
                     let obu = obu_c.clone();
                     async move {
-                        // Try to parse multiple messages from the packet
                         let data = &pkt[..size];
                         let mut all_responses = Vec::new();
                         let mut offset = 0;
@@ -92,8 +92,6 @@ impl Obu {
                                     if let Ok(Some(responses)) = response {
                                         all_responses.extend(responses);
                                     }
-
-                                    // Calculate message size to advance offset  
                                     let msg_bytes: Vec<Vec<u8>> = (&msg).into();
                                     let msg_size: usize = msg_bytes.iter().map(|chunk| chunk.len()).sum();
                                     offset += msg_size;
@@ -113,8 +111,6 @@ impl Obu {
                     }
                 }).await;
                 if let Ok(Some(messages)) = messages {
-                    // Provide the routing handle so `handle_messages` can trigger
-                    // `failover_cached_upstream()` on send errors.
                     let _ = node::handle_messages(
                         messages,
                         &tun,
@@ -134,12 +130,10 @@ impl Obu {
         let device = self.device.clone();
         let tun = self.tun.clone();
         let routing_handle = routing.clone();
-        let enable_encryption = self.args.node_params.enable_encryption;
+        let enable_encryption = self.args.obu_params.enable_encryption;
         tokio::task::spawn(async move {
             loop {
                 let devicec = device.clone();
-                // Provide two clones: one for the async closure (which will move
-                // it) and one we keep to pass into handle_messages after `await`.
                 let routing_for_closure = routing_handle.clone();
                 let routing_for_handle = routing_handle.clone();
                 let messages = session
@@ -150,9 +144,8 @@ impl Obu {
                             return Ok(None);
                         };
 
-                        // Encrypt entire frame when encryption is enabled
                         let payload_data = if enable_encryption {
-                            match crate::crypto::encrypt_payload(y) {
+                            match node_lib::crypto::encrypt_payload(y) {
                                 Ok(encrypted_data) => encrypted_data,
                                 Err(e) => {
                                     tracing::error!("Failed to encrypt entire frame: {}", e);
@@ -222,8 +215,8 @@ impl Obu {
                 let is_for_us =
                     destination == self.device.mac_address() || destination.bytes()[0] & 0x1 != 0;
                 if is_for_us {
-                    let payload_data = if self.args.node_params.enable_encryption {
-                        match crate::crypto::decrypt_payload(buf.data()) {
+                    let payload_data = if self.args.obu_params.enable_encryption {
+                        match node_lib::crypto::decrypt_payload(buf.data()) {
                             Ok(decrypted_data) => decrypted_data,
                             Err(e) => {
                                 tracing::error!("Failed to decrypt downstream frame: {}", e);
@@ -266,16 +259,13 @@ impl Obu {
     }
 }
 
-// Test-only helper that mirrors `handle_msg` logic but operates on supplied
-// routing and device_mac so tests can exercise message handling without
-// constructing a full `Obu` (which requires tun and device runtime setup).
 #[cfg(test)]
 pub(crate) fn handle_msg_for_test(
     routing: Arc<RwLock<Routing>>,
     device_mac: mac_address::MacAddress,
-    msg: &crate::messages::message::Message<'_>,
+    msg: &node_lib::messages::message::Message<'_>,
 ) -> anyhow::Result<Option<Vec<ReplyType>>> {
-    use crate::messages::{control::Control, data::Data, packet_type::PacketType};
+    use node_lib::messages::{control::Control, data::Data, packet_type::PacketType};
 
     match msg.get_packet_type() {
         PacketType::Data(Data::Upstream(buf)) => {
@@ -285,7 +275,7 @@ pub(crate) fn handle_msg_for_test(
             };
 
             Ok(Some(vec![ReplyType::Wire(
-                (&crate::messages::message::Message::new(
+                (&node_lib::messages::message::Message::new(
                     device_mac,
                     upstream.mac,
                     PacketType::Data(Data::Upstream(buf.clone())),
@@ -312,7 +302,7 @@ pub(crate) fn handle_msg_for_test(
                 };
 
                 vec![ReplyType::Wire(
-                    (&crate::messages::message::Message::new(
+                    (&node_lib::messages::message::Message::new(
                         device_mac,
                         next_hop.mac,
                         PacketType::Data(Data::Downstream(buf.clone())),
@@ -333,37 +323,33 @@ pub(crate) fn handle_msg_for_test(
 
 #[cfg(test)]
 mod obu_tests {
-    use super::handle_msg_for_test;
-    use crate::args::{NodeParameters, NodeType};
-    use crate::messages::{
+    use super::{handle_msg_for_test, routing::Routing};
+    use mac_address::MacAddress;
+    use node_lib::messages::{
         control::heartbeat::Heartbeat,
         control::Control,
         data::{Data, ToDownstream, ToUpstream},
         message::Message,
         packet_type::PacketType,
     };
-    use crate::Args;
-    use mac_address::MacAddress;
     use tokio::time::Instant;
 
     #[test]
     fn upstream_with_no_cached_upstream_returns_none() {
-        let args = Args {
+        let args = crate::args::ObuArgs {
             bind: String::new(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Obu,
+            obu_params: crate::args::ObuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
         };
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
-            super::routing::Routing::new(&args, &boot).expect("routing"),
+            Routing::new(&args, &boot).expect("routing"),
         ));
 
         let from: MacAddress = [2u8; 6].into();
@@ -378,22 +364,20 @@ mod obu_tests {
 
     #[test]
     fn downstream_to_self_returns_tap() {
-        let args = Args {
+        let args = crate::args::ObuArgs {
             bind: String::new(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Obu,
+            obu_params: crate::args::ObuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
         };
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
-            super::routing::Routing::new(&args, &boot).expect("routing"),
+            Routing::new(&args, &boot).expect("routing"),
         ));
 
         let src = [4u8; 6];
@@ -420,22 +404,20 @@ mod obu_tests {
 
     #[test]
     fn upstream_with_cached_upstream_returns_wire() {
-        let args = Args {
+        let args = crate::args::ObuArgs {
             bind: String::new(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Obu,
+            obu_params: crate::args::ObuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
         };
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
-            super::routing::Routing::new(&args, &boot).expect("routing"),
+            Routing::new(&args, &boot).expect("routing"),
         ));
 
         // Create a heartbeat to populate routes
@@ -474,22 +456,20 @@ mod obu_tests {
 
     #[test]
     fn heartbeat_generates_forward_and_reply() {
-        let args = Args {
+        let args = crate::args::ObuArgs {
             bind: String::new(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Obu,
+            obu_params: crate::args::ObuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
         };
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
-            super::routing::Routing::new(&args, &boot).expect("routing"),
+            Routing::new(&args, &boot).expect("routing"),
         ));
 
         let hb_source: MacAddress = [11u8; 6].into();
@@ -513,22 +493,20 @@ mod obu_tests {
 
     #[test]
     fn heartbeat_reply_updates_routing_and_replies() {
-        let args = Args {
+        let args = crate::args::ObuArgs {
             bind: String::new(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Obu,
+            obu_params: crate::args::ObuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
         };
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
-            super::routing::Routing::new(&args, &boot).expect("routing"),
+            Routing::new(&args, &boot).expect("routing"),
         ));
 
         let hb_source: MacAddress = [21u8; 6].into();
@@ -551,7 +529,7 @@ mod obu_tests {
         // Create a HeartbeatReply from some sender
         let reply_sender: MacAddress = [42u8; 6].into();
         let hbr =
-            crate::messages::control::heartbeat::HeartbeatReply::from_sender(&hb, reply_sender);
+            node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb, reply_sender);
         let reply_from: MacAddress = [55u8; 6].into();
         let reply_msg = Message::new(
             reply_from,
@@ -567,22 +545,20 @@ mod obu_tests {
 
     #[test]
     fn downstream_to_other_forwards_wire_when_route_exists() {
-        let args = Args {
+        let args = crate::args::ObuArgs {
             bind: String::new(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Obu,
+            obu_params: crate::args::ObuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
         };
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
-            super::routing::Routing::new(&args, &boot).expect("routing"),
+            Routing::new(&args, &boot).expect("routing"),
         ));
 
         // create a heartbeat so that a route to `hb_source` exists
@@ -623,22 +599,20 @@ mod obu_tests {
 
     #[test]
     fn downstream_to_other_returns_none_when_no_route() {
-        let args = Args {
+        let args = crate::args::ObuArgs {
             bind: String::new(),
             tap_name: None,
             ip: None,
             mtu: 1500,
-            node_params: NodeParameters {
-                node_type: NodeType::Obu,
+            obu_params: crate::args::ObuParameters {
                 hello_history: 2,
-                hello_periodicity: None,
                 cached_candidates: 3,
                 enable_encryption: false,
             },
         };
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
-            super::routing::Routing::new(&args, &boot).expect("routing"),
+            Routing::new(&args, &boot).expect("routing"),
         ));
 
         let our_mac: MacAddress = [90u8; 6].into();

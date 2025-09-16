@@ -1,10 +1,7 @@
 #[cfg(feature = "webview")]
 use crate::simulator::Channel;
-#[cfg(not(feature = "test_helpers"))]
-use anyhow::Context;
 use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
-use common::device::Device;
 #[cfg(feature = "webview")]
 use common::network_interface::NetworkInterface;
 #[cfg(not(feature = "test_helpers"))]
@@ -12,12 +9,10 @@ use common::tun::Tun;
 use config::Config;
 #[cfg(feature = "webview")]
 use itertools::Itertools;
-use node_lib::args::{Args, NodeParameters, NodeType};
+use node_lib::args::NodeType;
 use serde::Serialize;
 use std::{
     collections::HashMap,
-    net::Ipv4Addr,
-    str::FromStr,
     sync::{Arc, Mutex},
 };
 use tokio::signal;
@@ -31,7 +26,9 @@ use warp::Filter;
 mod sim_args;
 use sim_args::SimArgs;
 
+mod node_factory;
 mod simulator;
+use node_factory::create_node_from_settings;
 use simulator::Simulator;
 
 #[cfg(feature = "webview")]
@@ -98,16 +95,17 @@ async fn main() -> Result<()> {
         tracing::info!(?settings, "settings");
 
         #[cfg(not(feature = "test_helpers"))]
-        let tun = Arc::new(Tun::new(
-            TokioTun::builder()
+        let tun = Arc::new({
+            let real_tun = TokioTun::builder()
                 .name("real")
                 .tap()
                 .up()
                 .build()?
                 .into_iter()
                 .next()
-                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?,
-        ));
+                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?;
+            Tun::new_real(real_tun)
+        });
         #[cfg(feature = "test_helpers")]
         let tun = {
             // test build: use shared test helper to construct a shim Tun and take one end.
@@ -115,63 +113,11 @@ async fn main() -> Result<()> {
             Arc::new(tun_a)
         };
 
-        // Read optional cached_candidates; default to 3 when not present or invalid.
-        let cached_candidates = settings
-            .get_int("cached_candidates")
-            .ok()
-            .and_then(|x| u32::try_from(x).ok())
-            .unwrap_or(3u32);
+        // Parse node type from config. Map parsing errors into anyhow::Error so `?` works.
+        let node = NodeType::from_str(&settings.get_string("node_type")?, true)
+            .map_err(|e| anyhow::anyhow!(e))?;
 
-        let args = Args {
-            bind: tun.name().to_string(),
-            tap_name: Some("virtual".to_string()),
-            ip: Some(Ipv4Addr::from_str(&settings.get_string("ip")?)?),
-            mtu: 1436,
-            node_params: NodeParameters {
-                node_type: NodeType::from_str(&settings.get_string("node_type")?, true)
-                    .or_else(|_| bail!("invalid node type"))?,
-                hello_history: settings.get_int("hello_history")?.try_into()?,
-                hello_periodicity: settings
-                    .get_int("hello_periodicity")
-                    .map(|x| u32::try_from(x).ok())
-                    .ok()
-                    .flatten(),
-                cached_candidates,
-                enable_encryption: settings.get_bool("enable_encryption").unwrap_or(false),
-            },
-        };
-
-        #[cfg(not(feature = "test_helpers"))]
-        let virtual_tun = Arc::new(Tun::new(if let Some(ref name) = args.tap_name {
-            TokioTun::builder()
-                .tap()
-                .name(name)
-                .address(args.ip.context("")?)
-                .mtu(args.mtu)
-                .up()
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
-        } else {
-            TokioTun::builder()
-                .tap()
-                .address(args.ip.context("")?)
-                .mtu(args.mtu)
-                .up()
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
-        }));
-        #[cfg(feature = "test_helpers")]
-        let virtual_tun = {
-            let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
-            Arc::new(tun_a)
-        };
-
-        let dev = Arc::new(Device::new(tun.name())?);
-        let node = node_lib::create_with_vdev(args, virtual_tun, dev.clone())?;
+        let (dev, _virtual_tun, node) = create_node_from_settings(node, &settings, tun.clone())?;
         devices
             .lock()
             .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
@@ -293,16 +239,19 @@ async fn main() -> Result<()> {
                 let mut upstream_map: HashMap<String, UpstreamInfo> = HashMap::new();
                 for (name, (_dev, _tun, node)) in sim_nodes.iter() {
                     // try downcast to obu to get a cached route
-                    let node_type = if node.as_any().is::<node_lib::control::obu::Obu>() {
+
+                    use obu_lib::Obu;
+                    use rsu_lib::Rsu;
+                    let node_type = if node.as_any().is::<Obu>() {
                         "Obu".to_string()
-                    } else if node.as_any().is::<node_lib::control::rsu::Rsu>() {
+                    } else if node.as_any().is::<Rsu>() {
                         "Rsu".to_string()
                     } else {
                         "Unknown".to_string()
                     };
                     let upstream_route = node
                         .as_any()
-                        .downcast_ref::<node_lib::control::obu::Obu>()
+                        .downcast_ref::<Obu>()
                         .and_then(|obu| obu.cached_upstream_route())
                         .map(|r| UpstreamInfo {
                             hops: r.hops,
@@ -369,4 +318,60 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use common::channel_parameters::ChannelParameters;
+    use mac_address::MacAddress;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn channel_set_params_updates_and_allows_send() {
+        // Create a dummy tun from test helpers
+        let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+        let tun = Arc::new(tun_a);
+        let params = ChannelParameters::from(std::collections::HashMap::new());
+        let mac = MacAddress::new([0, 1, 2, 3, 4, 5]);
+
+        // Channel::new spawns a background task; use a small topology-style from/to names
+        let ch = crate::simulator::Channel::new(
+            params,
+            mac,
+            tun.clone(),
+            &"from".to_string(),
+            &"to".to_string(),
+        );
+
+        // Setting params via set_params should accept a valid map
+        let mut map = HashMap::new();
+        map.insert("latency".to_string(), "0".to_string());
+        map.insert("loss".to_string(), "0".to_string());
+
+        assert!(ch.set_params(map).is_ok());
+
+        // Now exercise send/should_send by sending a packet with the correct MAC
+        let mut packet = [0u8; 1500];
+        // destination mac = our mac
+        packet[0..6].copy_from_slice(&mac.bytes());
+        // payload small
+        packet[6] = 0x42;
+
+        let res = ch.send(packet, 7).await;
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn error_message_serialize() {
+        let em = ErrorMessage {
+            code: 404,
+            message: "not found".to_string(),
+        };
+
+        let v = serde_json::to_value(&em).expect("serialize");
+        assert_eq!(v["code"].as_i64().unwrap(), 404);
+        assert_eq!(v["message"].as_str().unwrap(), "not found");
+    }
 }

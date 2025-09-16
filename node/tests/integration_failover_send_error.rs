@@ -3,9 +3,9 @@ use node_lib::test_helpers::util::{mk_device_from_fd, poll_until, repeat_async_s
 use node_lib::test_helpers::util::{mk_hub_with_checks_mocked_time, mk_shim_pairs};
 use obu_lib::Obu;
 use rsu_lib::Rsu;
-mod common;
-use common::{mk_obu_args, mk_rsu_args};
 use std::sync::{atomic::AtomicBool, Arc};
+
+mod common;
 
 /// Integration test: build RSU, OBU1, OBU2 connected by a hub. OBU2 should
 /// prefer OBU1 as upstream (two-hop) given the delay matrix. Then close OBU1's
@@ -52,9 +52,9 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Resul
     let dev_obu2 = mk_device_from_fd(mac_obu2, node_fds[2]);
 
     // Build Args using the shared helper.
-    let args_rsu = mk_rsu_args(50);
-    let args_obu1 = mk_obu_args();
-    let args_obu2 = mk_obu_args();
+    let args_rsu = common::mk_rsu_args(50);
+    let args_obu1 = common::mk_obu_args();
+    let args_obu2 = common::mk_obu_args();
 
     // Construct nodes
     let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu))?;

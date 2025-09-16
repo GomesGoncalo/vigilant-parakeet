@@ -1,5 +1,5 @@
 [package]
-name = "node_lib"
+name = "rsu_lib"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -11,7 +11,7 @@ anyhow = "*"
 socket2 = {version = "*", features = ["all"]}
 uninit = "*"
 libc = "*"
-nix = {version = "*", features = ["socket", "net", "ioctl"]}
+nix = {version = "0.29", features = ["socket", "net", "ioctl"]}
 tracing = "*"
 clap = { version = "*", features = ["derive"] }
 futures = "*"
@@ -21,17 +21,16 @@ tokio-timerfd = "*"
 itertools = "*"
 serde = { version = "*", features = ["derive"]}
 common = { path = "../common/" }
+node_lib = { path = "../node_lib/" }
 arc-swap = { version = "*" }
 tracing-subscriber = { version = "*", features = ["env-filter"] }
 aes-gcm = { version = "0.10", features = ["aes"] }
 
 [features]
-stats = [ "common/stats" ]
-test_helpers = [ "common/test_helpers" ]
+stats = [ "common/stats", "node_lib/stats" ]
+test_helpers = [ "common/test_helpers", "node_lib/test_helpers" ]
 
 [dev-dependencies]
 criterion = "0.5"
 common = { path = "../common/" }
 proptest = "1.0"
-obu_lib = { path = "../obu_lib/" }
-rsu_lib = { path = "../rsu_lib/" }

@@ -18,5 +18,4 @@ else
   exit 1
 fi
 
-# Run simulator (sudo required for netns)
-sudo RUST_LOG="node=debug" "$ROOT_DIR/target/release/simulator" --config-file "$CONFIG" --pretty
+sudo RUST_LOG="obu_lib=debug,rsu_lib=debug" "$ROOT_DIR/target/release/simulator" --config-file "$CONFIG" --pretty

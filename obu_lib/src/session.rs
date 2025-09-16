@@ -1,7 +1,7 @@
-use crate::control::node::ReplyType;
 use anyhow::Result;
 use common::tun::Tun;
 use futures::Future;
+use node_lib::control::node::ReplyType;
 use std::sync::Arc;
 
 #[allow(dead_code)]
@@ -19,10 +19,12 @@ pub enum Session {
 }
 
 impl Session {
+    #[allow(dead_code)]
     pub fn new(tun: Arc<Tun>) -> Self {
         Self::NoSession(tun)
     }
 
+    #[allow(dead_code)]
     pub async fn process<Fut>(
         &self,
         callable: impl FnOnce([u8; 1500], usize) -> Fut,
@@ -42,5 +44,32 @@ impl Session {
                 todo!()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn nosession_process_reads_from_tun() {
+        let (a, b) = node_lib::test_helpers::util::mk_shim_pair();
+        let tun = Arc::new(a);
+
+        // spawn a task to send a packet from the peer
+        let handle = tokio::spawn(async move {
+            let _ = b.send_all(b"hello").await;
+        });
+
+        let s = Session::new(tun.clone());
+        let res = s
+            .process(|_buf, _n| async { Ok(Some(vec![])) })
+            .await
+            .expect("process ok");
+
+        // callable returned Some(vec![]) so result should be Some
+        assert!(res.is_some());
+        handle.await.expect("peer task");
     }
 }
