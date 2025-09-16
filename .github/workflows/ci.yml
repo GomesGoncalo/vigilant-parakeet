@@ -73,7 +73,7 @@ jobs:
           mkdir -p ./target/tarpaulin
           # Single tarpaulin run over library crates with helpers enabled; ignore doctests and only run unit/integration tests
           cargo tarpaulin \
-            -p common -p node_lib -p obu_lib -p rsu_lib \
+            -p common -p node_lib -p obu_lib -p rsu_lib -p server_lib \
             --features test_helpers \
             --out Lcov \
             --timeout 120 \
@@ -89,6 +89,17 @@ jobs:
           if [ "$TOTAL_LF" -gt 0 ]; then PCT=$(awk "BEGIN { printf \"%.1f\", ($TOTAL_LH/$TOTAL_LF)*100 }"); fi
           echo "pct=$PCT" >> $GITHUB_OUTPUT
         timeout-minutes: 30
+      
+      - name: Check coverage threshold
+        run: |
+          COVERAGE="${{ steps.covrun.outputs.pct }}"
+          THRESHOLD=80.0
+          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+            echo "❌ Coverage $COVERAGE% is below threshold $THRESHOLD%"
+            exit 1
+          else
+            echo "✅ Coverage $COVERAGE% meets threshold $THRESHOLD%"
+          fi
       - name: Generate coverage JSON for Shields.io
         run: |
           mkdir -p public/badges
