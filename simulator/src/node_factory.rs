@@ -128,9 +128,7 @@ pub fn create_node_from_settings(
                 tap_name: tap_name.clone(),
                 ip,
                 mtu,
-                server_params: server_lib::ServerParameters {
-                    bind_port,
-                },
+                server_params: server_lib::ServerParameters { bind_port },
             };
 
             Node::Server(server_lib::create_with_vdev(

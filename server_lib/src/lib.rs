@@ -79,8 +79,8 @@ pub fn create(_args: ServerArgs) -> Result<Arc<dyn Node>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use mac_address::MacAddress;
+    use std::sync::Arc;
 
     #[test]
     fn create_stub_returns_error_under_test_helpers() {
@@ -100,55 +100,51 @@ mod tests {
     async fn server_creation_succeeds() {
         let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
         let tun = Arc::new(tun_a);
-        
+
         // Create socketpair for device
-        let (node_fds, _hub_fds) = node_lib::test_helpers::util::mk_socketpairs(1)
-            .expect("Failed to create socketpair");
+        let (node_fds, _hub_fds) =
+            node_lib::test_helpers::util::mk_socketpairs(1).expect("Failed to create socketpair");
         let device = Arc::new(node_lib::test_helpers::util::mk_device_from_fd(
             MacAddress::new([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]),
-            node_fds[0]
+            node_fds[0],
         ));
-        
+
         let args = ServerArgs {
             bind: "test".to_string(),
             tap_name: Some("test".to_string()),
             ip: Some("127.0.0.1".parse().unwrap()),
             mtu: 1500,
-            server_params: ServerParameters {
-                bind_port: 8080,
-            },
+            server_params: ServerParameters { bind_port: 8080 },
         };
 
         let server = Server::new(args, tun, device);
         assert!(server.is_ok());
     }
 
-    #[tokio::test] 
+    #[tokio::test]
     async fn server_creation_without_ip() {
         let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
         let tun = Arc::new(tun_a);
-        
+
         // Create socketpair for device
-        let (node_fds, _hub_fds) = node_lib::test_helpers::util::mk_socketpairs(1)
-            .expect("Failed to create socketpair");
+        let (node_fds, _hub_fds) =
+            node_lib::test_helpers::util::mk_socketpairs(1).expect("Failed to create socketpair");
         let device = Arc::new(node_lib::test_helpers::util::mk_device_from_fd(
             MacAddress::new([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]),
-            node_fds[0]
+            node_fds[0],
         ));
-        
+
         let args = ServerArgs {
             bind: "test".to_string(),
             tap_name: Some("test".to_string()),
             ip: None, // No IP provided
             mtu: 1500,
-            server_params: ServerParameters {
-                bind_port: 8080,
-            },
+            server_params: ServerParameters { bind_port: 8080 },
         };
 
         let server = Server::new(args, tun, device);
         assert!(server.is_ok());
-        
+
         // Can't test start() because it would bind to a real socket
         // and we're in a test environment
     }
