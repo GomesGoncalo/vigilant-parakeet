@@ -1,14 +1,15 @@
 # node crate — architecture
 
-Purpose: binary for running one node (instantiates NodeLib components and starts I/O tasks).
+Purpose: binary for running one node. Exposes subcommands and delegates to `obu_lib` or `rsu_lib`.
 
 ```mermaid
 flowchart LR
-  NodeBinary["node (binary)"] --> NodeLib["node_lib::Node (control + data)"]
-  NodeBinary --> Common["common::Tun/Device"]
-  NodeLib -->|uses| Common
+  NodeBinary["node (binary)"] -->|subcommand| ObuLib["obu_lib::Obu"]
+  NodeBinary -->|subcommand| RsuLib["rsu_lib::Rsu"]
+  ObuLib --> Common["common::Tun/Device"]
+  RsuLib --> Common
 ```
 
 Notes:
-- This crate wires together `node_lib` and `common` and handles command-line args specific to running a node.
+- This crate provides a CLI with `node obu` and `node rsu` subcommands and initializes the respective node via `*_lib::create`.
 - Useful for debugging per-node behavior in isolation.

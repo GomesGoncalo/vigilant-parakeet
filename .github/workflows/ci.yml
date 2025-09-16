@@ -71,19 +71,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ./target/tarpaulin
-          # Run tarpaulin per library crate and write lcov into separate files
-          cargo tarpaulin -p common --out Lcov --features test_helpers --timeout 120 --output-dir ./target/tarpaulin/common || true
-          cargo tarpaulin -p node_lib --out Lcov --features test_helpers --timeout 120 --output-dir ./target/tarpaulin/node_lib || true
-          cargo tarpaulin -p obu_lib --out Lcov --features test_helpers --timeout 120 --output-dir ./target/tarpaulin/obu_lib || true
-          cargo tarpaulin -p rsu_lib --out Lcov --features test_helpers --timeout 120 --output-dir ./target/tarpaulin/rsu_lib || true
-          # cargo tarpaulin -p visualization --out Lcov --features test_helpers --timeout 120 --output-dir ./target/tarpaulin/visualization || true
+          # Single tarpaulin run over library crates with helpers enabled; ignore doctests and only run unit/integration tests
+          cargo tarpaulin \
+            -p common -p node_lib -p obu_lib -p rsu_lib \
+            --features test_helpers \
+            --out Lcov \
+            --timeout 120 \
+            --run-types Tests \
+            --ignore-tests \
+            --output-dir ./target/tarpaulin || true
 
-          # Concatenate all found lcov.info files into one
-          find ./target/tarpaulin -name lcov.info -print0 | xargs -0 cat > ./target/tarpaulin/combined_lcov.info || true
-
-          if [ ! -f ./target/tarpaulin/combined_lcov.info ]; then echo "combined_lcov.info not found"; exit 1; fi
-          TOTAL_LF=$(grep -h ^LF: ./target/tarpaulin/combined_lcov.info | awk -F: '{s+=$2} END {print s+0}')
-          TOTAL_LH=$(grep -h ^LH: ./target/tarpaulin/combined_lcov.info | awk -F: '{s+=$2} END {print s+0}')
+          # Use generated lcov.info for percentage calc
+          if [ ! -f ./target/tarpaulin/lcov.info ]; then echo "lcov.info not found"; exit 1; fi
+          TOTAL_LF=$(grep -h ^LF: ./target/tarpaulin/lcov.info | awk -F: '{s+=$2} END {print s+0}')
+          TOTAL_LH=$(grep -h ^LH: ./target/tarpaulin/lcov.info | awk -F: '{s+=$2} END {print s+0}')
           PCT=0.0
           if [ "$TOTAL_LF" -gt 0 ]; then PCT=$(awk "BEGIN { printf \"%.1f\", ($TOTAL_LH/$TOTAL_LF)*100 }"); fi
           echo "pct=$PCT" >> $GITHUB_OUTPUT

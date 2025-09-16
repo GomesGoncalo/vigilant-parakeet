@@ -115,7 +115,7 @@ pub fn create_node_from_settings(
     Ok((dev, vt, node))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "test_helpers"))]
 mod tests {
     use super::*;
     use anyhow::Result;

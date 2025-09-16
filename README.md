@@ -48,10 +48,11 @@ namespaces) and the `visualization` UI (browser-based dashboard).
 ## Project structure
 
 - `common/` — shared data types and utilities used across crates.
-- `node_lib/` — core library implementing node behaviour (routing, control).
-- `node/` — binary crate that runs a single node (for real hardware or testing).
-- `simulator/` — binary crate that orchestrates multiple nodes in network
-  namespaces and exposes an HTTP control API.
+- `node_lib/` — shared building blocks (messages, crypto, metrics, routing utils).
+- `obu_lib/` — OBU node implementation and CLI args.
+- `rsu_lib/` — RSU node implementation and CLI args.
+- `node/` — binary crate exposing subcommands `node obu` and `node rsu`.
+- `simulator/` — orchestrates multiple nodes in network namespaces and exposes an HTTP control API.
 - `visualization/` — front-end app to inspect network topology and live stats.
 
 See top-level `Cargo.toml` for the workspace and crate manifests.
@@ -83,7 +84,7 @@ cargo build --workspace --release
 Build the simulator with the optional webview feature (enables UI integration):
 
 ```sh
-cargo build --bin simulator --release --features simulator/webview
+cargo build -p simulator --release --features webview
 ```
 
 Build the node binary only:
@@ -269,7 +270,7 @@ Run the full test suite from the repository root to verify the workspace:
 cargo test --workspace
 ```
 
-Run tests for the `node_lib` crate only (useful when iterating on routing):
+Run tests for the `node_lib` crate only (useful when iterating on routing/utils shared logic):
 
 ```sh
 cargo test -p node_lib
