@@ -78,3 +78,26 @@ pub fn create(_args: RsuArgs) -> Result<Arc<dyn Node>> {
         "rsu_lib::create is disabled when test_helpers is enabled; use create_with_vdev in tests"
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_stub_returns_error_under_test_helpers() {
+        let args = RsuArgs {
+            bind: String::new(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            rsu_params: RsuParameters {
+                hello_history: 1,
+                hello_periodicity: 5000,
+                cached_candidates: 1,
+                enable_encryption: false,
+            },
+        };
+        let res = create(args);
+        assert!(res.is_err());
+    }
+}

@@ -78,3 +78,26 @@ pub fn create(_args: ObuArgs) -> Result<Arc<dyn Node>> {
         "obu_lib::create is disabled when test_helpers is enabled; use create_with_vdev in tests"
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_stub_returns_error_under_test_helpers() {
+        // When compiled under test_helpers, the create() stub should return Err.
+        let args = ObuArgs {
+            bind: String::new(),
+            tap_name: None,
+            ip: None,
+            mtu: 1500,
+            obu_params: ObuParameters {
+                hello_history: 1,
+                cached_candidates: 1,
+                enable_encryption: false,
+            },
+        };
+        let res = create(args);
+        assert!(res.is_err());
+    }
+}

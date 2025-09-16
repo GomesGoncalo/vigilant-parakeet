@@ -88,3 +88,23 @@ mod tests {
         );
     }
 }
+
+// Add a small test when stats feature is NOT enabled to exercise the
+// no-op implementations used during coverage runs.
+#[cfg(test)]
+#[cfg(not(feature = "stats"))]
+mod tests_no_stats {
+    use super::*;
+
+    #[test]
+    fn counters_return_zero_when_no_stats() {
+        // Ensure the no-op wrappers return zero and do not panic when called.
+        inc_loop_detected();
+        inc_cache_select();
+        inc_cache_clear();
+
+        assert_eq!(loop_detected_count(), 0);
+        assert_eq!(cache_select_count(), 0);
+        assert_eq!(cache_clear_count(), 0);
+    }
+}
