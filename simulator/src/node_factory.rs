@@ -65,76 +65,80 @@ pub fn create_node_from_settings(
     let dev = Arc::new(Device::new(node_tun.name())?);
 
     let vt = virtual_tun.clone();
-    let node = if node_type == node_lib::args::NodeType::Obu {
-        let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
-        // Build ObuArgs directly
-        let obu_args = obu_lib::ObuArgs {
-            bind: bind.clone(),
-            tap_name: tap_name.clone(),
-            ip,
-            mtu,
-            obu_params: obu_lib::ObuParameters {
-                hello_history,
-                cached_candidates,
-                enable_encryption,
-            },
-        };
+    let node = match node_type {
+        node_lib::args::NodeType::Obu => {
+            let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
+            // Build ObuArgs directly
+            let obu_args = obu_lib::ObuArgs {
+                bind: bind.clone(),
+                tap_name: tap_name.clone(),
+                ip,
+                mtu,
+                obu_params: obu_lib::ObuParameters {
+                    hello_history,
+                    cached_candidates,
+                    enable_encryption,
+                },
+            };
 
-        Node::Obu(obu_lib::create_with_vdev(
-            obu_args,
-            virtual_tun.clone(),
-            dev.clone(),
-        )?)
-    } else if node_type == node_lib::args::NodeType::Rsu {
-        let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
-        // Build RsuArgs directly
-        let rsu_args = rsu_lib::RsuArgs {
-            bind: bind.clone(),
-            tap_name: tap_name.clone(),
-            ip,
-            mtu,
-            rsu_params: rsu_lib::RsuParameters {
-                hello_history,
-                hello_periodicity: settings
-                    .get_int("hello_periodicity")
-                    .map(|x| u32::try_from(x).ok())
-                    .ok()
-                    .flatten()
-                    .ok_or_else(|| anyhow::anyhow!("hello_periodicity is required"))?,
-                cached_candidates,
-                enable_encryption,
-            },
-        };
+            Node::Obu(obu_lib::create_with_vdev(
+                obu_args,
+                virtual_tun.clone(),
+                dev.clone(),
+            )?)
+        }
+        node_lib::args::NodeType::Rsu => {
+            let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
+            // Build RsuArgs directly
+            let rsu_args = rsu_lib::RsuArgs {
+                bind: bind.clone(),
+                tap_name: tap_name.clone(),
+                ip,
+                mtu,
+                rsu_params: rsu_lib::RsuParameters {
+                    hello_history,
+                    hello_periodicity: settings
+                        .get_int("hello_periodicity")
+                        .map(|x| u32::try_from(x).ok())
+                        .ok()
+                        .flatten()
+                        .ok_or_else(|| anyhow::anyhow!("hello_periodicity is required"))?,
+                    cached_candidates,
+                    enable_encryption,
+                },
+            };
 
-        Node::Rsu(rsu_lib::create_with_vdev(
-            rsu_args,
-            virtual_tun.clone(),
-            dev.clone(),
-        )?)
-    } else {
-        // Build ServerArgs directly
-        let bind_port = settings
-            .get_int("bind_port")
-            .map(|x| u16::try_from(x).ok())
-            .ok()
-            .flatten()
-            .unwrap_or(8080);
+            Node::Rsu(rsu_lib::create_with_vdev(
+                rsu_args,
+                virtual_tun.clone(),
+                dev.clone(),
+            )?)
+        }
+        node_lib::args::NodeType::Server => {
+            // Build ServerArgs directly
+            let bind_port = settings
+                .get_int("bind_port")
+                .map(|x| u16::try_from(x).ok())
+                .ok()
+                .flatten()
+                .unwrap_or(8080);
 
-        let server_args = server_lib::ServerArgs {
-            bind: bind.clone(),
-            tap_name: tap_name.clone(),
-            ip,
-            mtu,
-            server_params: server_lib::ServerParameters {
-                bind_port,
-            },
-        };
+            let server_args = server_lib::ServerArgs {
+                bind: bind.clone(),
+                tap_name: tap_name.clone(),
+                ip,
+                mtu,
+                server_params: server_lib::ServerParameters {
+                    bind_port,
+                },
+            };
 
-        Node::Server(server_lib::create_with_vdev(
-            server_args,
-            virtual_tun.clone(),
-            dev.clone(),
-        )?)
+            Node::Server(server_lib::create_with_vdev(
+                server_args,
+                virtual_tun.clone(),
+                dev.clone(),
+            )?)
+        }
     };
 
     Ok((dev, vt, node))
