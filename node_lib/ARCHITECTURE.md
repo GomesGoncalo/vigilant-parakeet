@@ -1,37 +1,41 @@
 # node_lib crate — architecture (detailed)
 
-Purpose: core node logic shared by node binaries and the simulator. It implements both the
-control-plane (heartbeat-based topology discovery and routing) and the data-plane (upstream/
-downstream packet handling) plus the wire message encoders/decoders.
+Purpose: shared building blocks used by the concrete node crates (`obu_lib` and `rsu_lib`) and the simulator.
+This crate focuses on cross-cutting logic and types: message formats, crypto helpers, metrics, and
+routing utilities used by both OBU and RSU control planes. The concrete node state machines now live
+in `obu_lib` and `rsu_lib` after the "separate node impl" refactor.
 
 High-level module map
 
 ```mermaid
 flowchart TB
   subgraph node_lib
-    CL["control:: (obu/, rsu/)"]
-    DA["data:: (obu.rs, rsu.rs)"]
     MS["messages:: (packet types, encode/decode)"]
-    RT["control::route::Route (simple Route type)"]
+    CR["crypto:: (helpers)"]
+    MET["metrics:: (feature-gated counters)"]
+    CU["control:: (routing_utils, route, client_cache)"]
   end
 
-  CL --> MS
-  CL --> DA
-  CL --> RT
-  CL -->|depends| Common["common (device, tun)"]
+  CU --> MS
+  CU --> MET
+  CR --> MS
+  CU -->|depends| Common["common (device, tun)"]
+  ObuLib["obu_lib (OBU impl)"] --> CU
+  RsuLib["rsu_lib (RSU impl)"] --> CU
 ```
 
 Responsibilities
-- `control/`
-  - Submodules: `obu/`, `rsu/`, routing implementations and session handling.
-  - Maintains routing state derived from Heartbeat messages and HeartbeatReply observations.
-  - Makes forwarding decisions for Control and Data packets.
-- `data/`
-  - Upstream/Downstream parsing and helpers to build Data messages.
 - `messages/`
   - Wire-level encoders/decoders: `Heartbeat`, `HeartbeatReply`, `Data` wrappers and `Message` container.
+- `crypto/`
+  - Helpers for optional payload encryption.
+- `metrics/`
+  - Feature-gated counters exposed to dependents.
+- `control/`
+  - Shared routing utilities and types: `route`, `routing_utils`, `client_cache`.
+  - Note: concrete OBU/RSU control loops moved to `obu_lib::control` and `rsu_lib::control`.
 
-Routing data structures (conceptual)
+Routing data structures (conceptual, as used by OBU/RSU crates built on top)
 - `routes: HashMap<MacAddress, IndexMap<u32, (Duration, MacAddress, u32, IndexMap<Duration, MacAddress>, HashMap<MacAddress, Vec<Target>>)>>`
   - Top-level key: RSU MAC (source of heartbeats we're tracking).
   - Within each `IndexMap` keyed by heartbeat sequence id: stores a tuple with
@@ -40,14 +44,9 @@ Routing data structures (conceptual)
     - `hops` — advertised hops in that heartbeat
     - per-hop latency map and `downstream` observations (HashMap of observed targets -> Vec<Target>)
 
-Key operations
+Key operations (live in `obu_lib` / `rsu_lib`, using `node_lib` types)
 - handle_heartbeat(pkt)
-  - Insert heartbeat observations: both for message.source() (the original sender) and for pkt.from() (the immediate neighbor).
-  - May generate a forward and a reply wire packet.
 - handle_heartbeat_reply(pkt)
-  - Locate the recorded heartbeat entry by `message.source()` and `message.id()`.
-  - Record downstream observations (who claimed to be the original sender and which MAC carried the reply).
-  - Decide whether to forward the HeartbeatReply toward `next_upstream` (the recorded next hop) or not.
 
 Heartbeat/Reply sequence (mermaid sequence)
 
@@ -134,10 +133,10 @@ Additional important operational details
   - `get_route_to(Some(mac))` is intended to be a pure read-only selection: it should not mutate global state. However, `get_route_to(Some(mac))` previously used `cached_upstream` heuristics in the same call path and could store into `cached_upstream`. This is surprising when callers hold read locks and can cause unexpected cross-thread cache mutations.
   - Recommended contract: treat `get_route_to(Some(_))` as pure and add an explicit `select_and_cache_upstream()` write-path that callers invoke when they intend to update the cached upstream. This avoids hidden writes under read locks and keeps the interface predictable.
 
-Updated API contract (implemented)
-- `get_route_to(Some(mac))` is now pure: it computes the best route to `mac` and does not mutate `Routing` internal state.
-- `select_and_cache_upstream(mac: MacAddress) -> Option<Route>` is provided as the explicit write API: it selects the best route for `mac` and stores the chosen upstream into `cached_upstream`.
-- `get_route_to(None)` continues to return the currently cached upstream route, if any.
+Updated API contract (implemented in the OBU routing layer)
+- `get_route_to(Some(mac))` is pure selection: computes best route to `mac` without mutating cached state.
+- `select_and_cache_upstream(mac: MacAddress) -> Option<Route>` is the explicit write API in the OBU control layer, which uses `node_lib::control` utilities to select and then cache.
+- `get_route_to(None)` returns the currently cached upstream route, if any.
 
 Callers: prefer `get_route_to(Some(_))` when only a read is needed. Call `select_and_cache_upstream()` when you want to remember the selected upstream for future `get_route_to(None)` calls (for example, fast upstream sends from a TAP).
 
@@ -146,7 +145,7 @@ Callers: prefer `get_route_to(Some(_))` when only a read is needed. Call `select
   - Avoid calling functions that mutate internal cache fields while holding a `read()` lock. If a read-path must update a cache, document it clearly and prefer internal lock promotion or explicit write-call APIs.
 
 - Feature flags & metrics
-  - `node_lib` defines a `stats` feature in `Cargo.toml` (this enables `common/stats`). When `stats` is enabled the crate exposes lightweight atomic counters in `node_lib::metrics`.
+  - `node_lib` defines a `stats` feature in `Cargo.toml` (this enables `common/stats`). When `stats` is enabled the crate exposes lightweight atomic counters in `node_lib::metrics` consumed by both `obu_lib` and `rsu_lib`.
   - Current counters: `inc_loop_detected()` and `loop_detected_count()`; consider adding `inc_skip_forward()` and `inc_forward()` for more observability.
   - To build with metrics enabled: `cargo build -p node_lib --features stats` (or enable the feature when building dependent crates).
 
@@ -216,13 +215,13 @@ The OBU routing logic now stores a small ordered list of N-best upstream candida
 
 Key points:
 
-- Config: `NodeParameters.cached_candidates` (type: integer) controls the number of candidates cached; default is `3`.
+- Config: `ObuParameters.cached_candidates` (type: integer) controls the number of candidates cached; default is `3`.
 - Selection vs. Caching:
   - `get_route_to(Some(target_mac))` computes the best route but must not mutate cached state.
   - `select_and_cache_upstream(target_mac)` is the write-api: it selects the primary route and also computes a top-N candidate list (ranked by latency and hop-count) and stores it in `Routing` state.
-- Failover API:
-  - `Routing::get_cached_candidates()` exposes the current candidate list for diagnostics.
-  - `Routing::failover_cached_upstream()` rotates/promotes the next candidate and returns the newly promoted next hop (or `None`). This method is intended to be called by higher-level OBU/session code when an upstream send or session error occurs.
+- Failover API (in OBU control layer):
+  - `get_cached_candidates()` exposes the current candidate list for diagnostics.
+  - `failover_cached_upstream()` rotates/promotes the next candidate and returns the newly promoted next hop (or `None`). Call from session code on send failures.
 - Hysteresis: the implementation intentionally avoids silently replacing the primary cached upstream when recomputing candidates so that existing hysteresis behavior remains intact (to avoid flapping between equivalent routes).
 
-See `node_lib/src/control/obu/routing.rs` for the implementation and tests that demonstrate selection, candidate population, and the failover rotation behavior.
+See `obu_lib/src/control/routing.rs` for the implementation and tests that demonstrate selection, candidate population, and the failover rotation behavior.
