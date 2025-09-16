@@ -15,6 +15,7 @@ use netns_rs::NetNs;
 use obu_lib::Node as ObuNode;
 use rand::Rng;
 use rsu_lib::Node as RsuNode;
+use server_lib::Node as ServerNode;
 use std::collections::VecDeque;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -283,6 +284,8 @@ pub enum Node {
     Obu(Arc<dyn ObuNode>),
     #[allow(dead_code)]
     Rsu(Arc<dyn RsuNode>),
+    #[allow(dead_code)]
+    Server(Arc<dyn ServerNode>),
 }
 
 impl Node {
@@ -291,6 +294,7 @@ impl Node {
         match self {
             Node::Obu(o) => o.as_any(),
             Node::Rsu(r) => r.as_any(),
+            Node::Server(s) => s.as_any(),
         }
     }
 }

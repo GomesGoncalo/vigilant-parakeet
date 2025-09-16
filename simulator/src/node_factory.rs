@@ -27,7 +27,6 @@ pub fn create_node_from_settings(
     let tap_name = Some("virtual".to_string());
     let ip = Some(Ipv4Addr::from_str(&settings.get_string("ip")?)?);
     let mtu = 1436;
-    let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
     let enable_encryption = settings.get_bool("enable_encryption").unwrap_or(false);
 
     #[cfg(not(feature = "test_helpers"))]
@@ -67,6 +66,7 @@ pub fn create_node_from_settings(
 
     let vt = virtual_tun.clone();
     let node = if node_type == node_lib::args::NodeType::Obu {
+        let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
         // Build ObuArgs directly
         let obu_args = obu_lib::ObuArgs {
             bind: bind.clone(),
@@ -85,7 +85,8 @@ pub fn create_node_from_settings(
             virtual_tun.clone(),
             dev.clone(),
         )?)
-    } else {
+    } else if node_type == node_lib::args::NodeType::Rsu {
+        let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
         // Build RsuArgs directly
         let rsu_args = rsu_lib::RsuArgs {
             bind: bind.clone(),
@@ -107,6 +108,30 @@ pub fn create_node_from_settings(
 
         Node::Rsu(rsu_lib::create_with_vdev(
             rsu_args,
+            virtual_tun.clone(),
+            dev.clone(),
+        )?)
+    } else {
+        // Build ServerArgs directly
+        let bind_port = settings
+            .get_int("bind_port")
+            .map(|x| u16::try_from(x).ok())
+            .ok()
+            .flatten()
+            .unwrap_or(8080);
+
+        let server_args = server_lib::ServerArgs {
+            bind: bind.clone(),
+            tap_name: tap_name.clone(),
+            ip,
+            mtu,
+            server_params: server_lib::ServerParameters {
+                bind_port,
+            },
+        };
+
+        Node::Server(server_lib::create_with_vdev(
+            server_args,
             virtual_tun.clone(),
             dev.clone(),
         )?)
@@ -158,6 +183,43 @@ mod tests {
 
         let (_dev, _vt, _node) =
             create_node_from_settings(node_lib::args::NodeType::Rsu, &settings, node_tun)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_node_server_from_settings() -> Result<()> {
+        // build a minimal config for a Server
+        let toml = r#"
+            ip = '10.0.0.3'
+            bind_port = 9090
+        "#;
+        let settings = Config::builder()
+            .add_source(config::File::from_str(toml, FileFormat::Toml))
+            .build()?;
+
+        let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+        let node_tun = Arc::new(tun_a);
+
+        let (_dev, _vt, _node) =
+            create_node_from_settings(node_lib::args::NodeType::Server, &settings, node_tun)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_node_server_from_settings_default_port() -> Result<()> {
+        // build a minimal config for a Server without bind_port (should default to 8080)
+        let toml = r#"
+            ip = '10.0.0.4'
+        "#;
+        let settings = Config::builder()
+            .add_source(config::File::from_str(toml, FileFormat::Toml))
+            .build()?;
+
+        let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+        let node_tun = Arc::new(tun_a);
+
+        let (_dev, _vt, _node) =
+            create_node_from_settings(node_lib::args::NodeType::Server, &settings, node_tun)?;
         Ok(())
     }
 }
