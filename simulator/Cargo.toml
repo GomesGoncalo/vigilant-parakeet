@@ -25,10 +25,11 @@ serde = { version = "*", features = ["derive"]}
 common = { path = "../common/" }
 obu_lib = { path = "../obu_lib/" }
 rsu_lib = { path = "../rsu_lib/" }
+server_lib = { path = "../server_lib/" }
 
 [features]
 webview = [ "dep:warp", "node_lib/stats" ]
-test_helpers = [ "common/test_helpers", "node_lib/test_helpers", "obu_lib/test_helpers", "rsu_lib/test_helpers" ]
+test_helpers = [ "common/test_helpers", "node_lib/test_helpers", "obu_lib/test_helpers", "rsu_lib/test_helpers", "server_lib/test_helpers" ]
 
 [dev-dependencies]
 serde_json = "*"
