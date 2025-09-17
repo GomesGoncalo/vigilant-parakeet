@@ -2,3 +2,4 @@
 *.yaml
 /visualization/dist
 Cargo.lock
+lcov.info

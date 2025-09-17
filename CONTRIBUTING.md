@@ -87,6 +87,52 @@ Note: `simulator` is excluded from tarpaulin because it requires network namespa
 - CI will run build, tests, clippy, fmt checks and generate coverage badges.
 - Ensure all checks pass before requesting a review.
 
+## Developer helper scripts
+
+This repository includes a set of small helper scripts in the `scripts/` directory to speed up common developer and CI tasks. They are optional but recommended for consistent local workflow and CI parity.
+
+Available scripts and purpose:
+
+- `scripts/build-all.sh` — Build the whole workspace or a single package. Supports `--package`, `--features` and `--release`.
+- `scripts/test-all.sh` — Run tests for the workspace or a specific package. Supports `--package`, `--features` and `--filter`.
+- `scripts/lint-and-fmt.sh` — Run formatting check or apply formatting and run clippy. Use `--fix` to apply `cargo fmt` and `--no-clippy` to skip clippy.
+- `scripts/coverage.sh` — Wrapper around `cargo-tarpaulin` to produce coverage artifacts for selected packages. Supports `--out`, `--packages` and `--timeout`.
+- `scripts/ci-check.sh` — CI wrapper used by pipelines to run strict checks (fmt check, clippy -D warnings, release build, tests) and optionally coverage.
+
+Examples (copy-paste):
+
+Build release with features:
+```bash
+./scripts/build-all.sh --release --features "webview"
+```
+
+Run tests for `node_lib`:
+```bash
+./scripts/test-all.sh --package node_lib
+```
+
+Apply formatting and run clippy:
+```bash
+./scripts/lint-and-fmt.sh --fix
+```
+
+Run CI-like checks locally:
+```bash
+./scripts/ci-check.sh
+```
+
+Run CI checks excluding coverage (faster):
+```bash
+./scripts/ci-check.sh --no-coverage
+```
+
+Notes and best practices:
+
+- Scripts are thin wrappers around `cargo` and `cargo-tarpaulin` to keep local workflows consistent with CI. They are intentionally conservative (exit on first failure).
+- `coverage.sh` will install `cargo-tarpaulin` if not present. Tarpaulin runs can be slow; prefer running targeted crate tests during iterative development.
+- Simulator and certain integration scenarios still require `sudo` and Linux network namespace support; those are intentionally excluded from automatic coverage collection.
+
+
 ## Developing features and tests
 
 - Run `cargo test -p <crate>` during development for faster feedback.
