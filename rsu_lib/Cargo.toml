@@ -34,3 +34,15 @@ test_helpers = [ "common/test_helpers", "node_lib/test_helpers" ]
 criterion = "0.5"
 common = { path = "../common/" }
 proptest = "1.0"
+
+[[bench]]
+name = "get_route"
+harness = false
+
+[[bench]]
+name = "heartbeat_handle"
+harness = false
+
+[[bench]]
+name = "routing_scale"
+harness = false

@@ -3,18 +3,14 @@ use node_lib::messages::message::Message;
 use std::time::Duration;
 
 fn bench_message_parse(_c: &mut Criterion) {
-    // build a representative message buffer (heartbeat-like)
-    let pkt = vec![
-        vec![1u8; 6],
-        vec![2u8; 6],
-        vec![0x30, 0x30],
-        vec![0],
-        vec![0],
-        vec![4; 16],
-        vec![0; 4],
-        vec![1u8, 1u8, 1u8, 2u8],
-        vec![2u8; 6],
+    // Build a representative serialized message buffer: to(6) + from(6) + marker + payload
+    let pkt = [
+        vec![1u8; 6],     // to
+        vec![2u8; 6],     // from
+        vec![0x30, 0x30], // protocol marker
+        vec![0u8; 4],     // payload (minimal)
     ];
+
     let apkt: Vec<u8> = pkt.iter().flat_map(|x| x.iter()).cloned().collect();
 
     let mut short_cfg = Criterion::default()
@@ -29,5 +25,5 @@ fn bench_message_parse(_c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_message_parse);
-criterion_main!(benches);
+criterion_group!(message_parse_group, bench_message_parse);
+criterion_main!(message_parse_group);

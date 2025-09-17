@@ -81,5 +81,5 @@ fn bench_device_async_send(_c: &mut Criterion) {
     let _ = reader_handle.join();
 }
 
-criterion_group!(benches, bench_device_async_send);
-criterion_main!(benches);
+criterion_group!(device_send_recv_group, bench_device_async_send);
+criterion_main!(device_send_recv_group);

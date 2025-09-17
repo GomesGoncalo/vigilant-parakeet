@@ -84,12 +84,8 @@ PY
     addrs=${ns_map[$ns]}
     # convert comma-separated to JSON array
     IFS=',' read -r -a arr <<< "$addrs"
-    printf '{"ns":%s,"addrs":%s}' "$(printf '%s' "$ns" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')" "$(python3 - <<PY2
-import json,sys
-arr = [a for a in sys.stdin.read().split(',') if a]
-print(json.dumps(arr))
-PY2
-<<<"${addrs}")"
+    ADDR_JSON=$(./target/debug/scripts_tools nsaddrs <<<"${addrs}")
+    printf '{"ns":%s,"addrs":%s}' "$(printf '%s' "$ns" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')" "$ADDR_JSON"
   done
   printf ']\n'
 else

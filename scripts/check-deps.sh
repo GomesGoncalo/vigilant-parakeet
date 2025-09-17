@@ -4,7 +4,7 @@ set -euo pipefail
 # check-deps.sh - simple dependency checker for this repo's scripts
 # Checks for required and optional commands and prints a short report.
 
-REQUIRED=(ip iperf3 ss curl python3)
+REQUIRED=(ip iperf3 ss curl)
 OPTIONAL=(fzf)
 
 missing_req=()
@@ -29,7 +29,7 @@ if [ ${#missing_req[@]} -eq 0 ]; then
 else
   echo "Missing REQUIRED commands: ${missing_req[*]}"
   echo "Please install them. On Debian/Ubuntu:"
-  echo "  sudo apt update && sudo apt install -y iproute2 iperf3 curl python3 iproute2"
+  echo "  sudo apt update && sudo apt install -y iproute2 iperf3 curl iproute2"
   exit 2
 fi
 

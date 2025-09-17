@@ -61,32 +61,7 @@ while IFS=, read -r SRC DST TIME REPEAT; do
 
   # parse JSON for bits_per_second (try sum stream then end summary)
   BAND=0
-  if command -v python3 >/dev/null 2>&1; then
-    BAND=$(python3 - <<PYJSON
-import json,sys
-try:
-  j=json.load(open('${JSON_OUT}'))
-  # Try to find receiver sum (client side reports end.sum_received)
-  b=None
-  if 'end' in j and 'sum_received' in j['end'] and 'bits_per_second' in j['end']['sum_received']:
-    b=j['end']['sum_received']['bits_per_second']
-  elif 'end' in j and 'sum_sent' in j['end'] and 'bits_per_second' in j['end']['sum_sent']:
-    b=j['end']['sum_sent']['bits_per_second']
-  elif 'intervals' in j and len(j['intervals'])>0 and 'sum' in j['intervals'][-1] and 'bits_per_second' in j['intervals'][-1]['sum']:
-    b=j['intervals'][-1]['sum']['bits_per_second']
-  if b is None:
-    print('0')
-  else:
-    # convert to Mbits/s
-    print(round(b/1e6,3))
-except Exception as e:
-  print('0')
-PYJSON
-)
-  else
-    # fallback to old parsing if python3 unavailable
-    BAND=$(awk '/SUM|receiver|sender/ {b=$0} END{print b}' "$LOG" | awk '{print $(NF-1)" "$(NF)}' | sed 's/ //g' | sed 's/Mbits\/sec/ /g' | awk '{print $1}' )
-  fi
+  BAND=$(./target/debug/scripts_tools parseband "${JSON_OUT}" 2>/dev/null || echo 0)
   BAND=${BAND:-0}
 
     echo "$SRC,$DST,$TIME,$i,$BAND,$LOG" >>"$OUT_CSV"
@@ -104,65 +79,4 @@ echo "Results written to $OUT_CSV"
 # Also write JSON output for easier downstream parsing and a summary CSV
 JSON_OUT="/tmp/iperf_ns_batch_RESULTS.json"
 SUMMARY_CSV="/tmp/iperf_ns_batch_SUMMARY.csv"
-if command -v python3 >/dev/null 2>&1; then
-  python3 - <<PYCSVJSON
-import csv, json, statistics
-from collections import defaultdict
-rows=[]
-with open('$OUT_CSV','r') as f:
-  r=csv.DictReader(f)
-  for row in r:
-    # convert numeric fields
-    for k in ('time','repeat'):
-      if row.get(k) is not None and row[k] != '':
-        try:
-          row[k]=int(row[k])
-        except:
-          pass
-    if row.get('bandwidth_mbits') is not None and row['bandwidth_mbits'] != '':
-      try:
-        row['bandwidth_mbits']=float(row['bandwidth_mbits'])
-      except:
-        row['bandwidth_mbits']=0.0
-    else:
-      row['bandwidth_mbits']=0.0
-    rows.append(row)
-
-# build summaries grouped by (src,dst,time)
-groups=defaultdict(list)
-for r in rows:
-  key=(r['src'], r['dst'], r['time'])
-  groups[key].append(r['bandwidth_mbits'])
-
-summary=[]
-for (src,dst,time), vals in groups.items():
-  mean=statistics.mean(vals) if len(vals)>0 else 0.0
-  stddev=statistics.stdev(vals) if len(vals)>1 else 0.0
-  summary.append({
-    'src': src,
-    'dst': dst,
-    'time': time,
-    'samples': len(vals),
-    'mean_mbits': round(mean,3),
-    'stddev_mbits': round(stddev,3),
-    'min_mbits': round(min(vals),3) if vals else 0.0,
-    'max_mbits': round(max(vals),3) if vals else 0.0,
-  })
-
-# write JSON with runs and summary
-with open('$JSON_OUT','w') as jf:
-  json.dump({'runs': rows, 'summary': summary}, jf, indent=2)
-
-# write summary CSV
-with open('$SUMMARY_CSV','w',newline='') as sf:
-  w=csv.DictWriter(sf, fieldnames=['src','dst','time','samples','mean_mbits','stddev_mbits','min_mbits','max_mbits'])
-  w.writeheader()
-  for s in summary:
-    w.writerow(s)
-
-print('JSON results written to $JSON_OUT')
-print('Summary CSV written to $SUMMARY_CSV')
-PYCSVJSON
-else
-  echo "python3 not found; skipping JSON and summary output."
-fi
+./target/debug/scripts_tools buildsummary "$OUT_CSV" "$JSON_OUT" "$SUMMARY_CSV"
