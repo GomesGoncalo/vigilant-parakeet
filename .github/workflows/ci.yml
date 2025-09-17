@@ -7,6 +7,59 @@ on:
     branches: [ main ]
 
 jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure ShellCheck installed
+        run: |
+          set -euo pipefail
+          if command -v shellcheck >/dev/null 2>&1; then
+            echo "shellcheck already installed: $(shellcheck --version | head -n1)"
+          else
+            echo "shellcheck not found, installing via apt"
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+
+      - name: Run ShellCheck over shell scripts
+        run: |
+          set -euo pipefail
+          # collect all tracked shell scripts recursively, NUL-separated to be safe
+          files=$(git ls-files -- "*.sh" -z || true)
+          if [ -z "$files" ]; then
+            echo "No shell scripts found to lint"
+            exit 0
+          fi
+          echo "Running shellcheck on tracked .sh files"
+          # Use xargs -0 to handle arbitrary filenames
+          # run ShellCheck and also write checkstyle XML for reviewdog
+          printf '%s' "$files" | xargs -0 shellcheck -x --severity=error -f checkstyle > shellcheck-checkstyle.xml || true
+
+      - name: Install reviewdog
+        run: |
+          set -euo pipefail
+          if command -v reviewdog >/dev/null 2>&1; then
+            echo "reviewdog already installed"
+          else
+            # install via official release script
+            curl -sfL https://raw.githubusercontent.com/reviewdog/reviewdog/master/install.sh | sh -s -- -b /usr/local/bin v0.13.0
+          fi
+
+      - name: Post ShellCheck findings with reviewdog
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -f shellcheck-checkstyle.xml ]; then
+            echo "No ShellCheck report to post"
+            exit 0
+          fi
+          reviewdog -f=checkstyle -name="shellcheck" -reporter=github-pr-review -level=error < shellcheck-checkstyle.xml || true
+
   build-test:
     runs-on: ubuntu-latest
     steps:
