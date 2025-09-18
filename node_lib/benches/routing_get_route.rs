@@ -88,5 +88,9 @@ fn bench_rsu_get_route(_c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_obu_get_route, bench_rsu_get_route);
-criterion_main!(benches);
+criterion_group!(
+    routing_get_route_group,
+    bench_obu_get_route,
+    bench_rsu_get_route
+);
+criterion_main!(routing_get_route_group);

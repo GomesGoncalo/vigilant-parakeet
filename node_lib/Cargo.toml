@@ -35,3 +35,15 @@ common = { path = "../common/" }
 proptest = "1.0"
 obu_lib = { path = "../obu_lib/" }
 rsu_lib = { path = "../rsu_lib/" }
+
+[[bench]]
+name = "message_parse"
+harness = false
+
+[[bench]]
+name = "serialize_message"
+harness = false
+
+[[bench]]
+name = "routing_get_route"
+harness = false

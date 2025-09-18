@@ -31,3 +31,8 @@ node_lib = { path = "../node_lib" }
 [[bench]]
 name = "device_send_recv"
 harness = false
+
+[[bench]]
+name = "stats_ops"
+harness = false
+required-features = ["stats"]

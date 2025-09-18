@@ -14,33 +14,30 @@ if ! command -v curl >/dev/null 2>&1; then
   echo "curl is required" >&2; exit 1
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 is required" >&2; exit 1
-fi
-
 JSON=$(curl -sSf "$API_URL")
 
-# Write JSON to a temp file and run a small Python script to generate pairs
+# Write JSON to a temp file and run the Rust helper to generate pairs
 TMP_JSON=$(mktemp)
-TMP_PY=$(mktemp --suffix=.py)
-trap 'rm -f "$TMP_JSON" "$TMP_PY"' EXIT
+trap 'rm -f "$TMP_JSON"' EXIT
 printf '%s' "$JSON" >"$TMP_JSON"
-cat >"$TMP_PY" <<'PY'
-import sys, json
-json_path=sys.argv[1]
-TIME=sys.argv[2]
-REPEAT=sys.argv[3]
-data=json.load(open(json_path))
-obus=[n for n,info in data.items() if info.get('node_type')=='Obu']
-rsus=[n for n,info in data.items() if info.get('node_type')=='Rsu']
-out=[]
-for o in obus:
-    for r in rsus:
-        out.append(f"sim_ns_{o},sim_ns_{r},{TIME},{REPEAT}")
-print('\n'.join(out))
-PY
 
-PAIRS=$(python3 "$TMP_PY" "$TMP_JSON" "$TIME" "$REPEAT")
+# Prefer already-built binary in scripts_tools target, otherwise use cargo run
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+BIN_RELEASE="$ROOT_DIR/target/release/scripts_tools"
+BIN_DEBUG="$ROOT_DIR/target/debug/scripts_tools"
+if [[ -x "$BIN_RELEASE" ]]; then
+  PAIRS=("$BIN_RELEASE" generatepairs "$TMP_JSON" "$TIME" "$REPEAT")
+  PAIRS=$("${PAIRS[@]}")
+elif [[ -x "$BIN_DEBUG" ]]; then
+  PAIRS=("$BIN_DEBUG" generatepairs "$TMP_JSON" "$TIME" "$REPEAT")
+  PAIRS=$("${PAIRS[@]}")
+else
+  # Build release binary first so sudo runs don't require rustup/toolchain
+  (cd "$ROOT_DIR/" && cargo build --release) || { echo "Failed to build scripts_tools release" >&2; exit 1; }
+  PAIRS=("$BIN_RELEASE" generatepairs "$TMP_JSON" "$TIME" "$REPEAT")
+  PAIRS=$("${PAIRS[@]}")
+fi
 
 if [[ "$OUT" != "-" ]]; then
   printf '%s\n' "$PAIRS" >"$OUT"
