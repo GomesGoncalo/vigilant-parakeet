@@ -591,7 +591,7 @@ mod regression_tests {
         let res = routing.handle_heartbeat_reply(&reply_msg, our_mac);
         assert!(res.is_err());
         let err = res.unwrap_err();
-        assert!(format!("{}", err).contains("loop detected"));
+        assert!(format!("{err}").contains("loop detected"));
     }
 }
 

@@ -116,7 +116,7 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
             Duration::from_secs(5),
         )
         .await;
-        assert!(result.is_ok(), "{} should discover RSU as upstream", name);
+        assert!(result.is_ok(), "{name} should discover RSU as upstream");
     }
 
     // Wait longer for RSU to receive heartbeat replies and build routing table
@@ -287,7 +287,7 @@ async fn test_rsu_broadcast_individual_encryption() {
             Duration::from_secs(5),
         )
         .await;
-        assert!(result.is_ok(), "{} should discover RSU as upstream", name);
+        assert!(result.is_ok(), "{name} should discover RSU as upstream");
     }
 
     // Wait for RSU to build routing table by receiving heartbeat replies

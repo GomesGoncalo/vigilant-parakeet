@@ -37,32 +37,32 @@ while IFS=, read -r SRC DST TIME REPEAT; do
   TIME=${TIME:-10}
   REPEAT=${REPEAT:-1}
 
-  for ((i=1;i<=REPEAT;i++)); do
+  for ((i = 1; i <= REPEAT; i++)); do
     LOG="$TMP_DIR/${SRC}_${DST}_${TIME}s_run${i}.log"
     echo "Running iperf3: $SRC -> $DST (${TIME}s) (run $i/$REPEAT)"
     # start server in dst
-    ip netns exec "$DST" iperf3 -s -p 5201 >"$LOG" 2>&1 &
+    sudo ip netns exec "$DST" iperf3 -s -p 5201 >"$LOG" 2>&1 &
     SERVER_PID=$!
     sleep 0.3
     # detect dst ip inside namespace
-    DST_IP=$(ip netns exec "$DST" ip -4 addr show scope global 2>/dev/null | awk '/inet/ {print $2}' | head -n1 || true)
+    DST_IP=$(sudo ip netns exec "$DST" ip -4 addr show scope global 2>/dev/null | awk '/inet/ {print $2}' | head -n1 || true)
     if [[ -z "$DST_IP" ]]; then
-      DST_IP=$(ip netns exec "$DST" ip -4 addr show 2>/dev/null | awk '/inet/ {print $2}' | head -n1 || true)
+      DST_IP=$(sudo ip netns exec "$DST" ip -4 addr show 2>/dev/null | awk '/inet/ {print $2}' | head -n1 || true)
     fi
     DST_IP=${DST_IP%%/*}
     DST_IP=${DST_IP:-127.0.0.1}
 
-  # run client with JSON output for reliable parsing
-  set +e
-  JSON_OUT="$TMP_DIR/${SRC}_${DST}_${TIME}s_run${i}.json"
-  ip netns exec "$SRC" iperf3 -c "$DST_IP" -p 5201 -t "$TIME" --json >"$JSON_OUT" 2>"$LOG"
-  CLIENT_EXIT=$?
-  set -e
+    # run client with JSON output for reliable parsing
+    set +e
+    JSON_OUT="$TMP_DIR/${SRC}_${DST}_${TIME}s_run${i}.json"
+    sudo ip netns exec "$SRC" iperf3 -c "$DST_IP" -p 5201 -t "$TIME" --json >"$JSON_OUT" 2>"$LOG"
+    CLIENT_EXIT=$?
+    set -e
 
-  # parse JSON for bits_per_second (try sum stream then end summary)
-  BAND=0
-  BAND=$(./target/debug/scripts_tools parseband "${JSON_OUT}" 2>/dev/null || echo 0)
-  BAND=${BAND:-0}
+    # parse JSON for bits_per_second (try sum stream then end summary)
+    BAND=0
+    BAND=$(./target/debug/scripts_tools parseband "${JSON_OUT}" 2>/dev/null || echo 0)
+    BAND=${BAND:-0}
 
     echo "$SRC,$DST,$TIME,$i,$BAND,$LOG" >>"$OUT_CSV"
 

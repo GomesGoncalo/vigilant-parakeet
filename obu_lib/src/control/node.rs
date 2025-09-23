@@ -50,7 +50,7 @@ pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<
 pub fn bytes_to_hex(slice: &[u8]) -> String {
     slice
         .iter()
-        .map(|b| format!("{:02x}", b))
+        .map(|b| format!("{b:02x}"))
         .collect::<Vec<_>>()
         .join(" ")
 }
