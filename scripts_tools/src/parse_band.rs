@@ -36,6 +36,6 @@ pub fn run(json: PathBuf) -> anyhow::Result<()> {
         Some(x) => format!("{:.3}", x / 1e6),
         None => "0".to_string(),
     };
-    println!("{}", out);
+    println!("{out}");
     Ok(())
 }

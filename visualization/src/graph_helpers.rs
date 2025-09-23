@@ -144,10 +144,7 @@ pub fn build_edge_json(
     let rk = determine_route_kind(from, to, node_info);
     m.insert("route_kind".to_string(), JsonValue::String(rk));
     // include an id to help JS upsert/lookup (falls back to src->tgt if absent)
-    m.insert(
-        "id".to_string(),
-        JsonValue::String(format!("{}->{}", from, to)),
-    );
+    m.insert("id".to_string(), JsonValue::String(format!("{from}->{to}")));
     JsonValue::Object(m)
 }
 

@@ -1,17 +1,7 @@
 use anyhow::Context;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fs::File;
 use std::path::PathBuf;
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Row {
-    src: String,
-    dst: String,
-    time: serde_json::Value,
-    repeat: serde_json::Value,
-    bandwidth_mbits: f64,
-    raw_log: String,
-}
 
 #[derive(Serialize, Debug)]
 struct SummaryEntry {
@@ -68,7 +58,7 @@ pub fn run(out_csv: PathBuf, json_out: PathBuf, summary_csv: PathBuf) -> anyhow:
 
     eprintln!("build_summary: parsed {} rows", rows.len());
     if let Some(first) = rows.first() {
-        eprintln!("build_summary: first row keys/values: {:?}", first);
+        eprintln!("build_summary: first row keys/values: {first:?}");
     }
 
     use std::collections::HashMap;

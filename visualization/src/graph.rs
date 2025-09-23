@@ -554,7 +554,7 @@ pub fn graph(props: &GraphProps) -> Html {
                     xs.push(JsonValue::Number(serde_json::Number::from_f64(*x).unwrap()));
                     ys.push(JsonValue::Number(serde_json::Number::from_f64(*y).unwrap()));
                     let label = if let Some(nt) = pick_node_type(&node_info, name) {
-                        format!("{} ({})", name, nt)
+                        format!("{name} ({nt})")
                     } else {
                         name.clone()
                     };
@@ -607,16 +607,10 @@ pub fn graph(props: &GraphProps) -> Html {
                 let tag = "[VP-GRAPH]";
                 let pos_json = serde_json::to_string(&positions)
                     .unwrap_or_else(|_| "<pos-serde-err>".to_string());
-                console::log_1(&JsValue::from_str(&format!(
-                    "{} positions: {}",
-                    tag, pos_json
-                )));
+                console::log_1(&JsValue::from_str(&format!("{tag} positions: {pos_json}")));
                 let bps_json = serde_json::to_string(&node_bps)
                     .unwrap_or_else(|_| "<bps-serde-err>".to_string());
-                console::log_1(&JsValue::from_str(&format!(
-                    "{} node_bps: {}",
-                    tag, bps_json
-                )));
+                console::log_1(&JsValue::from_str(&format!("{tag} node_bps: {bps_json}")));
                 console::log_1(&JsValue::from_str(&format!(
                     "{} data_traces_count: {}",
                     tag,
@@ -634,10 +628,7 @@ pub fn graph(props: &GraphProps) -> Html {
                         _ => "other".to_string(),
                     })
                     .collect();
-                console::log_1(&JsValue::from_str(&format!(
-                    "{} trace_types: {:?}",
-                    tag, types
-                )));
+                console::log_1(&JsValue::from_str(&format!("{tag} trace_types: {types:?}")));
             }
 
             // Build a minimal layout and attach data_traces (used downstream in JS rendering)

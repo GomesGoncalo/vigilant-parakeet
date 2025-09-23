@@ -28,7 +28,7 @@ pub fn run(json: PathBuf, time: String, repeat: String) -> anyhow::Result<()> {
     let mut out = stdout.lock();
     for o in &obus {
         for r in &rsus {
-            writeln!(out, "sim_ns_{},sim_ns_{},{},{}", o, r, time, repeat)?;
+            writeln!(out, "sim_ns_{o},sim_ns_{r},{time},{repeat}")?;
         }
     }
     Ok(())

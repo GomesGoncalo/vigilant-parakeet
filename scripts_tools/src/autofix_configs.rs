@@ -83,15 +83,14 @@ pub fn run(paths: Vec<PathBuf>, dry_run: bool, backup: bool) -> anyhow::Result<(
                             if !node_map.contains_key(YamlValue::from("config_path")) {
                                 // default to examples/<name>.yaml
                                 if let Some(name) = k.as_str() {
-                                    let default = format!("examples/{}.yaml", name);
+                                    let default = format!("examples/{name}.yaml");
                                     node_map.insert(
                                         YamlValue::from("config_path"),
                                         YamlValue::from(default),
                                     );
                                     changed = true;
                                     println!(
-                                        "will set config_path for {} to examples/{}.yaml",
-                                        name, name
+                                        "will set config_path for {name} to examples/{name}.yaml"
                                     );
                                 }
                             }
@@ -220,7 +219,7 @@ pub fn apply_allocator(paths: Vec<PathBuf>, opts: AllocOptions) -> anyhow::Resul
         if !opts.dry_run {
             std::fs::write(dbpath, s)?;
         } else {
-            println!("[dry-run] would write alloc db to {}", dbpath);
+            println!("[dry-run] would write alloc db to {dbpath}");
         }
     }
 

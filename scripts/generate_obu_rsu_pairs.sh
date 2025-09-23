@@ -4,14 +4,15 @@ set -euo pipefail
 # Query simulator /node_info and generate CSV lines for every OBU -> RSU pair.
 # Usage: ./scripts/generate_obu_rsu_pairs.sh [output.csv] [time] [repeat]
 
-OUT=${1:--}   # '-' means stdout
+OUT=${1:--} # '-' means stdout
 TIME=${2:-10}
 REPEAT=${3:-1}
 
 API_URL=${SIM_API_URL:-http://127.0.0.1:3030/node_info}
 
 if ! command -v curl >/dev/null 2>&1; then
-  echo "curl is required" >&2; exit 1
+  echo "curl is required" >&2
+  exit 1
 fi
 
 JSON=$(curl -sSf "$API_URL")
@@ -25,16 +26,15 @@ printf '%s' "$JSON" >"$TMP_JSON"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN_RELEASE="$ROOT_DIR/target/release/scripts_tools"
-BIN_DEBUG="$ROOT_DIR/target/debug/scripts_tools"
 if [[ -x "$BIN_RELEASE" ]]; then
   PAIRS=("$BIN_RELEASE" generatepairs "$TMP_JSON" "$TIME" "$REPEAT")
   PAIRS=$("${PAIRS[@]}")
-elif [[ -x "$BIN_DEBUG" ]]; then
-  PAIRS=("$BIN_DEBUG" generatepairs "$TMP_JSON" "$TIME" "$REPEAT")
-  PAIRS=$("${PAIRS[@]}")
 else
   # Build release binary first so sudo runs don't require rustup/toolchain
-  (cd "$ROOT_DIR/" && cargo build --release) || { echo "Failed to build scripts_tools release" >&2; exit 1; }
+  (cd "$ROOT_DIR/" && cargo build -p scripts_tools --release --quiet) || {
+    echo "Failed to build scripts_tools release" >&2
+    exit 1
+  }
   PAIRS=("$BIN_RELEASE" generatepairs "$TMP_JSON" "$TIME" "$REPEAT")
   PAIRS=$("${PAIRS[@]}")
 fi

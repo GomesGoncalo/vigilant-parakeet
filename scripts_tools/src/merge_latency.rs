@@ -7,7 +7,7 @@ use std::process::Command;
 fn measure_avg(src: &str, dst: &str) -> Option<f64> {
     // determine if dst is a namespace; if so get its IPv4
     let mut is_ns = false;
-    if let Ok(out) = Command::new("ip").args(["netns", "list"]).output() {
+    if let Ok(out) = Command::new("sudo").args(["ip", "netns", "list"]).output() {
         let txt = String::from_utf8_lossy(&out.stdout).to_string();
         for line in txt.lines() {
             let token = line.split_whitespace().next().unwrap_or("");
@@ -21,17 +21,17 @@ fn measure_avg(src: &str, dst: &str) -> Option<f64> {
     if is_ns {
         // dest is a namespace, pick first IPv4 from it
         let mut iptxt = String::new();
-        if let Ok(out) = Command::new("ip")
+        if let Ok(out) = Command::new("sudo")
             .args([
-                "netns", "exec", dst, "ip", "-4", "addr", "show", "scope", "global",
+                "ip", "netns", "exec", dst, "ip", "-4", "addr", "show", "scope", "global",
             ])
             .output()
         {
             iptxt = String::from_utf8_lossy(&out.stdout).to_string();
         }
         if iptxt.trim().is_empty() {
-            if let Ok(out) = Command::new("ip")
-                .args(["netns", "exec", dst, "ip", "-4", "addr", "show"])
+            if let Ok(out) = Command::new("sudo")
+                .args(["ip", "netns", "exec", dst, "ip", "-4", "addr", "show"])
                 .output()
             {
                 iptxt = String::from_utf8_lossy(&out.stdout).to_string();
@@ -52,7 +52,7 @@ fn measure_avg(src: &str, dst: &str) -> Option<f64> {
         }
     }
 
-    let Ok(out) = Command::new("ip").args(["netns", "list"]).output() else {
+    let Ok(out) = Command::new("sudo").args(["ip", "netns", "list"]).output() else {
         return None;
     };
 
@@ -70,7 +70,7 @@ fn measure_avg(src: &str, dst: &str) -> Option<f64> {
 
     // prefer running the system ping inside the namespace (more reliable)
     let Some(v) = run_ping_netns(src, &dst_ip) else {
-        eprintln!("probe in namespace {} failed for {}", src, dst_ip);
+        eprintln!("probe in namespace {src} failed for {dst_ip}");
         return None;
     };
 
@@ -80,8 +80,10 @@ fn measure_avg(src: &str, dst: &str) -> Option<f64> {
 /// Run the system `ping` inside a network namespace using `ip netns exec <ns> ping -c 1 -W 1 <addr>`
 /// Returns latency in ms if parsed successfully.
 fn run_ping_netns(ns: &str, addr: &str) -> Option<f64> {
-    let out = Command::new("ip")
-        .args(["netns", "exec", ns, "ping", "-c", "1", "-W", "1", addr])
+    let out = Command::new("sudo")
+        .args([
+            "ip", "netns", "exec", ns, "ping", "-c", "1", "-W", "1", addr,
+        ])
         .output();
     match out {
         Ok(o) => {
@@ -109,7 +111,7 @@ fn run_ping_netns(ns: &str, addr: &str) -> Option<f64> {
             None
         }
         Err(e) => {
-            eprintln!("[diag] failed to run ip netns exec ping: {}", e);
+            eprintln!("[diag] failed to run ip netns exec ping: {e}");
             None
         }
     }
@@ -144,7 +146,7 @@ pub fn run(ipf: PathBuf) -> anyhow::Result<()> {
         if latencies.contains_key(&key) {
             continue;
         }
-        println!("Measuring {} -> {}", src, dst);
+        println!("Measuring {src} -> {dst}");
         let avg = measure_avg(&src, &dst);
         latencies.insert(key, avg);
     }
