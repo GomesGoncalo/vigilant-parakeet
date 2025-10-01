@@ -48,21 +48,33 @@ impl<'a> Heartbeat<'a> {
 }
 
 impl<'a> TryFrom<&'a [u8]> for Heartbeat<'a> {
-    type Error = anyhow::Error;
+    type Error = crate::error::NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let source = value
-            .get(24..30)
-            .ok_or_else(|| anyhow::anyhow!("cannot get source bytes for Heartbeat"))?;
-        let hops = value
-            .get(20..24)
-            .ok_or_else(|| anyhow::anyhow!("cannot get hops bytes for Heartbeat"))?;
-        let id = value
-            .get(16..20)
-            .ok_or_else(|| anyhow::anyhow!("cannot get id bytes for Heartbeat"))?;
-        let duration = value
-            .get(..16)
-            .ok_or_else(|| anyhow::anyhow!("cannot get duration bytes for Heartbeat"))?;
+        let source = value.get(24..30).ok_or_else(|| {
+            crate::error::NodeError::BufferTooShort {
+                expected: 30,
+                actual: value.len(),
+            }
+        })?;
+        let hops = value.get(20..24).ok_or_else(|| {
+            crate::error::NodeError::BufferTooShort {
+                expected: 24,
+                actual: value.len(),
+            }
+        })?;
+        let id = value.get(16..20).ok_or_else(|| {
+            crate::error::NodeError::BufferTooShort {
+                expected: 20,
+                actual: value.len(),
+            }
+        })?;
+        let duration = value.get(..16).ok_or_else(|| {
+            crate::error::NodeError::BufferTooShort {
+                expected: 16,
+                actual: value.len(),
+            }
+        })?;
 
         Ok(Self {
             duration: Cow::Borrowed(duration),
@@ -146,24 +158,39 @@ impl<'a> HeartbeatReply<'a> {
 }
 
 impl<'a> TryFrom<&'a [u8]> for HeartbeatReply<'a> {
-    type Error = anyhow::Error;
+    type Error = crate::error::NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let sender = value
-            .get(30..36)
-            .ok_or_else(|| anyhow::anyhow!("cannot get sender bytes for HeartbeatReply"))?;
-        let source = value
-            .get(24..30)
-            .ok_or_else(|| anyhow::anyhow!("cannot get source bytes for HeartbeatReply"))?;
-        let hops = value
-            .get(20..24)
-            .ok_or_else(|| anyhow::anyhow!("cannot get hops bytes for HeartbeatReply"))?;
-        let id = value
-            .get(16..20)
-            .ok_or_else(|| anyhow::anyhow!("cannot get id bytes for HeartbeatReply"))?;
-        let duration = value
-            .get(..16)
-            .ok_or_else(|| anyhow::anyhow!("cannot get duration bytes for HeartbeatReply"))?;
+        let sender = value.get(30..36).ok_or_else(|| {
+            crate::error::NodeError::BufferTooShort {
+                expected: 36,
+                actual: value.len(),
+            }
+        })?;
+        let source = value.get(24..30).ok_or_else(|| {
+            crate::error::NodeError::BufferTooShort {
+                expected: 30,
+                actual: value.len(),
+            }
+        })?;
+        let hops = value.get(20..24).ok_or_else(|| {
+            crate::error::NodeError::BufferTooShort {
+                expected: 24,
+                actual: value.len(),
+            }
+        })?;
+        let id = value.get(16..20).ok_or_else(|| {
+            crate::error::NodeError::BufferTooShort {
+                expected: 20,
+                actual: value.len(),
+            }
+        })?;
+        let duration = value.get(..16).ok_or_else(|| {
+            crate::error::NodeError::BufferTooShort {
+                expected: 16,
+                actual: value.len(),
+            }
+        })?;
 
         Ok(Self {
             duration: Cow::Borrowed(duration),

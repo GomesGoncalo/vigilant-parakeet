@@ -1,4 +1,4 @@
-use anyhow::bail;
+use crate::error::NodeError;
 use mac_address::MacAddress;
 use std::borrow::Cow;
 
@@ -60,12 +60,21 @@ impl<'a> ToDownstream<'a> {
 }
 
 impl<'a> TryFrom<&'a [u8]> for ToUpstream<'a> {
-    type Error = anyhow::Error;
+    type Error = NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let (Some(data), Some(origin)) = (value.get(6..), value.get(..6)) else {
-            bail!("cannot get members");
-        };
+        let origin = value.get(..6).ok_or_else(|| {
+            NodeError::BufferTooShort {
+                expected: 6,
+                actual: value.len(),
+            }
+        })?;
+        let data = value.get(6..).ok_or_else(|| {
+            NodeError::BufferTooShort {
+                expected: 7,
+                actual: value.len(),
+            }
+        })?;
         let origin = Cow::Borrowed(origin);
         let data = Cow::Borrowed(data);
         Ok(Self { origin, data })
@@ -79,14 +88,27 @@ impl<'a> From<&ToUpstream<'a>> for Vec<Vec<u8>> {
 }
 
 impl<'a> TryFrom<&'a [u8]> for ToDownstream<'a> {
-    type Error = anyhow::Error;
+    type Error = NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let (Some(data), Some(destination), Some(origin)) =
-            (value.get(12..), value.get(6..12), value.get(..6))
-        else {
-            bail!("cannot get members");
-        };
+        let origin = value.get(..6).ok_or_else(|| {
+            NodeError::BufferTooShort {
+                expected: 6,
+                actual: value.len(),
+            }
+        })?;
+        let destination = value.get(6..12).ok_or_else(|| {
+            NodeError::BufferTooShort {
+                expected: 12,
+                actual: value.len(),
+            }
+        })?;
+        let data = value.get(12..).ok_or_else(|| {
+            NodeError::BufferTooShort {
+                expected: 13,
+                actual: value.len(),
+            }
+        })?;
         let destination = Cow::Borrowed(destination);
         let origin = Cow::Borrowed(origin);
         let data = Cow::Borrowed(data);
@@ -109,17 +131,22 @@ impl<'a> From<&ToDownstream<'a>> for Vec<Vec<u8>> {
 }
 
 impl<'a> TryFrom<&'a [u8]> for Data<'a> {
-    type Error = anyhow::Error;
+    type Error = NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let Some(next) = value.get(1..) else {
-            bail!("could not get next");
-        };
+        let next = value.get(1..).ok_or_else(|| {
+            NodeError::BufferTooShort {
+                expected: 2,
+                actual: value.len(),
+            }
+        })?;
 
         match value.first() {
             Some(0u8) => Ok(Self::Upstream(next.try_into()?)),
             Some(1u8) => Ok(Self::Downstream(next.try_into()?)),
-            _ => bail!("is not a valid packet type"),
+            _ => Err(NodeError::ParseError(
+                "Invalid data packet type".to_string(),
+            )),
         }
     }
 }

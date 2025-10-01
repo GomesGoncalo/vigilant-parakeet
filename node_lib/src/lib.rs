@@ -3,6 +3,7 @@ pub use args::Args;
 pub mod control;
 pub mod crypto;
 pub mod data;
+pub mod error;
 pub mod messages;
 pub mod metrics;
 // Re-export test helpers for integration tests.

@@ -1,5 +1,5 @@
 use super::{control::Control, data::Data};
-use anyhow::bail;
+use crate::error::NodeError;
 
 #[derive(Debug)]
 pub enum PacketType<'a> {
@@ -8,17 +8,22 @@ pub enum PacketType<'a> {
 }
 
 impl<'a> TryFrom<&'a [u8]> for PacketType<'a> {
-    type Error = anyhow::Error;
+    type Error = NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let Some(next) = value.get(1..) else {
-            bail!("could not get next");
-        };
+        let next = value.get(1..).ok_or_else(|| {
+            NodeError::BufferTooShort {
+                expected: 2,
+                actual: value.len(),
+            }
+        })?;
 
         match value.first() {
             Some(0u8) => Ok(Self::Control(next.try_into()?)),
             Some(1u8) => Ok(Self::Data(next.try_into()?)),
-            _ => bail!("is not a valid packet type"),
+            _ => Err(NodeError::ParseError(
+                "Invalid packet type identifier".to_string(),
+            )),
         }
     }
 }

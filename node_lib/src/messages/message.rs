@@ -1,5 +1,5 @@
 use super::packet_type::PacketType;
-use anyhow::{bail, Result};
+use crate::error::NodeError;
 use mac_address::MacAddress;
 use std::borrow::Cow;
 
@@ -19,20 +19,17 @@ impl<'a> Message<'a> {
         }
     }
 
-    pub fn from(&self) -> Result<MacAddress> {
+    pub fn from(&self) -> Result<MacAddress, NodeError> {
         Self::get_mac_address(self.from.get(0..6))
     }
 
-    pub fn to(&self) -> Result<MacAddress> {
+    pub fn to(&self) -> Result<MacAddress, NodeError> {
         Self::get_mac_address(self.to.get(0..6))
     }
 
-    fn get_mac_address(opt: Option<&[u8]>) -> Result<MacAddress> {
-        let Some(opt) = opt else {
-            bail!("no buffer");
-        };
-
-        let opt: [u8; 6] = opt.try_into()?;
+    fn get_mac_address(opt: Option<&[u8]>) -> Result<MacAddress, NodeError> {
+        let opt = opt.ok_or(NodeError::InvalidMacAddress)?;
+        let opt: [u8; 6] = opt.try_into().map_err(|_| NodeError::InvalidMacAddress)?;
         Ok(opt.into())
     }
 
@@ -42,24 +39,33 @@ impl<'a> Message<'a> {
 }
 
 impl<'a> TryFrom<&'a [u8]> for Message<'a> {
-    type Error = anyhow::Error;
+    type Error = NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
         if value.get(12..14) != Some(&[0x30, 0x30]) {
-            bail!("not from this protocol");
+            return Err(NodeError::InvalidProtocol);
         }
 
-        let Some(from) = value.get(6..12) else {
-            bail!("cannot get from");
-        };
+        let from = value.get(6..12).ok_or_else(|| {
+            NodeError::BufferTooShort {
+                expected: 12,
+                actual: value.len(),
+            }
+        })?;
 
-        let Some(to) = value.get(0..6) else {
-            bail!("cannot get to");
-        };
+        let to = value.get(0..6).ok_or_else(|| {
+            NodeError::BufferTooShort {
+                expected: 6,
+                actual: value.len(),
+            }
+        })?;
 
-        let Some(next) = value.get(14..) else {
-            bail!("cannot get packet type");
-        };
+        let next = value.get(14..).ok_or_else(|| {
+            NodeError::BufferTooShort {
+                expected: 15,
+                actual: value.len(),
+            }
+        })?;
 
         Ok(Self {
             from: Cow::Borrowed(from),

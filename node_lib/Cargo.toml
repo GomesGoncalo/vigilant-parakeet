@@ -24,6 +24,7 @@ common = { path = "../common/" }
 arc-swap = { version = "*" }
 tracing-subscriber = { version = "*", features = ["env-filter"] }
 aes-gcm = { version = "0.10", features = ["aes"] }
+thiserror = "*"
 
 [features]
 stats = [ "common/stats" ]
