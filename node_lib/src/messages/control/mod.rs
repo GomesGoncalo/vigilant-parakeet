@@ -13,11 +13,9 @@ impl<'a> TryFrom<&'a [u8]> for Control<'a> {
     type Error = NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let next = value.get(1..).ok_or_else(|| {
-            NodeError::BufferTooShort {
-                expected: 2,
-                actual: value.len(),
-            }
+        let next = value.get(1..).ok_or_else(|| NodeError::BufferTooShort {
+            expected: 2,
+            actual: value.len(),
         })?;
 
         match value.first() {

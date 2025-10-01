@@ -1,8 +1,8 @@
+use crate::error::NodeError;
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
 };
-use crate::error::NodeError;
 
 /// Fixed key for initial implementation. In production, this would be exchanged securely.
 const FIXED_KEY: &[u8; 32] = b"vigilant_parakeet_fixed_key_256!";

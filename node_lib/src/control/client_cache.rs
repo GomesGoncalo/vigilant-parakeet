@@ -108,7 +108,7 @@ mod tests {
         // Update to new node
         cache.store_mac(client, node2);
         assert_eq!(cache.get(client), Some(node2));
-        
+
         // Length should still be 1 (update, not insert)
         assert_eq!(cache.len(), 1);
     }
@@ -116,9 +116,7 @@ mod tests {
     #[test]
     fn multiple_clients() {
         let cache = ClientCache::new();
-        let clients: Vec<MacAddress> = (0..5)
-            .map(|i| [i, i, i, i, i, i].into())
-            .collect();
+        let clients: Vec<MacAddress> = (0..5).map(|i| [i, i, i, i, i, i].into()).collect();
         let node: MacAddress = [0xaa; 6].into();
 
         // Store multiple clients

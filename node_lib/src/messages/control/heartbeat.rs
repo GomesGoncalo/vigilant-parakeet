@@ -51,30 +51,30 @@ impl<'a> TryFrom<&'a [u8]> for Heartbeat<'a> {
     type Error = crate::error::NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let source = value.get(24..30).ok_or_else(|| {
-            crate::error::NodeError::BufferTooShort {
+        let source = value
+            .get(24..30)
+            .ok_or_else(|| crate::error::NodeError::BufferTooShort {
                 expected: 30,
                 actual: value.len(),
-            }
-        })?;
-        let hops = value.get(20..24).ok_or_else(|| {
-            crate::error::NodeError::BufferTooShort {
+            })?;
+        let hops = value
+            .get(20..24)
+            .ok_or_else(|| crate::error::NodeError::BufferTooShort {
                 expected: 24,
                 actual: value.len(),
-            }
-        })?;
-        let id = value.get(16..20).ok_or_else(|| {
-            crate::error::NodeError::BufferTooShort {
+            })?;
+        let id = value
+            .get(16..20)
+            .ok_or_else(|| crate::error::NodeError::BufferTooShort {
                 expected: 20,
                 actual: value.len(),
-            }
-        })?;
-        let duration = value.get(..16).ok_or_else(|| {
-            crate::error::NodeError::BufferTooShort {
+            })?;
+        let duration = value
+            .get(..16)
+            .ok_or_else(|| crate::error::NodeError::BufferTooShort {
                 expected: 16,
                 actual: value.len(),
-            }
-        })?;
+            })?;
 
         Ok(Self {
             duration: Cow::Borrowed(duration),
@@ -161,36 +161,36 @@ impl<'a> TryFrom<&'a [u8]> for HeartbeatReply<'a> {
     type Error = crate::error::NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let sender = value.get(30..36).ok_or_else(|| {
-            crate::error::NodeError::BufferTooShort {
+        let sender = value
+            .get(30..36)
+            .ok_or_else(|| crate::error::NodeError::BufferTooShort {
                 expected: 36,
                 actual: value.len(),
-            }
-        })?;
-        let source = value.get(24..30).ok_or_else(|| {
-            crate::error::NodeError::BufferTooShort {
+            })?;
+        let source = value
+            .get(24..30)
+            .ok_or_else(|| crate::error::NodeError::BufferTooShort {
                 expected: 30,
                 actual: value.len(),
-            }
-        })?;
-        let hops = value.get(20..24).ok_or_else(|| {
-            crate::error::NodeError::BufferTooShort {
+            })?;
+        let hops = value
+            .get(20..24)
+            .ok_or_else(|| crate::error::NodeError::BufferTooShort {
                 expected: 24,
                 actual: value.len(),
-            }
-        })?;
-        let id = value.get(16..20).ok_or_else(|| {
-            crate::error::NodeError::BufferTooShort {
+            })?;
+        let id = value
+            .get(16..20)
+            .ok_or_else(|| crate::error::NodeError::BufferTooShort {
                 expected: 20,
                 actual: value.len(),
-            }
-        })?;
-        let duration = value.get(..16).ok_or_else(|| {
-            crate::error::NodeError::BufferTooShort {
+            })?;
+        let duration = value
+            .get(..16)
+            .ok_or_else(|| crate::error::NodeError::BufferTooShort {
                 expected: 16,
                 actual: value.len(),
-            }
-        })?;
+            })?;
 
         Ok(Self {
             duration: Cow::Borrowed(duration),

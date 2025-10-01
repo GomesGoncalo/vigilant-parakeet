@@ -46,25 +46,19 @@ impl<'a> TryFrom<&'a [u8]> for Message<'a> {
             return Err(NodeError::InvalidProtocol);
         }
 
-        let from = value.get(6..12).ok_or_else(|| {
-            NodeError::BufferTooShort {
-                expected: 12,
-                actual: value.len(),
-            }
+        let from = value.get(6..12).ok_or_else(|| NodeError::BufferTooShort {
+            expected: 12,
+            actual: value.len(),
         })?;
 
-        let to = value.get(0..6).ok_or_else(|| {
-            NodeError::BufferTooShort {
-                expected: 6,
-                actual: value.len(),
-            }
+        let to = value.get(0..6).ok_or_else(|| NodeError::BufferTooShort {
+            expected: 6,
+            actual: value.len(),
         })?;
 
-        let next = value.get(14..).ok_or_else(|| {
-            NodeError::BufferTooShort {
-                expected: 15,
-                actual: value.len(),
-            }
+        let next = value.get(14..).ok_or_else(|| NodeError::BufferTooShort {
+            expected: 15,
+            actual: value.len(),
         })?;
 
         Ok(Self {

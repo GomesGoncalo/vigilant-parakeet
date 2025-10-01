@@ -63,17 +63,13 @@ impl<'a> TryFrom<&'a [u8]> for ToUpstream<'a> {
     type Error = NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let origin = value.get(..6).ok_or_else(|| {
-            NodeError::BufferTooShort {
-                expected: 6,
-                actual: value.len(),
-            }
+        let origin = value.get(..6).ok_or_else(|| NodeError::BufferTooShort {
+            expected: 6,
+            actual: value.len(),
         })?;
-        let data = value.get(6..).ok_or_else(|| {
-            NodeError::BufferTooShort {
-                expected: 7,
-                actual: value.len(),
-            }
+        let data = value.get(6..).ok_or_else(|| NodeError::BufferTooShort {
+            expected: 7,
+            actual: value.len(),
         })?;
         let origin = Cow::Borrowed(origin);
         let data = Cow::Borrowed(data);
@@ -91,23 +87,17 @@ impl<'a> TryFrom<&'a [u8]> for ToDownstream<'a> {
     type Error = NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let origin = value.get(..6).ok_or_else(|| {
-            NodeError::BufferTooShort {
-                expected: 6,
-                actual: value.len(),
-            }
+        let origin = value.get(..6).ok_or_else(|| NodeError::BufferTooShort {
+            expected: 6,
+            actual: value.len(),
         })?;
-        let destination = value.get(6..12).ok_or_else(|| {
-            NodeError::BufferTooShort {
-                expected: 12,
-                actual: value.len(),
-            }
+        let destination = value.get(6..12).ok_or_else(|| NodeError::BufferTooShort {
+            expected: 12,
+            actual: value.len(),
         })?;
-        let data = value.get(12..).ok_or_else(|| {
-            NodeError::BufferTooShort {
-                expected: 13,
-                actual: value.len(),
-            }
+        let data = value.get(12..).ok_or_else(|| NodeError::BufferTooShort {
+            expected: 13,
+            actual: value.len(),
         })?;
         let destination = Cow::Borrowed(destination);
         let origin = Cow::Borrowed(origin);
@@ -134,11 +124,9 @@ impl<'a> TryFrom<&'a [u8]> for Data<'a> {
     type Error = NodeError;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let next = value.get(1..).ok_or_else(|| {
-            NodeError::BufferTooShort {
-                expected: 2,
-                actual: value.len(),
-            }
+        let next = value.get(1..).ok_or_else(|| NodeError::BufferTooShort {
+            expected: 2,
+            actual: value.len(),
         })?;
 
         match value.first() {
