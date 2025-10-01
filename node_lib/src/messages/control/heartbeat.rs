@@ -93,10 +93,10 @@ impl<'a> From<&Heartbeat<'a>> for Vec<Vec<u8>> {
         let hops: [u8; 4] = hops.try_into().expect("convert");
         let hops = u32::from_be_bytes(hops) + 1;
         vec![
-            value.duration.clone().into_owned(),
-            value.id.clone().into_owned(),
+            value.duration.to_vec(),
+            value.id.to_vec(),
             hops.to_be_bytes().to_vec(),
-            value.source.clone().into_owned(),
+            value.source.to_vec(),
         ]
     }
 }
@@ -205,11 +205,11 @@ impl<'a> TryFrom<&'a [u8]> for HeartbeatReply<'a> {
 impl<'a> From<&HeartbeatReply<'a>> for Vec<Vec<u8>> {
     fn from(value: &HeartbeatReply<'a>) -> Self {
         vec![
-            value.duration.clone().into_owned(),
-            value.id.clone().into_owned(),
-            value.hops.clone().into_owned(),
-            value.source.clone().into_owned(),
-            value.sender.clone().into_owned(),
+            value.duration.to_vec(),
+            value.id.to_vec(),
+            value.hops.to_vec(),
+            value.source.to_vec(),
+            value.sender.to_vec(),
         ]
     }
 }

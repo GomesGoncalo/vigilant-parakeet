@@ -71,11 +71,7 @@ impl<'a> TryFrom<&'a [u8]> for Message<'a> {
 
 impl<'a> From<&Message<'a>> for Vec<Vec<u8>> {
     fn from(value: &Message<'a>) -> Self {
-        let mut this = vec![
-            value.to.clone().into_owned(),
-            value.from.clone().into_owned(),
-            vec![0x30, 0x30],
-        ];
+        let mut this = vec![value.to.to_vec(), value.from.to_vec(), vec![0x30, 0x30]];
         let more: Vec<Vec<u8>> = (&value.next).into();
         this.extend(more);
         this
