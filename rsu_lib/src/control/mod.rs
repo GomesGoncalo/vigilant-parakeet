@@ -52,12 +52,19 @@ impl Rsu {
 
     /// Get route to a specific MAC address. Used for testing latency measurement.
     pub fn get_route_to(&self, mac: MacAddress) -> Option<route::Route> {
-        self.routing.read().unwrap().get_route_to(Some(mac))
+        self.routing
+            .read()
+            .expect("routing table read lock poisoned")
+            .get_route_to(Some(mac))
     }
 
     /// Get count of next hops in routing table. Used for testing.
     pub fn next_hop_count(&self) -> usize {
-        self.routing.read().unwrap().iter_next_hops().count()
+        self.routing
+            .read()
+            .expect("routing table read lock poisoned")
+            .iter_next_hops()
+            .count()
     }
 
     fn wire_traffic_task(rsu: Arc<Self>) -> Result<()> {
@@ -156,7 +163,10 @@ impl Rsu {
                     target = None;
                 }
 
-                let routing = self.routing.read().unwrap();
+                let routing = self
+                    .routing
+                    .read()
+                    .expect("routing table read lock poisoned during wire traffic processing");
                 messages.extend(if bcast_or_mcast {
                     routing
                         .iter_next_hops()
@@ -228,7 +238,7 @@ impl Rsu {
                 if hbr.source() == self.device.mac_address() {
                     self.routing
                         .write()
-                        .unwrap()
+                        .expect("routing table write lock poisoned during heartbeat reply")
                         .handle_heartbeat_reply(msg, self.device.mac_address())
                 } else {
                     Ok(None)
@@ -249,7 +259,9 @@ impl Rsu {
         tokio::task::spawn(async move {
             loop {
                 let msg: Vec<Vec<u8>> = {
-                    let mut routing = routing.write().unwrap();
+                    let mut routing = routing
+                        .write()
+                        .expect("routing table write lock poisoned in heartbeat task");
                     let msg = routing.send_heartbeat(device.mac_address());
                     tracing::trace!(?msg, "generated hello");
                     (&msg).into()
@@ -288,7 +300,9 @@ impl Rsu {
                     let source_mac = devicec.mac_address().bytes();
                     cache.store_mac(from, devicec.mac_address());
 
-                    let routing = routing.read().unwrap();
+                    let routing = routing
+                        .read()
+                        .expect("routing table read lock poisoned during tap traffic processing");
                     let is_multicast = to.bytes()[0] & 0x1 != 0;
 
                     let outgoing = if is_multicast {
@@ -490,7 +504,9 @@ pub(crate) fn handle_msg_for_test(
                 target = None;
             }
 
-            let routing = routing.read().unwrap();
+            let routing = routing
+                .read()
+                .expect("routing table read lock poisoned during data processing");
             messages.extend(if bcast_or_mcast {
                 routing
                     .iter_next_hops()

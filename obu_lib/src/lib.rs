@@ -29,13 +29,13 @@ pub fn create(args: ObuArgs) -> Result<Arc<dyn Node>> {
     // Use the real tokio_tun builder type in non-test builds.
     use tokio_tun::Tun as RealTokioTun;
 
-    let real_tun: RealTokioTun = if args.ip.is_some() {
+    let real_tun: RealTokioTun = if let Some(ip) = args.ip {
         RealTokioTun::builder()
             .name(args.tap_name.as_ref().unwrap_or(&String::default()))
             .tap()
             .mtu(args.mtu)
             .up()
-            .address(args.ip.unwrap())
+            .address(ip)
             .build()?
             .into_iter()
             .next()

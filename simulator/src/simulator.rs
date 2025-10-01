@@ -178,7 +178,10 @@ pub struct Channel {
 #[allow(dead_code)]
 impl Channel {
     pub fn params(&self) -> ChannelParameters {
-        *self.parameters.read().unwrap()
+        *self
+            .parameters
+            .read()
+            .expect("channel parameters lock poisoned")
     }
 
     pub fn set_params(&self, params: HashMap<String, String>) -> Result<()> {
@@ -189,7 +192,10 @@ impl Channel {
             loss: f64::from_str(params.get("loss").context("could not get loss")?)?,
         };
 
-        let mut inner_params = self.parameters.write().unwrap();
+        let mut inner_params = self
+            .parameters
+            .write()
+            .expect("channel parameters lock poisoned");
         *inner_params = result;
         let _ = self.tx.send(());
         Ok(())
@@ -214,12 +220,21 @@ impl Channel {
         let thisc = this.clone();
         tokio::spawn(async move {
             loop {
-                let Some(packet) = thisc.queue.lock().unwrap().pop_front() else {
+                let Some(packet) = thisc
+                    .queue
+                    .lock()
+                    .expect("packet queue lock poisoned")
+                    .pop_front()
+                else {
                     let _ = rx.recv().await;
                     continue;
                 };
                 loop {
-                    let latency = thisc.parameters.read().unwrap().latency;
+                    let latency = thisc
+                        .parameters
+                        .read()
+                        .expect("channel parameters lock poisoned")
+                        .latency;
                     let duration = (packet.instant + latency).duration_since(Instant::now());
                     if duration.is_zero() {
                         let _ = thisc.tun.send_all(&packet.packet[..packet.size]).await;
@@ -241,7 +256,7 @@ impl Channel {
 
     pub async fn send(&self, packet: [u8; 1500], size: usize) -> Result<()> {
         self.should_send(&packet[..size])?;
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().expect("packet queue lock poisoned");
         if queue.is_empty() {
             let _ = self.tx.send(());
         }
@@ -260,7 +275,11 @@ impl Channel {
             bail!("not the right mac address")
         }
 
-        let loss = self.parameters.read().unwrap().loss;
+        let loss = self
+            .parameters
+            .read()
+            .expect("channel parameters lock poisoned")
+            .loss;
         if loss > 0.0 {
             let mut rng = rand::rng();
             if rng.random::<f64>() < loss {

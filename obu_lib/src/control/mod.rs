@@ -49,20 +49,26 @@ impl Obu {
 
     /// Return the cached upstream MAC if present.
     pub fn cached_upstream_mac(&self) -> Option<mac_address::MacAddress> {
-        self.routing.read().unwrap().get_cached_upstream()
+        self.routing
+            .read()
+            .expect("routing table read lock poisoned")
+            .get_cached_upstream()
     }
 
     /// Return the cached upstream Route if present (hops, mac, latency).
     pub fn cached_upstream_route(&self) -> Option<route::Route> {
         // routing.get_route_to(None) returns Option<Route>
-        self.routing.read().unwrap().get_route_to(None)
+        self.routing
+            .read()
+            .expect("routing table read lock poisoned")
+            .get_route_to(None)
     }
 
     /// Return the number of cached upstream candidates kept for failover.
     pub fn cached_upstream_candidates_len(&self) -> usize {
         self.routing
             .read()
-            .unwrap()
+            .expect("routing table read lock poisoned")
             .get_cached_candidates()
             .map(|v| v.len())
             .unwrap_or(0)
@@ -139,7 +145,10 @@ impl Obu {
                 let messages = session
                     .process(|x, size| async move {
                         let y: &[u8] = &x[..size];
-                        let Some(upstream) = routing_for_closure.read().unwrap().get_route_to(None)
+                        let Some(upstream) = routing_for_closure
+                            .read()
+                            .expect("routing table read lock poisoned in heartbeat task")
+                            .get_route_to(None)
                         else {
                             return Ok(None);
                         };
@@ -191,7 +200,10 @@ impl Obu {
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
         match msg.get_packet_type() {
             PacketType::Data(Data::Upstream(buf)) => {
-                let routing = self.routing.read().unwrap();
+                let routing = self
+                    .routing
+                    .read()
+                    .expect("routing table read lock poisoned during upstream data handling");
                 let Some(upstream) = routing.get_route_to(None) else {
                     return Ok(None);
                 };
@@ -229,7 +241,10 @@ impl Obu {
                     return Ok(Some(vec![ReplyType::Tap(vec![payload_data])]));
                 }
                 let target = destination;
-                let routing = self.routing.read().unwrap();
+                let routing = self
+                    .routing
+                    .read()
+                    .expect("routing table read lock poisoned during downstream forwarding");
                 Ok(Some({
                     let Some(next_hop) = routing.get_route_to(Some(target)) else {
                         return Ok(None);
@@ -248,12 +263,12 @@ impl Obu {
             PacketType::Control(Control::Heartbeat(_)) => self
                 .routing
                 .write()
-                .unwrap()
+                .expect("routing table write lock poisoned during heartbeat handling")
                 .handle_heartbeat(msg, self.device.mac_address()),
             PacketType::Control(Control::HeartbeatReply(_)) => self
                 .routing
                 .write()
-                .unwrap()
+                .expect("routing table write lock poisoned during heartbeat reply handling")
                 .handle_heartbeat_reply(msg, self.device.mac_address()),
         }
     }
@@ -269,7 +284,9 @@ pub(crate) fn handle_msg_for_test(
 
     match msg.get_packet_type() {
         PacketType::Data(Data::Upstream(buf)) => {
-            let routing = routing.read().unwrap();
+            let routing = routing
+                .read()
+                .expect("routing table read lock poisoned in test helper");
             let Some(upstream) = routing.get_route_to(None) else {
                 return Ok(None);
             };
@@ -295,7 +312,9 @@ pub(crate) fn handle_msg_for_test(
             }
 
             let target = destination;
-            let routing = routing.read().unwrap();
+            let routing = routing
+                .read()
+                .expect("routing table read lock poisoned in test helper");
             Ok(Some({
                 let Some(next_hop) = routing.get_route_to(Some(target)) else {
                     return Ok(None);
@@ -311,12 +330,13 @@ pub(crate) fn handle_msg_for_test(
                 )]
             }))
         }
-        PacketType::Control(Control::Heartbeat(_)) => {
-            routing.write().unwrap().handle_heartbeat(msg, device_mac)
-        }
+        PacketType::Control(Control::Heartbeat(_)) => routing
+            .write()
+            .expect("routing table write lock poisoned in test helper")
+            .handle_heartbeat(msg, device_mac),
         PacketType::Control(Control::HeartbeatReply(_)) => routing
             .write()
-            .unwrap()
+            .expect("routing table write lock poisoned in test helper")
             .handle_heartbeat_reply(msg, device_mac),
     }
 }

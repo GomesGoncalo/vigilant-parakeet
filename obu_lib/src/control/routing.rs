@@ -2133,7 +2133,11 @@ impl Routing {
             if candidates.is_empty() {
                 return None;
             }
-            let min_hops = candidates.iter().map(|(h, _, _)| *h).min().unwrap();
+            let min_hops = candidates
+                .iter()
+                .map(|(h, _, _)| *h)
+                .min()
+                .expect("candidates is non-empty, min must exist");
             use crate::control::routing_utils::{pick_best_next_hop, NextHopStats};
 
             let mut per_next: std::collections::HashMap<MacAddress, NextHopStats> =
@@ -2218,8 +2222,10 @@ impl Routing {
                     latency_candidates.clone(),
                 )
                 .expect("latency_candidates non-empty");
-            let (best_min, _best_sum, _best_n, best_hops) =
-                latency_candidates.get(&best_mac).copied().unwrap();
+            let (best_min, _best_sum, _best_n, best_hops) = latency_candidates
+                .get(&best_mac)
+                .copied()
+                .expect("best_mac must exist in latency_candidates");
             let best_score = if best_min == u128::MAX || best_avg == u128::MAX {
                 u128::MAX
             } else {

@@ -156,7 +156,11 @@ impl Routing {
         }
 
         // Determine the true minimum hop count across candidates
-        let min_hops = candidates.iter().map(|(h, _, _)| *h).min().unwrap();
+        let min_hops = candidates
+            .iter()
+            .map(|(h, _, _)| *h)
+            .min()
+            .expect("candidates is non-empty, min must exist");
 
         // Aggregate per-next-hop metrics into latency_candidates and pick the best
         // using the shared helper for parity with OBU.

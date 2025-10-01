@@ -89,10 +89,24 @@ pub async fn handle_messages(
                                 let bytes: Vec<u8> = reply.iter().flat_map(|x| x.iter()).copied().collect();
                                 if let Ok(parsed) = Message::try_from(&bytes[..]) {
                                     if let Ok(dest) = parsed.to() {
-                                        let cached = r.read().unwrap().get_cached_upstream();
-                                        if cached.is_some() && cached.unwrap() == dest {
-                                            let promoted = r.write().unwrap().failover_cached_upstream();
-                                            tracing::info!(promoted = ?promoted, "promoted cached upstream after send error");
+                                        let cached = match r.read() {
+                                            Ok(guard) => guard.get_cached_upstream(),
+                                            Err(poisoned) => {
+                                                tracing::error!("routing lock poisoned during failover check, attempting recovery");
+                                                poisoned.into_inner().get_cached_upstream()
+                                            }
+                                        };
+                                        if let Some(cached_mac) = cached {
+                                            if cached_mac == dest {
+                                                let promoted = match r.write() {
+                                                    Ok(guard) => guard.failover_cached_upstream(),
+                                                    Err(poisoned) => {
+                                                        tracing::error!("routing write lock poisoned during failover, attempting recovery");
+                                                        poisoned.into_inner().failover_cached_upstream()
+                                                    }
+                                                };
+                                                tracing::info!(promoted = ?promoted, "promoted cached upstream after send error");
+                                            }
                                         }
                                     }
                                 }
