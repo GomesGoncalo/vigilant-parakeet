@@ -48,3 +48,7 @@ harness = false
 [[bench]]
 name = "routing_get_route"
 harness = false
+
+[[bench]]
+name = "client_cache_ops"
+harness = false
