@@ -96,10 +96,12 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Resul
     // on the peer's writes without closing the descriptor entirely.
     node_lib::test_helpers::util::shutdown_read(hub_fds[2]);
 
-    // Repeatedly trigger upstream sends to force send errors and eventual failover
-    repeat_async_send(|| tun_obu2_peer.send_all(b"trigger after close"), 6, 20).await;
+    // Repeatedly trigger upstream sends to force send errors and eventual failover.
+    // Increased count to 12 to ensure enough failures trigger promotion even under tarpaulin's overhead.
+    repeat_async_send(|| tun_obu2_peer.send_all(b"trigger after close"), 12, 20).await;
 
-    // Wait for OBU2 to promote to the next candidate (not OBU1)
+    // Wait for OBU2 to promote to the next candidate (not OBU1).
+    // Increased timeout to 200 iterations (10 seconds) to account for tarpaulin's instrumentation overhead.
     let promoted = poll_until(
         || {
             let p = obu2.cached_upstream_mac();
@@ -109,7 +111,7 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Resul
                 None
             }
         },
-        80,
+        200,
         50,
     )
     .await;

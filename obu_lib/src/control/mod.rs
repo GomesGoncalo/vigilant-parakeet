@@ -88,7 +88,7 @@ impl Obu {
     fn wire_traffic_task(obu: Arc<Self>) -> Result<()> {
         let device = obu.device.clone();
         let tun = obu.tun.clone();
-        let _routing_handle = obu.routing.clone();
+        let routing_handle = obu.routing.clone();
         tokio::task::spawn(async move {
             loop {
                 let obu_c = obu.clone();
@@ -135,7 +135,13 @@ impl Obu {
                 .await;
                 if let Ok(Some(messages)) = messages {
                     // Use batched message handling for improved throughput (2-3x faster)
-                    let _ = node::handle_messages_batched(messages, &tun, &device).await;
+                    let _ = node::handle_messages_batched(
+                        messages,
+                        &tun,
+                        &device,
+                        Some(routing_handle.clone()),
+                    )
+                    .await;
                 }
             }
         });

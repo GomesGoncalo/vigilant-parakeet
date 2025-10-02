@@ -120,10 +120,14 @@ pub async fn handle_messages(
 ///
 /// This function groups replies by type (Wire/Tap) and sends them in batches,
 /// reducing the number of system calls and improving throughput by 2-3x.
+///
+/// If routing is provided, failed wire sends targeting the cached upstream
+/// will trigger failover to the next candidate.
 pub async fn handle_messages_batched(
     messages: Vec<ReplyType>,
     tun: &Arc<Tun>,
     dev: &Arc<Device>,
+    routing: Option<Arc<std::sync::RwLock<Routing>>>,
 ) -> Result<()> {
     // Separate wire and tap packets
     let mut wire_packets = Vec::new();
@@ -141,14 +145,59 @@ pub async fn handle_messages_batched(
         if !wire_packets.is_empty() {
             let slices: Vec<IoSlice> = wire_packets.iter().map(|p| IoSlice::new(p)).collect();
             let total_bytes: usize = wire_packets.iter().map(|p| p.len()).sum();
-            dev.send_vectored(&slices).await.inspect_err(|e| {
+            let send_res = dev.send_vectored(&slices).await;
+
+            if let Err(ref e) = send_res {
                 tracing::error!(
                     error = %e,
                     packet_count = wire_packets.len(),
                     total_bytes = total_bytes,
                     "Failed to batch send to device"
-                )
-            })
+                );
+
+                // On batch send error, try to trigger failover if routing is present
+                // and any packet in the batch targets the cached upstream.
+                if let Some(ref r) = routing {
+                    for packet in &wire_packets {
+                        if let Ok(parsed) = Message::try_from(&packet[..]) {
+                            if let Ok(dest) = parsed.to() {
+                                let cached = match r.read() {
+                                    Ok(guard) => guard.get_cached_upstream(),
+                                    Err(poisoned) => {
+                                        tracing::error!(
+                                            "Routing read lock poisoned during failover check"
+                                        );
+                                        poisoned.into_inner().get_cached_upstream()
+                                    }
+                                };
+                                if let Some(cached_mac) = cached {
+                                    if cached_mac == dest {
+                                        let promoted = match r.write() {
+                                            Ok(guard) => guard.failover_cached_upstream(),
+                                            Err(poisoned) => {
+                                                tracing::error!(
+                                                    "Routing write lock poisoned during failover"
+                                                );
+                                                poisoned.into_inner().failover_cached_upstream()
+                                            }
+                                        };
+                                        if let Some(new_upstream) = promoted {
+                                            tracing::info!(
+                                                new_upstream = %new_upstream,
+                                                "Promoted next cached upstream after send failure"
+                                            );
+                                        }
+                                        // Only trigger failover once per batch
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            send_res
         } else {
             Ok(0)
         }
