@@ -116,7 +116,15 @@ echo ""
 TEMP_DIR="${OUTPUT_DIR}/tmp_$$"
 mkdir -p "$TEMP_DIR"
 
-# Launch all pings concurrently
+# Create per-node latency files first
+for src_node in "${NODE_ARRAY[@]}"; do
+    if [ "${NODE_TYPES[$src_node]}" = "Obu" ]; then
+        node_latency_file="${OUTPUT_DIR}/${src_node}_latencies.txt"
+        > "$node_latency_file"
+    fi
+done
+
+# Launch ALL pings simultaneously in one batch for maximum concurrency
 ping_pids=()
 for src_node in "${NODE_ARRAY[@]}"; do
     src_type="${NODE_TYPES[$src_node]}"
@@ -132,10 +140,6 @@ for src_node in "${NODE_ARRAY[@]}"; do
     if [ -z "$src_ip" ]; then
         continue
     fi
-    
-    # Create per-node latency file
-    node_latency_file="${OUTPUT_DIR}/${src_node}_latencies.txt"
-    > "$node_latency_file"
     
     for dst_node in "${NODE_ARRAY[@]}"; do
         dst_type="${NODE_TYPES[$dst_node]}"
@@ -154,13 +158,15 @@ for src_node in "${NODE_ARRAY[@]}"; do
             continue
         fi
         
-        # Launch ping in background
+        # Launch ping in background - all will start nearly simultaneously
         (
             pair_id="${src_node}_to_${dst_node}"
             result_file="${TEMP_DIR}/${pair_id}.txt"
             
             # Ping and extract RTT values (in ms, will convert to μs)
-            ping_output=$(sudo ip netns exec "$src_ns" ping -c "$PING_COUNT" -W 1 -i 0.2 "$dst_ip" 2>/dev/null || echo "failed")
+            # Use -i 0.05 (50ms between pings) for faster measurement
+            # Use -f for flood ping if running as root (fastest, but requires root)
+            ping_output=$(sudo ip netns exec "$src_ns" ping -c "$PING_COUNT" -W 1 -i 0.05 "$dst_ip" 2>/dev/null || echo "failed")
             
             if echo "$ping_output" | grep -q "rtt min/avg/max/mdev"; then
                 # Extract avg RTT in ms
