@@ -1,9 +1,7 @@
-use super::routing::Routing;
 use anyhow::Result;
 use common::device::Device;
 use common::tun::Tun;
-use futures::{future::join_all, Future};
-use itertools::Itertools;
+use futures::Future;
 use std::{io::IoSlice, sync::Arc};
 use uninit::uninit_array;
 
@@ -45,48 +43,9 @@ pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<
     }
 }
 
-// Re-export shared helper function from node_lib
+// Re-export shared helper functions from node_lib
 pub use node_lib::control::node::bytes_to_hex;
-
-pub async fn handle_messages(
-    messages: Vec<ReplyType>,
-    tun: &Arc<Tun>,
-    dev: &Arc<Device>,
-    routing: Option<Arc<std::sync::RwLock<Routing>>>,
-) -> Result<()> {
-    let future_vec = messages
-        .iter()
-        .map(|reply| {
-            let _routing_clone = routing.clone();
-            async move {
-                match reply {
-                    ReplyType::TapFlat(buf) => {
-                        let vec = [IoSlice::new(buf)];
-                        let _ = tun
-                            .send_vectored(&vec)
-                            .await
-                            .inspect_err(|e| tracing::error!(?e, "error sending to tap"));
-                    }
-                    ReplyType::WireFlat(buf) => {
-                        let vec = [IoSlice::new(buf)];
-                        let send_res = dev.send_vectored(&vec).await;
-                        if let Err(e) = send_res {
-                            tracing::error!(?e, "error sending to dev");
-
-                            // For RSUs, just log the error
-                            tracing::warn!(
-                                "Send error occurred in RSU, but no failover action needed"
-                            );
-                        }
-                    }
-                };
-            }
-        })
-        .collect_vec();
-
-    join_all(future_vec).await;
-    Ok(())
-}
+pub use node_lib::control::node::handle_messages;
 
 /// Process and send a batch of replies efficiently using vectored I/O
 ///
