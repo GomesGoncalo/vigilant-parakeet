@@ -10,6 +10,8 @@ use config::Config;
 #[cfg(feature = "webview")]
 use itertools::Itertools;
 use node_lib::args::NodeType;
+#[cfg(test)]
+use node_lib::PACKET_BUFFER_SIZE;
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -353,7 +355,7 @@ mod tests {
         assert!(ch.set_params(map).is_ok());
 
         // Now exercise send/should_send by sending a packet with the correct MAC
-        let mut packet = [0u8; 1500];
+        let mut packet = [0u8; PACKET_BUFFER_SIZE];
         // destination mac = our mac
         packet[0..6].copy_from_slice(&mac.bytes());
         // payload small

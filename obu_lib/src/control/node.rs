@@ -5,6 +5,7 @@ use common::tun::Tun;
 use futures::{future::join_all, Future};
 use itertools::Itertools;
 use node_lib::messages::message::Message;
+use node_lib::PACKET_BUFFER_SIZE;
 use std::{io::IoSlice, sync::Arc};
 use uninit::uninit_array;
 
@@ -166,14 +167,14 @@ pub async fn handle_messages_batched(
     Ok(())
 }
 
-fn buffer() -> [u8; 1500] {
-    let buf = uninit_array![u8; 1500];
-    unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) }
+fn buffer() -> [u8; PACKET_BUFFER_SIZE] {
+    let buf = uninit_array![u8; PACKET_BUFFER_SIZE];
+    unsafe { std::mem::transmute::<_, [u8; PACKET_BUFFER_SIZE]>(buf) }
 }
 
 pub async fn wire_traffic<Fut>(
     dev: &Arc<Device>,
-    callable: impl FnOnce([u8; 1500], usize) -> Fut,
+    callable: impl FnOnce([u8; PACKET_BUFFER_SIZE], usize) -> Fut,
 ) -> Result<Option<Vec<ReplyType>>>
 where
     Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,
@@ -187,7 +188,7 @@ where
 
 pub async fn tap_traffic<Fut>(
     dev: &Arc<Tun>,
-    callable: impl FnOnce([u8; 1500], usize) -> Fut,
+    callable: impl FnOnce([u8; PACKET_BUFFER_SIZE], usize) -> Fut,
 ) -> Result<Option<Vec<ReplyType>>>
 where
     Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,

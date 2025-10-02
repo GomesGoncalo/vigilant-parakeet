@@ -12,7 +12,7 @@ use futures::StreamExt;
 use itertools::Itertools;
 use mac_address::MacAddress;
 use netns_rs::NetNs;
-use node_lib::Node;
+use node_lib::{Node, PACKET_BUFFER_SIZE};
 use rand::Rng;
 use std::str::FromStr;
 use std::{
@@ -61,7 +61,7 @@ mod simulator_tests {
 
         assert!(ch.set_params(map).is_ok());
 
-        let mut packet = [0u8; 1500];
+        let mut packet = [0u8; PACKET_BUFFER_SIZE];
         packet[0..6].copy_from_slice(&mac.bytes());
         packet[6] = 0x42;
 
@@ -84,7 +84,7 @@ mod simulator_tests {
         );
 
         // packet with a different destination MAC
-        let mut packet = [0u8; 1500];
+        let mut packet = [0u8; PACKET_BUFFER_SIZE];
         packet[0..6].copy_from_slice(&[9u8, 9, 9, 9, 9, 9]);
         let res = ch.send(packet, 7).await;
         assert!(res.is_err());
@@ -110,7 +110,7 @@ mod simulator_tests {
         );
         assert!(ch.set_params(map).is_ok());
 
-        let mut packet = [0u8; 1500];
+        let mut packet = [0u8; PACKET_BUFFER_SIZE];
         packet[0..6].copy_from_slice(&mac.bytes());
         let res = ch.send(packet, 7).await;
         // With loss=1.0, should_send will bail and send returns Err
@@ -159,7 +159,7 @@ impl Drop for NamespaceWrapper {
 }
 
 struct Packet {
-    packet: [u8; 1500],
+    packet: [u8; PACKET_BUFFER_SIZE],
     size: usize,
     instant: Instant,
 }
@@ -255,7 +255,7 @@ impl Channel {
         this
     }
 
-    pub async fn send(&self, packet: [u8; 1500], size: usize) -> Result<()> {
+    pub async fn send(&self, packet: [u8; PACKET_BUFFER_SIZE], size: usize) -> Result<()> {
         self.should_send(&packet[..size])?;
 
         // Send packet through unbounded channel - no blocking on fast path
@@ -471,8 +471,8 @@ impl Simulator {
     async fn generate_channel_reads(
         node: String,
         channel: Arc<Channel>,
-    ) -> Result<([u8; 1500], usize, String, Arc<Channel>), Error> {
-        let mut buf: [u8; 1500] = [0u8; 1500];
+    ) -> Result<([u8; PACKET_BUFFER_SIZE], usize, String, Arc<Channel>), Error> {
+        let mut buf: [u8; PACKET_BUFFER_SIZE] = [0u8; PACKET_BUFFER_SIZE];
         let n = channel.recv(&mut buf).await?;
         Ok((buf, n, node, channel))
     }

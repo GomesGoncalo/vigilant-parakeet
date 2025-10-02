@@ -8,6 +8,9 @@ pub mod error;
 pub mod messages;
 pub mod metrics;
 
+/// Standard Maximum Transmission Unit (MTU) for Ethernet packets
+pub const PACKET_BUFFER_SIZE: usize = 1500;
+
 /// Shared trait for all node types (OBU and RSU).
 /// Provides a common interface for runtime downcasting to concrete node types.
 pub trait Node: Send + Sync {

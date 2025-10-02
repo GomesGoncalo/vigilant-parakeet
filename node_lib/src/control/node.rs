@@ -6,6 +6,8 @@ use itertools::Itertools;
 use std::{io::IoSlice, sync::Arc};
 use uninit::uninit_array;
 
+use crate::PACKET_BUFFER_SIZE;
+
 #[derive(Debug)]
 pub enum ReplyType {
     /// Wire traffic (to device) - flat serialization
@@ -90,14 +92,14 @@ pub async fn handle_messages(
     Ok(())
 }
 
-fn buffer() -> [u8; 1500] {
-    let buf = uninit_array![u8; 1500];
-    unsafe { std::mem::transmute::<_, [u8; 1500]>(buf) }
+fn buffer() -> [u8; PACKET_BUFFER_SIZE] {
+    let buf = uninit_array![u8; PACKET_BUFFER_SIZE];
+    unsafe { std::mem::transmute::<_, [u8; PACKET_BUFFER_SIZE]>(buf) }
 }
 
 pub async fn wire_traffic<Fut>(
     dev: &Arc<Device>,
-    callable: impl FnOnce([u8; 1500], usize) -> Fut,
+    callable: impl FnOnce([u8; PACKET_BUFFER_SIZE], usize) -> Fut,
 ) -> Result<Option<Vec<ReplyType>>>
 where
     Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,
@@ -111,7 +113,7 @@ where
 
 pub async fn tap_traffic<Fut>(
     dev: &Arc<Tun>,
-    callable: impl FnOnce([u8; 1500], usize) -> Fut,
+    callable: impl FnOnce([u8; PACKET_BUFFER_SIZE], usize) -> Fut,
 ) -> Result<Option<Vec<ReplyType>>>
 where
     Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,

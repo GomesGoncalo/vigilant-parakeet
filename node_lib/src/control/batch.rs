@@ -4,6 +4,7 @@
 // and improve throughput. It can be enabled via the "batch_processing" feature flag.
 
 use crate::control::node::ReplyType;
+use crate::PACKET_BUFFER_SIZE;
 use anyhow::Result;
 use common::batch::{RecvBatch, SendBatch, MAX_BATCH_SIZE};
 use common::device::Device;
@@ -11,6 +12,22 @@ use common::tun::Tun;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
+
+// Batch processing constants
+/// Default maximum number of packets to batch together
+const DEFAULT_MAX_BATCH_SIZE: usize = 16;
+
+/// Default maximum wait time in milliseconds before sending a partial batch
+const DEFAULT_MAX_WAIT_MS: u64 = 1;
+
+/// Exponential moving average smoothing factor for adaptive batching
+const EMA_ALPHA: f64 = 0.1;
+
+/// Threshold for increasing batch size (80% full)
+const BATCH_INCREASE_THRESHOLD: f64 = 0.8;
+
+/// Threshold for decreasing batch size (30% full)
+const BATCH_DECREASE_THRESHOLD: f64 = 0.3;
 
 /// Configuration for batch processing
 #[derive(Debug, Clone)]
@@ -26,8 +43,8 @@ pub struct BatchConfig {
 impl Default for BatchConfig {
     fn default() -> Self {
         Self {
-            max_batch_size: 16,
-            max_wait_ms: 1, // 1ms max latency added
+            max_batch_size: DEFAULT_MAX_BATCH_SIZE,
+            max_wait_ms: DEFAULT_MAX_WAIT_MS,
             adaptive: true,
         }
     }
@@ -42,7 +59,7 @@ pub async fn recv_batch_wire(dev: &Arc<Device>, config: &BatchConfig) -> Result<
     let deadline = Duration::from_millis(config.max_wait_ms);
 
     // Try to receive first packet (blocking)
-    let mut buf = [0u8; 1500];
+    let mut buf = [0u8; PACKET_BUFFER_SIZE];
     let n = dev.recv(&mut buf).await?;
     batch.push(&buf[..n])?;
 
@@ -116,7 +133,7 @@ impl AdaptiveBatchSize {
             min_size,
             max_size: max_size.min(MAX_BATCH_SIZE),
             packets_per_batch_avg: min_size as f64,
-            alpha: 0.1,
+            alpha: EMA_ALPHA,
         }
     }
 
@@ -131,11 +148,12 @@ impl AdaptiveBatchSize {
             + (1.0 - self.alpha) * self.packets_per_batch_avg;
 
         // If we're consistently filling batches, increase size
-        if self.packets_per_batch_avg > (self.current_size as f64 * 0.8) {
+        if self.packets_per_batch_avg > (self.current_size as f64 * BATCH_INCREASE_THRESHOLD) {
             self.current_size = (self.current_size * 2).min(self.max_size);
         }
         // If batches are mostly empty, decrease size
-        else if self.packets_per_batch_avg < (self.current_size as f64 * 0.3) {
+        else if self.packets_per_batch_avg < (self.current_size as f64 * BATCH_DECREASE_THRESHOLD)
+        {
             self.current_size = (self.current_size / 2).max(self.min_size);
         }
     }
