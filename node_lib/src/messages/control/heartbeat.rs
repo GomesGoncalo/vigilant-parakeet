@@ -45,6 +45,30 @@ impl<'a> Heartbeat<'a> {
                 .unwrap(),
         )
     }
+
+    /// Internal accessor for zero-copy serialization - returns raw duration bytes
+    #[inline]
+    pub(crate) fn duration_bytes(&self) -> &[u8] {
+        &self.duration
+    }
+
+    /// Internal accessor for zero-copy serialization - returns raw id bytes
+    #[inline]
+    pub(crate) fn id_bytes(&self) -> &[u8] {
+        &self.id
+    }
+
+    /// Internal accessor for zero-copy serialization - returns raw hops bytes
+    #[inline]
+    pub(crate) fn hops_bytes(&self) -> &[u8] {
+        &self.hops
+    }
+
+    /// Internal accessor for zero-copy serialization - returns raw source bytes
+    #[inline]
+    pub(crate) fn source_bytes(&self) -> &[u8] {
+        &self.source
+    }
 }
 
 impl<'a> TryFrom<&'a [u8]> for Heartbeat<'a> {
@@ -138,6 +162,41 @@ impl<'a> HeartbeatReply<'a> {
             source: value.source.clone(),
             sender: Cow::Owned(sender.bytes().to_vec()),
         }
+    }
+
+    /// Zero-copy in-place serialization of a HeartbeatReply directly from a borrowed Heartbeat.
+    /// This avoids cloning Cow data and allocating intermediate HeartbeatReply.
+    ///
+    /// # Arguments
+    /// * `heartbeat` - The borrowed heartbeat to reply to
+    /// * `sender` - The MAC address of the node sending the reply
+    /// * `buf` - Pre-allocated buffer to write into (must be at least 36 bytes)
+    ///
+    /// # Returns
+    /// The number of bytes written
+    ///
+    /// # Performance
+    /// This eliminates 2-3 allocations per reply compared to:
+    /// ```ignore
+    /// let reply = HeartbeatReply::from_sender(hb, mac);
+    /// let wire: Vec<u8> = (&reply).into();
+    /// ```
+    pub fn serialize_from_heartbeat_into(
+        heartbeat: &'a Heartbeat,
+        sender: MacAddress,
+        buf: &mut Vec<u8>,
+    ) -> usize {
+        buf.clear();
+        buf.reserve(36);
+
+        // duration(16) + id(4) + hops(4) + source(6) + sender(6) = 36 bytes
+        buf.extend_from_slice(heartbeat.duration_bytes());
+        buf.extend_from_slice(heartbeat.id_bytes());
+        buf.extend_from_slice(heartbeat.hops_bytes());
+        buf.extend_from_slice(heartbeat.source_bytes());
+        buf.extend_from_slice(&sender.bytes());
+
+        36
     }
 
     pub fn duration(&self) -> Duration {
@@ -354,5 +413,62 @@ mod tests {
         let pkt = [0u8; 20];
         let res = crate::messages::control::heartbeat::HeartbeatReply::try_from(&pkt[..]);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn zero_copy_heartbeat_reply_serialization_matches_traditional() {
+        use super::HeartbeatReply;
+
+        // Create a heartbeat and parse it to get borrowed references
+        let hb = Heartbeat::new(Duration::from_millis(100), 42, [1u8; 6].into());
+        let hb_msg = Message::new(
+            [2u8; 6].into(),
+            [255u8; 6].into(),
+            PacketType::Control(Control::Heartbeat(hb)),
+        );
+        let hb_wire: Vec<u8> = (&hb_msg).into();
+        let parsed = Message::try_from(&hb_wire[..]).expect("parse");
+        let hb_borrowed = match parsed.get_packet_type() {
+            PacketType::Control(Control::Heartbeat(h)) => h,
+            _ => panic!("wrong type"),
+        };
+
+        let sender: MacAddress = [9u8; 6].into();
+        let from: MacAddress = [10u8; 6].into();
+        let to: MacAddress = [11u8; 6].into();
+
+        // Traditional approach
+        let reply_traditional = HeartbeatReply::from_sender(hb_borrowed, sender);
+        let msg_traditional = Message::new(
+            from,
+            to,
+            PacketType::Control(Control::HeartbeatReply(reply_traditional)),
+        );
+        let wire_traditional: Vec<u8> = (&msg_traditional).into();
+
+        // Zero-copy approach
+        let mut wire_zero_copy = Vec::new();
+        Message::serialize_heartbeat_reply_into(hb_borrowed, sender, from, to, &mut wire_zero_copy);
+
+        // They should produce identical output
+        assert_eq!(
+            wire_traditional, wire_zero_copy,
+            "Zero-copy serialization must produce identical output to traditional approach"
+        );
+
+        // Verify it can be parsed back
+        let parsed_back = Message::try_from(&wire_zero_copy[..]).expect("parse back");
+        assert_eq!(parsed_back.from().unwrap(), from);
+        assert_eq!(parsed_back.to().unwrap(), to);
+
+        match parsed_back.get_packet_type() {
+            PacketType::Control(Control::HeartbeatReply(hbr)) => {
+                assert_eq!(hbr.sender(), sender);
+                assert_eq!(hbr.source(), [1u8; 6].into());
+                assert_eq!(hbr.id(), 42);
+                assert_eq!(hbr.duration(), Duration::from_millis(100));
+            }
+            _ => panic!("Expected HeartbeatReply"),
+        }
     }
 }

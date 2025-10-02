@@ -57,3 +57,12 @@ harness = false
 [[bench]]
 name = "flat_vs_nested_serialization"
 harness = false
+
+[[bench]]
+name = "zero_copy_reply"
+harness = false
+
+[[bench]]
+name = "zero_copy_data_messages"
+harness = false
+

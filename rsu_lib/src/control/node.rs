@@ -25,9 +25,7 @@ pub enum DebugReplyType {
 }
 
 #[cfg(any(test, feature = "test_helpers"))]
-pub fn get_msgs(
-    response: &Result<Option<Vec<ReplyType>>>,
-) -> Result<Option<Vec<DebugReplyType>>> {
+pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<DebugReplyType>>> {
     use anyhow::bail;
     use itertools::Itertools;
     use node_lib::messages::message::Message;
