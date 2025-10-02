@@ -29,9 +29,9 @@ mod node_tests {
         let (device, reader_fd, writer_fd) = mk_device_from_pipe(dev_mac);
         let dev = std::sync::Arc::new(device);
 
-        // Prepare a Tap reply: arbitrary payload
+        // Prepare a TapFlat reply: arbitrary payload
         let payload = b"hello".to_vec();
-        let msgs = vec![obu_lib::control::node::ReplyType::Tap(vec![payload.clone()])];
+        let msgs = vec![obu_lib::control::node::ReplyType::TapFlat(payload.clone())];
 
         // Spawn handle_messages and ensure peer receives the same bytes
         let routing: Option<std::sync::Arc<std::sync::RwLock<obu_lib::control::routing::Routing>>> = None;
@@ -94,8 +94,8 @@ mod node_tests {
         let to: MacAddress = primary;
         let td = ToDownstream::new(&from.bytes(), to, b"x");
         let msg = Message::new(from, to, PacketType::Data(Data::Downstream(td)));
-        let wire: Vec<Vec<u8>> = (&msg).into();
-        let replies = vec![obu_lib::control::node::ReplyType::Wire(wire)];
+        let wire: Vec<u8> = (&msg).into();
+        let replies = vec![obu_lib::control::node::ReplyType::WireFlat(wire)];
 
         // Run handle_messages with routing handle so failover can be triggered
         let (tun, _peer) = node_lib::test_helpers::util::mk_shim_pair();

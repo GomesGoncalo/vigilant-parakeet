@@ -10,6 +10,9 @@ use config::Config;
 #[cfg(feature = "webview")]
 use itertools::Itertools;
 use node_lib::args::NodeType;
+#[cfg(test)]
+use node_lib::PACKET_BUFFER_SIZE;
+#[cfg(any(test, feature = "webview"))]
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -58,7 +61,7 @@ async fn channel_post_fn(
     }
 }
 
-#[allow(dead_code)]
+#[cfg(any(test, feature = "webview"))]
 #[derive(Serialize)]
 struct ErrorMessage {
     code: u16,
@@ -92,7 +95,7 @@ async fn main() -> Result<()> {
         let settings = Config::builder()
             .add_source(config::File::with_name(&config))
             .build()?;
-        tracing::info!(?settings, "settings");
+        tracing::debug!(?settings, "Node configuration loaded");
 
         #[cfg(not(feature = "test_helpers"))]
         let tun = Arc::new({
@@ -353,7 +356,7 @@ mod tests {
         assert!(ch.set_params(map).is_ok());
 
         // Now exercise send/should_send by sending a packet with the correct MAC
-        let mut packet = [0u8; 1500];
+        let mut packet = [0u8; PACKET_BUFFER_SIZE];
         // destination mac = our mac
         packet[0..6].copy_from_slice(&mac.bytes());
         // payload small

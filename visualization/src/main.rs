@@ -17,6 +17,7 @@ mod graph_helpers;
 use crate::graph::Graph;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+#[allow(dead_code)]
 struct UpstreamInfo {
     hops: u32,
     mac: String,
@@ -24,6 +25,7 @@ struct UpstreamInfo {
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+#[allow(dead_code)]
 struct NodeInfo {
     node_type: String,
     upstream: Option<UpstreamInfo>,
@@ -31,6 +33,7 @@ struct NodeInfo {
 }
 
 #[derive(Clone, PartialEq, Properties)]
+#[allow(dead_code)]
 struct Props {
     nodes: Vec<String>,
     channels: HashMap<String, HashMap<String, ChannelParameters>>,
@@ -50,8 +53,8 @@ fn OutterForm(props: &Props) -> Html {
                 return;
             };
 
+            tracing::debug!(latency, loss, "Channel parameters updated");
             //let map = HashMap::new();
-            tracing::info!(latency, loss, "emitted params");
             //let _ = Request::post(&format!("http://127.0.0.1:3030/channel/{}/{}", from, to).to_string()).json(format!("{{\"latency\":\"{latency}\",\"loss\":\"{loss}\"}}")).unwrap()
             //     .send()
             //     .await;
@@ -68,12 +71,12 @@ fn OutterForm(props: &Props) -> Html {
         let current_input_text = input_event_target.unchecked_into::<HtmlInputElement>();
 
         let Ok(number) = current_input_text.value().parse() else {
-            tracing::info!("Could not parse loss");
+            tracing::warn!("Failed to parse latency value");
             return;
         };
 
         if let (Some(from), Some(to)) = (&*fromc, &*toc) {
-            tracing::info!(number, "emitted latency");
+            tracing::debug!(latency_ms = number, "Latency updated");
             emitc.emit((number, channels.get(from).unwrap().get(to).unwrap().loss));
         }
     });
@@ -86,12 +89,12 @@ fn OutterForm(props: &Props) -> Html {
         let current_input_text = input_event_target.unchecked_into::<HtmlInputElement>();
 
         let Ok(number) = current_input_text.value().parse() else {
-            tracing::info!("Could not parse loss");
+            tracing::warn!("Failed to parse loss rate value");
             return;
         };
 
         if let (Some(from), Some(to)) = (&*fromc, &*toc) {
-            tracing::info!(number, "emitted loss");
+            tracing::debug!(loss_rate = number, "Loss rate updated");
             emit.emit((
                 channels
                     .get(from)
@@ -143,8 +146,8 @@ fn app() -> Html {
 
                     if let Ok(mut node_stats) = request.json::<Vec<String>>().await {
                         node_stats.sort();
-                        tracing::info!(?node_stats, "these are the current nodes");
                         if *nodes != node_stats {
+                            tracing::debug!(count = node_stats.len(), "Node list updated");
                             nodes.set(node_stats);
                         }
                     }
@@ -172,8 +175,9 @@ fn app() -> Html {
                         .json::<HashMap<String, HashMap<String, ChannelParameters>>>()
                         .await
                     {
-                        tracing::info!(?channel_stats, "these are the current stats");
                         if *channels != channel_stats {
+                            let link_count: usize = channel_stats.values().map(|m| m.len()).sum();
+                            tracing::debug!(link_count, "Channel stats updated");
                             channels.set(channel_stats);
                         }
                     }

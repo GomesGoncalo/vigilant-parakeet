@@ -4,6 +4,7 @@ use futures::Future;
 use node_lib::control::node::ReplyType;
 use std::sync::Arc;
 
+// Session support is under development - types are placeholders for future implementation
 #[allow(dead_code)]
 pub struct SessionParams {}
 
@@ -19,12 +20,12 @@ pub enum Session {
 }
 
 impl Session {
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(tun: Arc<Tun>) -> Self {
         Self::NoSession(tun)
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn process<Fut>(
         &self,
         callable: impl FnOnce([u8; 1500], usize) -> Fut,

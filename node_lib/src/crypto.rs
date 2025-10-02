@@ -1,8 +1,8 @@
+use crate::error::NodeError;
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
 };
-use anyhow::{anyhow, Result};
 
 /// Fixed key for initial implementation. In production, this would be exchanged securely.
 const FIXED_KEY: &[u8; 32] = b"vigilant_parakeet_fixed_key_256!";
@@ -12,13 +12,13 @@ const FIXED_KEY: &[u8; 32] = b"vigilant_parakeet_fixed_key_256!";
 ///
 /// Note: Encryption adds 28 bytes of overhead (12-byte nonce + 16-byte auth tag).
 /// MTU is set to 1436 bytes at the interface level to account for this overhead.
-pub fn encrypt_payload(plaintext: &[u8]) -> Result<Vec<u8>> {
+pub fn encrypt_payload(plaintext: &[u8]) -> Result<Vec<u8>, NodeError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(FIXED_KEY));
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
     let ciphertext = cipher
         .encrypt(&nonce, plaintext)
-        .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+        .map_err(|e| NodeError::EncryptionError(e.to_string()))?;
 
     // Prepend nonce to ciphertext for transmission
     let mut result = nonce.to_vec();
@@ -28,9 +28,9 @@ pub fn encrypt_payload(plaintext: &[u8]) -> Result<Vec<u8>> {
 
 /// Decrypt data that was encrypted with encrypt_payload.
 /// Expects nonce (12 bytes) + ciphertext.
-pub fn decrypt_payload(encrypted_data: &[u8]) -> Result<Vec<u8>> {
+pub fn decrypt_payload(encrypted_data: &[u8]) -> Result<Vec<u8>, NodeError> {
     if encrypted_data.len() < 12 {
-        return Err(anyhow!("Encrypted data too short (missing nonce)"));
+        return Err(NodeError::EncryptedDataTooShort(encrypted_data.len()));
     }
 
     let (nonce_bytes, ciphertext) = encrypted_data.split_at(12);
@@ -39,7 +39,7 @@ pub fn decrypt_payload(encrypted_data: &[u8]) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(FIXED_KEY));
     let plaintext = cipher
         .decrypt(nonce, ciphertext)
-        .map_err(|e| anyhow!("Decryption failed: {}", e))?;
+        .map_err(|e| NodeError::DecryptionError(e.to_string()))?;
 
     Ok(plaintext)
 }

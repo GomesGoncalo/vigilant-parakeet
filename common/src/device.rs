@@ -1,11 +1,9 @@
 use crate::network_interface::NetworkInterface;
 #[cfg(feature = "stats")]
-use crate::stats::Stats;
+use crate::stats::{AtomicStats, Stats};
 #[cfg(all(not(test), not(feature = "test_helpers")))]
 use anyhow::Context;
 use anyhow::Result;
-#[cfg(feature = "stats")]
-use std::sync::Mutex;
 
 #[cfg(any(test, feature = "test_helpers"))]
 mod test_fd_registry {
@@ -80,7 +78,7 @@ mod stats_tests {
     use super::Device;
     use super::DeviceIo;
     use crate::device::close_raw_fd;
-    use crate::stats::Stats;
+    use crate::stats::AtomicStats;
     use mac_address::MacAddress;
     use std::os::unix::io::FromRawFd;
 
@@ -112,7 +110,7 @@ mod stats_tests {
         let device = Device {
             mac_address: mac,
             fd: async_fd,
-            stats: Stats::default().into(),
+            stats: AtomicStats::new(),
         };
 
         let before = device.stats();
@@ -155,7 +153,7 @@ mod stats_tests {
         let device = Device {
             mac_address: mac,
             fd: async_fd,
-            stats: Stats::default().into(),
+            stats: AtomicStats::new(),
         };
 
         let before = device.stats();
@@ -338,7 +336,7 @@ pub struct Device {
     mac_address: MacAddress,
     fd: AsyncFd<DeviceIo>,
     #[cfg(feature = "stats")]
-    stats: Mutex<Stats>,
+    stats: AtomicStats,
 }
 
 impl NetworkInterface for Device {
@@ -387,7 +385,7 @@ impl Device {
             mac_address,
             fd: AsyncFd::new(unsafe { DeviceIo::from_raw_fd(raw_fd) })?,
             #[cfg(feature = "stats")]
-            stats: Stats::default().into(),
+            stats: AtomicStats::new(),
         })
     }
 
@@ -422,7 +420,7 @@ impl Device {
             Device {
                 mac_address,
                 fd,
-                stats: Stats::default().into(),
+                stats: AtomicStats::new(),
             }
         }
         #[cfg(not(feature = "stats"))]
@@ -438,9 +436,7 @@ impl Device {
                 Ok(res) => {
                     #[cfg(feature = "stats")]
                     if let Ok(size) = res {
-                        let mut stats = self.stats.lock().unwrap();
-                        stats.received_packets += 1;
-                        stats.received_bytes += size as u128;
+                        self.stats.record_receive(size);
                     }
                     return res;
                 }
@@ -456,9 +452,7 @@ impl Device {
                 Ok(res) => {
                     #[cfg(feature = "stats")]
                     if let Ok(size) = res {
-                        let mut stats = self.stats.lock().unwrap();
-                        stats.transmitted_packets += 1;
-                        stats.transmitted_bytes += size as u128;
+                        self.stats.record_transmit(size);
                     }
                     return res;
                 }
@@ -469,7 +463,6 @@ impl Device {
 
     pub async fn send_all(&self, buf: &[u8]) -> io::Result<()> {
         let mut remaining = buf;
-        let _size = buf.len();
         while !remaining.is_empty() {
             match self.send(remaining).await? {
                 0 => return Err(ErrorKind::WriteZero.into()),
@@ -479,12 +472,7 @@ impl Device {
                 }
             }
         }
-        #[cfg(feature = "stats")]
-        {
-            let mut stats = self.stats.lock().unwrap();
-            stats.transmitted_packets += 1;
-            stats.transmitted_bytes += _size as u128;
-        }
+        // Note: stats are already incremented by individual send() calls
         Ok(())
     }
 
@@ -495,9 +483,7 @@ impl Device {
                 Ok(res) => {
                     #[cfg(feature = "stats")]
                     if let Ok(size) = res {
-                        let mut stats = self.stats.lock().unwrap();
-                        stats.transmitted_packets += 1;
-                        stats.transmitted_bytes += size as u128;
+                        self.stats.record_transmit(size);
                     }
                     return res;
                 }
@@ -508,7 +494,7 @@ impl Device {
 
     #[cfg(feature = "stats")]
     pub fn stats(&self) -> Stats {
-        *self.stats.lock().unwrap()
+        self.stats.snapshot()
     }
 }
 
@@ -543,11 +529,11 @@ mod tests {
     fn device_from_parts(mac: MacAddress, fd: tokio::io::unix::AsyncFd<DeviceIo>) -> Device {
         #[cfg(feature = "stats")]
         {
-            use crate::stats::Stats;
+            use crate::stats::AtomicStats;
             Device {
                 mac_address: mac,
                 fd,
-                stats: Stats::default().into(),
+                stats: AtomicStats::new(),
             }
         }
         #[cfg(not(feature = "stats"))]

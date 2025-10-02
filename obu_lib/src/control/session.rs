@@ -4,6 +4,7 @@ use common::tun::Tun;
 use futures::Future;
 use std::sync::Arc;
 
+// Session support is under development - types are placeholders for future implementation
 #[allow(dead_code)]
 pub struct SessionParams {}
 

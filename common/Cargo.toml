@@ -15,6 +15,7 @@ libc = "*"
 serde = { version = "*", features = ["derive"]}
 futures = "*"
 config = "*"
+thiserror = "*"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 serde = { version = "*", features = ["derive"]}

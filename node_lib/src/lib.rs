@@ -1,10 +1,36 @@
 pub mod args;
 pub use args::Args;
+pub mod buffer_pool;
 pub mod control;
 pub mod crypto;
 pub mod data;
+pub mod error;
 pub mod messages;
 pub mod metrics;
+
+/// Standard Maximum Transmission Unit (MTU) for Ethernet packets
+pub const PACKET_BUFFER_SIZE: usize = 1500;
+
+// Type aliases for common complex types to improve readability
+use common::device::Device;
+use common::tun::Tun;
+use std::sync::{Arc, RwLock};
+
+/// Shared reference to a network device
+pub type SharedDevice = Arc<Device>;
+
+/// Shared reference to a TUN/TAP interface
+pub type SharedTun = Arc<Tun>;
+
+/// Thread-safe shared mutable reference (used for routing state)
+pub type Shared<T> = Arc<RwLock<T>>;
+
+/// Shared trait for all node types (OBU and RSU).
+/// Provides a common interface for runtime downcasting to concrete node types.
+pub trait Node: Send + Sync {
+    /// For runtime downcasting to concrete node types.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
 // Re-export test helpers for integration tests.
 // Make this available unconditionally so integration tests can import
 // `node_lib::test_helpers::hub` without passing a feature flag.

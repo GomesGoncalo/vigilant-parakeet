@@ -1,4 +1,5 @@
 use crate::sim_args::SimArgs;
+#[cfg(any(test, feature = "webview"))]
 use anyhow::Context;
 use anyhow::{bail, Error, Result};
 use common::channel_parameters::ChannelParameters;
@@ -12,18 +13,16 @@ use futures::StreamExt;
 use itertools::Itertools;
 use mac_address::MacAddress;
 use netns_rs::NetNs;
-use obu_lib::Node as ObuNode;
+use node_lib::{Node, PACKET_BUFFER_SIZE};
 use rand::Rng;
-use rsu_lib::Node as RsuNode;
-use std::collections::VecDeque;
+#[cfg(any(test, feature = "webview"))]
 use std::str::FromStr;
-use std::sync::Mutex;
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
     time::Duration,
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 // uninit_array is not used here
 
@@ -64,7 +63,7 @@ mod simulator_tests {
 
         assert!(ch.set_params(map).is_ok());
 
-        let mut packet = [0u8; 1500];
+        let mut packet = [0u8; PACKET_BUFFER_SIZE];
         packet[0..6].copy_from_slice(&mac.bytes());
         packet[6] = 0x42;
 
@@ -87,7 +86,7 @@ mod simulator_tests {
         );
 
         // packet with a different destination MAC
-        let mut packet = [0u8; 1500];
+        let mut packet = [0u8; PACKET_BUFFER_SIZE];
         packet[0..6].copy_from_slice(&[9u8, 9, 9, 9, 9, 9]);
         let res = ch.send(packet, 7).await;
         assert!(res.is_err());
@@ -113,7 +112,7 @@ mod simulator_tests {
         );
         assert!(ch.set_params(map).is_ok());
 
-        let mut packet = [0u8; 1500];
+        let mut packet = [0u8; PACKET_BUFFER_SIZE];
         packet[0..6].copy_from_slice(&mac.bytes());
         let res = ch.send(packet, 7).await;
         // With loss=1.0, should_send will bail and send returns Err
@@ -162,36 +161,51 @@ impl Drop for NamespaceWrapper {
 }
 
 struct Packet {
-    packet: [u8; 1500],
+    packet: [u8; PACKET_BUFFER_SIZE],
     size: usize,
     instant: Instant,
 }
 
 pub struct Channel {
-    tx: UnboundedSender<()>,
+    tx: mpsc::UnboundedSender<Packet>,
+    #[cfg_attr(not(feature = "webview"), allow(dead_code))]
+    param_notify_tx: mpsc::UnboundedSender<()>,
     parameters: RwLock<ChannelParameters>,
     mac: MacAddress,
     tun: Arc<Tun>,
-    queue: Mutex<VecDeque<Packet>>,
 }
 
-#[allow(dead_code)]
 impl Channel {
+    #[cfg(any(test, feature = "webview"))]
+    #[allow(dead_code)]
     pub fn params(&self) -> ChannelParameters {
-        *self.parameters.read().unwrap()
+        *self
+            .parameters
+            .read()
+            .expect("channel parameters lock poisoned")
     }
 
+    #[cfg(any(test, feature = "webview"))]
     pub fn set_params(&self, params: HashMap<String, String>) -> Result<()> {
         let result = ChannelParameters {
             latency: Duration::from_millis(
                 (params.get("latency").context("could not get latency")?).parse::<u64>()?,
             ),
             loss: f64::from_str(params.get("loss").context("could not get loss")?)?,
+            jitter: Duration::from_millis(
+                params
+                    .get("jitter")
+                    .unwrap_or(&"0".to_string())
+                    .parse::<u64>()?,
+            ),
         };
 
-        let mut inner_params = self.parameters.write().unwrap();
+        let mut inner_params = self
+            .parameters
+            .write()
+            .expect("channel parameters lock poisoned");
         *inner_params = result;
-        let _ = self.tx.send(());
+        let _ = self.param_notify_tx.send(());
         Ok(())
     }
 
@@ -202,25 +216,60 @@ impl Channel {
         from: &String,
         to: &String,
     ) -> Arc<Self> {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // Use unbounded channels for zero-copy fast path
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (param_notify_tx, mut param_notify_rx) = mpsc::unbounded_channel();
+
         tracing::info!(from, to, ?parameters, "Created channel");
         let this = Arc::new(Self {
             tx,
+            param_notify_tx,
             parameters: parameters.into(),
             mac,
             tun,
-            queue: VecDeque::with_capacity(1024).into(),
         });
         let thisc = this.clone();
+
+        // Spawn task to process packets from channel with latency simulation
         tokio::spawn(async move {
             loop {
-                let Some(packet) = thisc.queue.lock().unwrap().pop_front() else {
-                    let _ = rx.recv().await;
-                    continue;
+                let Some(packet) = rx.recv().await else {
+                    // Channel closed, exit task
+                    break;
                 };
+
                 loop {
-                    let latency = thisc.parameters.read().unwrap().latency;
+                    // Calculate latency with jitter in a separate scope to drop the lock
+                    let latency = {
+                        let params = thisc
+                            .parameters
+                            .read()
+                            .expect("channel parameters lock poisoned");
+
+                        // Apply base latency + random jitter
+                        let mut latency = params.latency;
+                        if !params.jitter.is_zero() {
+                            let mut rng = rand::rng();
+                            // Generate random jitter in range [-jitter, +jitter]
+                            let jitter_ms = params.jitter.as_millis() as i64;
+                            let random_jitter = rng.random_range(-jitter_ms..=jitter_ms);
+                            if random_jitter >= 0 {
+                                latency += Duration::from_millis(random_jitter as u64);
+                            } else {
+                                // Subtract jitter, but don't go negative
+                                let abs_jitter = (-random_jitter) as u64;
+                                if latency > Duration::from_millis(abs_jitter) {
+                                    latency -= Duration::from_millis(abs_jitter);
+                                } else {
+                                    latency = Duration::ZERO;
+                                }
+                            }
+                        }
+                        latency
+                    }; // Lock is released here
+
                     let duration = (packet.instant + latency).duration_since(Instant::now());
+
                     if duration.is_zero() {
                         let _ = thisc.tun.send_all(&packet.packet[..packet.size]).await;
                         break;
@@ -230,7 +279,9 @@ impl Channel {
                                 let _ = thisc.tun.send_all(&packet.packet[..packet.size]).await;
                                 break;
                             },
-                            _ = rx.recv() => {},
+                            _ = param_notify_rx.recv() => {
+                                // Parameters changed, recalculate duration
+                            },
                         }
                     }
                 }
@@ -239,17 +290,18 @@ impl Channel {
         this
     }
 
-    pub async fn send(&self, packet: [u8; 1500], size: usize) -> Result<()> {
+    pub async fn send(&self, packet: [u8; PACKET_BUFFER_SIZE], size: usize) -> Result<()> {
         self.should_send(&packet[..size])?;
-        let mut queue = self.queue.lock().unwrap();
-        if queue.is_empty() {
-            let _ = self.tx.send(());
-        }
-        queue.push_back(Packet {
-            packet,
-            size,
-            instant: Instant::now(),
-        });
+
+        // Send packet through unbounded channel - no blocking on fast path
+        self.tx
+            .send(Packet {
+                packet,
+                size,
+                instant: Instant::now(),
+            })
+            .map_err(|_| anyhow::anyhow!("channel send failed"))?;
+
         Ok(())
     }
 
@@ -260,7 +312,11 @@ impl Channel {
             bail!("not the right mac address")
         }
 
-        let loss = self.parameters.read().unwrap().loss;
+        let loss = self
+            .parameters
+            .read()
+            .expect("channel parameters lock poisoned")
+            .loss;
         if loss > 0.0 {
             let mut rng = rand::rng();
             if rng.random::<f64>() < loss {
@@ -278,19 +334,18 @@ impl Channel {
 }
 
 #[derive(Clone)]
-pub enum Node {
-    #[allow(dead_code)]
-    Obu(Arc<dyn ObuNode>),
-    #[allow(dead_code)]
-    Rsu(Arc<dyn RsuNode>),
+#[cfg_attr(not(feature = "webview"), allow(dead_code))]
+pub enum SimNode {
+    Obu(Arc<dyn Node>),
+    Rsu(Arc<dyn Node>),
 }
 
-impl Node {
-    #[allow(dead_code)]
+impl SimNode {
+    #[cfg(feature = "webview")]
     pub fn as_any(&self) -> &dyn std::any::Any {
         match self {
-            Node::Obu(o) => o.as_any(),
-            Node::Rsu(r) => r.as_any(),
+            SimNode::Obu(o) => o.as_any(),
+            SimNode::Rsu(r) => r.as_any(),
         }
     }
 }
@@ -299,12 +354,12 @@ pub struct Simulator {
     _namespaces: Vec<NamespaceWrapper>,
     channels: HashMap<String, HashMap<String, Arc<Channel>>>,
     /// Keep created nodes so external code (e.g. webview) may query node state.
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "webview"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    nodes: HashMap<String, (Arc<Device>, Arc<Tun>, Node)>,
+    nodes: HashMap<String, (Arc<Device>, Arc<Tun>, SimNode)>,
 }
 
-type CallbackReturn = Result<(Arc<Device>, Arc<Tun>, Node)>;
+type CallbackReturn = Result<(Arc<Device>, Arc<Tun>, SimNode)>;
 
 impl Simulator {
     #[allow(clippy::type_complexity)]
@@ -314,7 +369,7 @@ impl Simulator {
     ) -> Result<(
         HashMap<String, HashMap<String, Arc<Channel>>>,
         Vec<NamespaceWrapper>,
-        HashMap<String, (Arc<Device>, Arc<Tun>, Node)>,
+        HashMap<String, (Arc<Device>, Arc<Tun>, SimNode)>,
     )> {
         let settings = Config::builder()
             .add_source(config::File::with_name(config_file))
@@ -450,20 +505,21 @@ impl Simulator {
     async fn generate_channel_reads(
         node: String,
         channel: Arc<Channel>,
-    ) -> Result<([u8; 1500], usize, String, Arc<Channel>), Error> {
-        let mut buf: [u8; 1500] = [0u8; 1500];
+    ) -> Result<([u8; PACKET_BUFFER_SIZE], usize, String, Arc<Channel>), Error> {
+        let mut buf: [u8; PACKET_BUFFER_SIZE] = [0u8; PACKET_BUFFER_SIZE];
         let n = channel.recv(&mut buf).await?;
         Ok((buf, n, node, channel))
     }
 
-    #[allow(dead_code)]
+    #[cfg(feature = "webview")]
     pub fn get_channels(&self) -> HashMap<String, HashMap<String, Arc<Channel>>> {
         self.channels.clone()
     }
 
     /// Return a clone of the created nodes (name -> (dev, tun, node)).
-    #[allow(dead_code, clippy::type_complexity)]
-    pub fn get_nodes(&self) -> HashMap<String, (Arc<Device>, Arc<Tun>, Node)> {
+    #[cfg(feature = "webview")]
+    #[allow(clippy::type_complexity)]
+    pub fn get_nodes(&self) -> HashMap<String, (Arc<Device>, Arc<Tun>, SimNode)> {
         self.nodes.clone()
     }
 }

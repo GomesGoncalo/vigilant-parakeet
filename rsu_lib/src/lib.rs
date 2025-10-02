@@ -1,6 +1,9 @@
 pub mod args;
 pub use args::{RsuArgs, RsuParameters};
 
+pub mod builder;
+pub use builder::RsuBuilder;
+
 pub mod control;
 
 pub use control::Rsu;
@@ -8,56 +11,20 @@ pub use control::Rsu;
 use anyhow::Result;
 use common::device::Device;
 use common::tun::Tun;
-use std::any::Any;
 use std::sync::Arc;
 
-pub trait Node: Send + Sync {
-    /// For runtime downcasting to concrete node types.
-    fn as_any(&self) -> &dyn Any;
-}
+// Re-export the shared Node trait from node_lib
+pub use node_lib::Node;
 
 impl Node for Rsu {
-    fn as_any(&self) -> &dyn Any {
+    fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 }
 
 #[cfg(not(any(test, feature = "test_helpers")))]
 pub fn create(args: RsuArgs) -> Result<Arc<dyn Node>> {
-    // Use the real tokio_tun builder type in non-test builds.
-    use tokio_tun::Tun as RealTokioTun;
-
-    let real_tun: RealTokioTun = if args.ip.is_some() {
-        RealTokioTun::builder()
-            .name(args.tap_name.as_ref().unwrap_or(&String::default()))
-            .tap()
-            .mtu(args.mtu)
-            .up()
-            .address(args.ip.unwrap())
-            .build()?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
-    } else {
-        RealTokioTun::builder()
-            .name(args.tap_name.as_ref().unwrap_or(&String::default()))
-            .mtu(args.mtu)
-            .tap()
-            .up()
-            .build()?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
-    };
-
-    // Construct the common wrapper directly from the real tokio_tun instance
-    // to avoid depending on cfg-gated `From` impls that may not be present
-    // in all feature combinations.
-    let tun = Arc::new(Tun::new_real(real_tun));
-
-    let device = Arc::new(Device::new(&args.bind)?);
-
-    Ok(Rsu::new(args, tun, device)?)
+    Ok(RsuBuilder::from_args(args).build()?)
 }
 
 pub fn create_with_vdev(
@@ -65,7 +32,17 @@ pub fn create_with_vdev(
     tun: Arc<Tun>,
     node_device: Arc<Device>,
 ) -> Result<Arc<dyn Node>> {
-    Ok(Rsu::new(args, tun, node_device)?)
+    #[cfg(any(test, feature = "test_helpers"))]
+    {
+        Ok(RsuBuilder::from_args(args)
+            .with_tun(tun)
+            .with_device(node_device)
+            .build()?)
+    }
+    #[cfg(not(any(test, feature = "test_helpers")))]
+    {
+        Ok(Rsu::new(args, tun, node_device)?)
+    }
 }
 
 // Provide a test-friendly stub when the crate is compiled with the

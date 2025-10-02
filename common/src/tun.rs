@@ -73,11 +73,9 @@ pub mod test_tun {
 // Bring common IO types into scope for both test and non-test builds
 use std::io::{self, IoSlice};
 
-// Stats and Mutex are only needed when the `stats` feature is enabled
+// Stats and AtomicStats are only needed when the `stats` feature is enabled
 #[cfg(feature = "stats")]
-use crate::stats::Stats;
-#[cfg(feature = "stats")]
-use std::sync::Mutex;
+use crate::stats::{AtomicStats, Stats};
 
 // Use a conditional alias so `TokioTun` refers to the test shim when running
 // tests or when the `test_helpers` feature is enabled, otherwise use the
@@ -91,7 +89,7 @@ pub use tokio_tun::Tun as TokioTun;
 pub struct Tun {
     inner: TunInner,
     #[cfg(feature = "stats")]
-    stats: Mutex<Stats>,
+    stats: AtomicStats,
 }
 
 // Internal enum to store either the real runtime tun or the test shim.
@@ -121,7 +119,7 @@ impl Tun {
         Self {
             inner: TunInner::Shim(t),
             #[cfg(feature = "stats")]
-            stats: Stats::default().into(),
+            stats: AtomicStats::new(),
         }
     }
 
@@ -136,7 +134,7 @@ impl Tun {
         Self {
             inner: TunInner::Real(t),
             #[cfg(feature = "stats")]
-            stats: Stats::default().into(),
+            stats: AtomicStats::new(),
         }
     }
 
@@ -147,14 +145,14 @@ impl Tun {
     /// toggles. This is available when the test shim is compiled in.
     // Keep a convenience alias available for code that used the previous
     // helper name.
-    #[allow(dead_code)]
+    #[cfg(feature = "test_helpers")]
     pub fn from_shim_tun(t: test_tun::TokioTun) -> Self {
         Tun::new_shim(t)
     }
 
     #[cfg(feature = "stats")]
     pub fn stats(&self) -> Stats {
-        *self.stats.lock().unwrap()
+        self.stats.snapshot()
     }
 
     pub async fn send_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
@@ -175,9 +173,7 @@ impl Tun {
         };
         #[cfg(feature = "stats")]
         {
-            let mut guard = self.stats.lock().unwrap();
-            guard.transmitted_packets += 1;
-            guard.transmitted_bytes += size as u128;
+            self.stats.record_transmit(size);
         }
         Ok(size)
     }
@@ -190,9 +186,7 @@ impl Tun {
         };
         #[cfg(feature = "stats")]
         {
-            let mut guard = self.stats.lock().unwrap();
-            guard.received_packets += 1;
-            guard.received_bytes += size as u128;
+            self.stats.record_receive(size);
         }
         Ok(size)
     }
@@ -205,9 +199,7 @@ impl Tun {
         };
         #[cfg(feature = "stats")]
         {
-            let mut guard = self.stats.lock().unwrap();
-            guard.transmitted_packets += 1;
-            guard.transmitted_bytes += buf.len() as u128;
+            self.stats.record_transmit(buf.len());
         }
         Ok(())
     }
