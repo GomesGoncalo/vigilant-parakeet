@@ -1,12 +1,10 @@
-use super::{node::ReplyType, route::Route};
+use super::{node::ReplyType, route::Route, routing_cache::RoutingCache};
 use crate::args::ObuArgs;
 use anyhow::{bail, Result};
-use arc_swap::ArcSwapOption;
 use indexmap::IndexMap;
 use mac_address::MacAddress;
 use node_lib::messages::{control::Control, message::Message, packet_type::PacketType};
 use std::collections::{hash_map::Entry, HashMap, HashSet};
-use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 use tracing::Level;
 
@@ -95,9 +93,8 @@ mod extra_tests {
         routing.routes.insert(rsu, seqmap);
 
         // Ensure cached_candidates empty so failover path rebuilds
-        routing.cached_candidates.store(None);
-        routing.cached_upstream.store(None);
-        routing.cached_source.store(Some(src.into()));
+        routing.cache.clear();
+        routing.cache.set_upstream([99u8; 6].into(), src); // Set a source for rebuild
 
         // Call failover; this should rebuild candidates and return a primary
         let promoted = routing.failover_cached_upstream();
@@ -249,9 +246,8 @@ mod extra_tests {
         routing.routes.insert(rsu, seqmap);
 
         // Set cached source so failover can rebuild
-        routing.cached_candidates.store(None);
-        routing.cached_upstream.store(None);
-        routing.cached_source.store(Some(src.into()));
+        routing.cache.clear();
+        routing.cache.set_upstream([99u8; 6].into(), src);
 
         let promoted = routing.failover_cached_upstream();
         // Should have promoted something
@@ -466,14 +462,10 @@ mod cache_tests {
             .expect("selected");
 
         // Ensure we have candidates stored; for test determinism populate two candidates
-        use std::sync::Arc;
         let primary_before = routing.get_cached_upstream().expect("primary");
         let next_candidate: MacAddress = [11u8; 6].into();
         // store ordered candidates [primary, next]
-        routing
-            .cached_candidates
-            .store(Some(Arc::new(vec![primary_before, next_candidate])));
-        routing.cached_upstream.store(Some(primary_before.into()));
+        routing.cache.set_candidates(vec![primary_before, next_candidate]);
 
         // Simulate a send failure by directly calling failover_cached_upstream()
         let promoted = routing.failover_cached_upstream();
@@ -1591,13 +1583,7 @@ pub struct Routing {
     args: ObuArgs,
     boot: Instant,
     routes: RoutingTable,
-    cached_upstream: ArcSwapOption<MacAddress>,
-    // Remember the last source MAC for which we selected/cached an upstream (e.g., RSU MAC).
-    cached_source: ArcSwapOption<MacAddress>,
-    // Keep an ordered list of N-best candidate upstreams for fast failover.
-    // This is optional and kept in sync with `cached_upstream` when selection
-    // is performed.
-    cached_candidates: ArcSwapOption<Vec<MacAddress>>,
+    cache: RoutingCache,
     // Track distinct neighbors that forwarded heartbeats for a given source (e.g., RSU)
     source_neighbors: HashMap<MacAddress, HashSet<MacAddress>>,
 }
@@ -1613,141 +1599,103 @@ impl Routing {
             args: args.clone(),
             boot: *boot,
             routes: HashMap::default(),
-            cached_upstream: ArcSwapOption::from(None),
-            cached_source: ArcSwapOption::from(None),
-            cached_candidates: ArcSwapOption::from(None),
+            cache: RoutingCache::new(args.obu_params.cached_candidates),
             source_neighbors: HashMap::default(),
         })
     }
 
     /// Return the cached upstream MAC if present.
     pub fn get_cached_upstream(&self) -> Option<MacAddress> {
-        // Primary cached upstream (first candidate) -- kept for backwards compat.
-        self.cached_upstream.load().as_ref().map(|m| **m)
+        self.cache.get_cached_upstream()
     }
 
     /// Clear the cached upstream (useful when topology changes) and increment metric.
     pub fn clear_cached_upstream(&self) {
-        self.cached_upstream.store(None);
-        self.cached_candidates.store(None);
-        #[cfg(feature = "stats")]
-        crate::metrics::inc_cache_clear();
+        self.cache.clear();
     }
 
     /// Return the ordered cached candidates (primary first) when present.
     pub fn get_cached_candidates(&self) -> Option<Vec<MacAddress>> {
-        self.cached_candidates
-            .load()
-            .as_ref()
-            .map(|arcv| (**arcv).clone())
+        self.cache.get_cached_candidates()
     }
 
     /// Rotate to the next cached candidate (promote the next candidate to primary).
     /// Returns the newly promoted primary if any.
     pub fn failover_cached_upstream(&self) -> Option<MacAddress> {
-        let mut cand_opt = self
-            .cached_candidates
-            .load()
-            .as_ref()
-            .map(|arcv| (**arcv).clone());
-
-        let mut cands = cand_opt.take().unwrap_or_default();
-        if cands.len() <= 1 {
-            // Try to rebuild an N-best list based on the last cached source (e.g., RSU)
-            if let Some(src) = self.cached_source.load().as_ref().map(|m| **m) {
-                let n_best = usize::try_from(self.args.obu_params.cached_candidates)
-                    .unwrap_or(3)
-                    .max(1);
-                // Compute latency-based candidates first
-                let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> =
-                    HashMap::default();
-                for (_rsu, seqs) in self.routes.iter() {
-                    for (_seq, (_dur, _mac, _hops, _r, downstream)) in seqs.iter() {
-                        if let Some(vec) = downstream.get(&src) {
-                            for route in vec.iter() {
-                                if let Some(lat) = route.latency.map(|x| x.as_micros()) {
-                                    let entry = latency_candidates.entry(route.mac).or_insert((
-                                        u128::MAX,
-                                        0u128,
-                                        0u32,
-                                        route.hops,
-                                    ));
-                                    if entry.0 > lat {
-                                        entry.0 = lat;
-                                    }
-                                    entry.1 += lat;
-                                    entry.2 += 1;
-                                    entry.3 = route.hops;
+        self.cache.failover(|src, n_best| {
+            // Rebuild candidates based on routing table
+            let mut cands = Vec::new();
+            
+            // Compute latency-based candidates first
+            let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> =
+                HashMap::default();
+            for (_rsu, seqs) in self.routes.iter() {
+                for (_seq, (_dur, _mac, _hops, _r, downstream)) in seqs.iter() {
+                    if let Some(vec) = downstream.get(&src) {
+                        for route in vec.iter() {
+                            if let Some(lat) = route.latency.map(|x| x.as_micros()) {
+                                let entry = latency_candidates.entry(route.mac).or_insert((
+                                    u128::MAX,
+                                    0u128,
+                                    0u32,
+                                    route.hops,
+                                ));
+                                if entry.0 > lat {
+                                    entry.0 = lat;
                                 }
+                                entry.1 += lat;
+                                entry.2 += 1;
+                                entry.3 = route.hops;
                             }
                         }
                     }
-                }
-                if !latency_candidates.is_empty() {
-                    // Use the shared helper to score and sort candidates deterministically.
-                    let scored_full =
-                        crate::control::routing_utils::score_and_sort_latency_candidates(
-                            latency_candidates,
-                        );
-                    cands = scored_full
-                        .into_iter()
-                        .map(|(_score, _hops, mac, _avg)| mac)
-                        .take(n_best)
-                        .collect();
-                }
-                // Backfill with hop-based ordering if needed
-                if cands.len() < n_best {
-                    let mut upstream_routes: Vec<_> = self
-                        .routes
-                        .iter()
-                        .flat_map(|(rsu_mac, seqs)| {
-                            seqs.iter()
-                                .map(move |(seq, (_, mac, hops, _, _))| (seq, rsu_mac, mac, hops))
-                        })
-                        .filter(|(_, rsu_mac, _, _)| rsu_mac == &&src)
-                        .collect();
-                    upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
-                    let mut seen: std::collections::HashSet<MacAddress> =
-                        cands.iter().copied().collect();
-                    for (_seq, _rsu, mac_ref, _hops) in upstream_routes.into_iter() {
-                        if !seen.contains(mac_ref) {
-                            seen.insert(*mac_ref);
-                            cands.push(*mac_ref);
-                            if cands.len() >= n_best {
-                                break;
-                            }
-                        }
-                    }
-                }
-                // Store rebuilt candidates
-                if !cands.is_empty() {
-                    self.cached_candidates.store(Some(Arc::new(cands.clone())));
                 }
             }
-        }
-
-        if cands.len() <= 1 {
-            // Nothing to rotate to
-            return cands.first().copied();
-        }
-        // Rotate to next
-        let old = cands.remove(0);
-        cands.push(old);
-        self.cached_candidates.store(Some(Arc::new(cands.clone())));
-        self.cached_upstream.store(Some(cands[0].into()));
-        Some(cands[0])
+            if !latency_candidates.is_empty() {
+                // Use the shared helper to score and sort candidates deterministically.
+                let scored_full =
+                    crate::control::routing_utils::score_and_sort_latency_candidates(
+                        latency_candidates,
+                    );
+                cands = scored_full
+                    .into_iter()
+                    .map(|(_score, _hops, mac, _avg)| mac)
+                    .take(n_best)
+                    .collect();
+            }
+            // Backfill with hop-based ordering if needed
+            if cands.len() < n_best {
+                let mut upstream_routes: Vec<_> = self
+                    .routes
+                    .iter()
+                    .flat_map(|(rsu_mac, seqs)| {
+                        seqs.iter()
+                            .map(move |(seq, (_, mac, hops, _, _))| (seq, rsu_mac, mac, hops))
+                    })
+                    .filter(|(_, rsu_mac, _, _)| rsu_mac == &&src)
+                    .collect();
+                upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
+                let mut seen: std::collections::HashSet<MacAddress> =
+                    cands.iter().copied().collect();
+                for (_seq, _rsu, mac_ref, _hops) in upstream_routes.into_iter() {
+                    if !seen.contains(mac_ref) {
+                        seen.insert(*mac_ref);
+                        cands.push(*mac_ref);
+                        if cands.len() >= n_best {
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            cands
+        })
     }
 
     /// Test helper: directly set cached candidates and primary for tests.
+    #[cfg(test)]
     pub fn test_set_cached_candidates(&self, cands: Vec<MacAddress>) {
-        use std::sync::Arc;
-        if cands.is_empty() {
-            self.cached_candidates.store(None);
-            self.cached_upstream.store(None);
-        } else {
-            self.cached_candidates.store(Some(Arc::new(cands.clone())));
-            self.cached_upstream.store(Some(cands[0].into()));
-        }
+        self.cache.test_set_cached_candidates(cands);
     }
 
     pub fn handle_heartbeat(
@@ -2132,9 +2080,9 @@ impl Routing {
 
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
         let Some(target_mac) = mac else {
-            return self.cached_upstream.load().as_ref().map(|mac| Route {
+            return self.cache.get_cached_upstream().map(|mac| Route {
                 hops: 1,
-                mac: **mac,
+                mac,
                 latency: None,
             });
         };
@@ -2398,11 +2346,10 @@ impl Routing {
 
     pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
         let route = self.get_route_to(Some(mac))?;
-        let was_cached = self.cached_upstream.load().is_some();
-        // Store primary cached upstream as before
-        self.cached_upstream.store(Some(route.mac.into()));
-        // Remember the source (e.g., RSU) we selected for
-        self.cached_source.store(Some(mac.into()));
+        let was_cached = self.cache.get_cached_upstream().is_some();
+        
+        // Store primary cached upstream and source
+        self.cache.set_upstream(route.mac, mac);
 
         // Log when first upstream is selected (important milestone for OBU)
         if !was_cached {
@@ -2414,10 +2361,7 @@ impl Routing {
             );
         }
         // Also attempt to populate an ordered list of N-best candidates for fast failover.
-        // Use the configured value from `Args` (convert to usize), defaulting to 3 if invalid.
-        let n_best = usize::try_from(self.args.obu_params.cached_candidates)
-            .unwrap_or(3)
-            .max(1);
+        let n_best = self.cache.candidates_count();
         if let Some(candidates) = {
             // Re-run a variant of selection to fetch multiple candidates.
             // Call get_route_to for this mac to trigger same computation; then
@@ -2551,8 +2495,7 @@ impl Routing {
             // store candidates but do NOT override the already-stored primary
             // cached upstream; keep `route.mac` as the primary to preserve
             // hysteresis semantics handled by `get_route_to`.
-            self.cached_candidates
-                .store(Some(Arc::new(candidates.clone())));
+            self.cache.set_candidates(candidates);
         }
         #[cfg(feature = "stats")]
         crate::metrics::inc_cache_select();
