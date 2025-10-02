@@ -6,7 +6,7 @@ use itertools::Itertools;
 use std::{io::IoSlice, sync::Arc};
 use uninit::uninit_array;
 
-use crate::PACKET_BUFFER_SIZE;
+use crate::{SharedDevice, SharedTun, PACKET_BUFFER_SIZE};
 
 #[derive(Debug)]
 pub enum ReplyType {
@@ -62,8 +62,8 @@ pub fn bytes_to_hex(slice: &[u8]) -> String {
 
 pub async fn handle_messages(
     messages: Vec<ReplyType>,
-    tun: &Arc<Tun>,
-    dev: &Arc<Device>,
+    tun: &SharedTun,
+    dev: &SharedDevice,
     _routing: Option<Arc<std::sync::RwLock<dyn std::any::Any + Send + Sync>>>,
 ) -> Result<()> {
     let future_vec = messages
@@ -98,7 +98,7 @@ fn buffer() -> [u8; PACKET_BUFFER_SIZE] {
 }
 
 pub async fn wire_traffic<Fut>(
-    dev: &Arc<Device>,
+    dev: &SharedDevice,
     callable: impl FnOnce([u8; PACKET_BUFFER_SIZE], usize) -> Fut,
 ) -> Result<Option<Vec<ReplyType>>>
 where
@@ -112,7 +112,7 @@ where
 }
 
 pub async fn tap_traffic<Fut>(
-    dev: &Arc<Tun>,
+    dev: &SharedTun,
     callable: impl FnOnce([u8; PACKET_BUFFER_SIZE], usize) -> Fut,
 ) -> Result<Option<Vec<ReplyType>>>
 where

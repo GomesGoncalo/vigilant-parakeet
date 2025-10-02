@@ -5,7 +5,7 @@ use common::tun::Tun;
 use futures::{future::join_all, Future};
 use itertools::Itertools;
 use node_lib::messages::message::Message;
-use node_lib::PACKET_BUFFER_SIZE;
+use node_lib::{SharedDevice, SharedTun, PACKET_BUFFER_SIZE};
 use std::{io::IoSlice, sync::Arc};
 use uninit::uninit_array;
 
@@ -173,7 +173,7 @@ fn buffer() -> [u8; PACKET_BUFFER_SIZE] {
 }
 
 pub async fn wire_traffic<Fut>(
-    dev: &Arc<Device>,
+    dev: &SharedDevice,
     callable: impl FnOnce([u8; PACKET_BUFFER_SIZE], usize) -> Fut,
 ) -> Result<Option<Vec<ReplyType>>>
 where
@@ -187,7 +187,7 @@ where
 }
 
 pub async fn tap_traffic<Fut>(
-    dev: &Arc<Tun>,
+    dev: &SharedTun,
     callable: impl FnOnce([u8; PACKET_BUFFER_SIZE], usize) -> Fut,
 ) -> Result<Option<Vec<ReplyType>>>
 where

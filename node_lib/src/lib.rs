@@ -11,6 +11,20 @@ pub mod metrics;
 /// Standard Maximum Transmission Unit (MTU) for Ethernet packets
 pub const PACKET_BUFFER_SIZE: usize = 1500;
 
+// Type aliases for common complex types to improve readability
+use common::device::Device;
+use common::tun::Tun;
+use std::sync::{Arc, RwLock};
+
+/// Shared reference to a network device
+pub type SharedDevice = Arc<Device>;
+
+/// Shared reference to a TUN/TAP interface
+pub type SharedTun = Arc<Tun>;
+
+/// Thread-safe shared mutable reference (used for routing state)
+pub type Shared<T> = Arc<RwLock<T>>;
+
 /// Shared trait for all node types (OBU and RSU).
 /// Provides a common interface for runtime downcasting to concrete node types.
 pub trait Node: Send + Sync {

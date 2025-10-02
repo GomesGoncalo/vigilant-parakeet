@@ -1,6 +1,9 @@
 use mac_address::MacAddress;
 use std::collections::HashMap;
 
+// Type alias for latency measurement tuples (min_us, sum_us, count, hops)
+type LatencyMeasurement = (u128, u128, u32, u32);
+
 /// Per-next-hop aggregated statistics used for scoring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NextHopStats {
@@ -47,7 +50,7 @@ pub fn pick_best_next_hop(
 /// compute (score=min+avg, hops, mac, avg) for each and return a sorted Vec
 /// ordered by score then hops.
 pub fn score_and_sort_latency_candidates(
-    latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)>,
+    latency_candidates: HashMap<MacAddress, LatencyMeasurement>,
 ) -> Vec<(u128, u32, MacAddress, u128)> {
     let mut scored: Vec<(u128, u32, MacAddress, u128)> = Vec::new();
     for (mac, (min_us, sum_us, n, hops_val)) in latency_candidates.into_iter() {
@@ -75,7 +78,7 @@ pub fn score_and_sort_latency_candidates(
 /// latency_candidates map (mac -> (min_us, sum_us, count, hops)).
 /// Returns (MacAddress, avg_us) or None when empty.
 pub fn pick_best_from_latency_candidates(
-    latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)>,
+    latency_candidates: HashMap<MacAddress, LatencyMeasurement>,
 ) -> Option<(MacAddress, u128)> {
     let mut scored = score_and_sort_latency_candidates(latency_candidates);
     if scored.is_empty() {

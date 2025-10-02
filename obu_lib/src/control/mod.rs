@@ -21,11 +21,14 @@ use session::Session;
 use std::sync::{Arc, RwLock};
 use tokio::time::Instant;
 
+// Re-export type aliases for cleaner code
+use node_lib::{Shared, SharedDevice, SharedTun};
+
 pub struct Obu {
     args: ObuArgs,
-    routing: Arc<RwLock<Routing>>,
-    tun: Arc<Tun>,
-    device: Arc<Device>,
+    routing: Shared<Routing>,
+    tun: SharedTun,
+    device: SharedDevice,
     session: Arc<Session>,
 }
 
@@ -278,7 +281,7 @@ impl Obu {
 
 #[cfg(test)]
 pub(crate) fn handle_msg_for_test(
-    routing: Arc<RwLock<Routing>>,
+    routing: Shared<Routing>,
     device_mac: mac_address::MacAddress,
     msg: &node_lib::messages::message::Message<'_>,
 ) -> anyhow::Result<Option<Vec<ReplyType>>> {

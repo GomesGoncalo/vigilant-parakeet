@@ -10,6 +10,22 @@ use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 use tracing::Level;
 
+// Type aliases for complex routing table structures
+/// Per-hop routing information with latency measurements
+type PerHopInfo = (
+    Duration,
+    MacAddress,
+    u32,
+    IndexMap<Duration, MacAddress>,
+    HashMap<MacAddress, Vec<Target>>,
+);
+
+/// Routing table indexed by sequence number
+type SequenceMap = IndexMap<u32, PerHopInfo>;
+
+/// Complete routing table for all known nodes
+type RoutingTable = HashMap<MacAddress, SequenceMap>;
+
 #[derive(Debug)]
 struct Target {
     hops: u32,
@@ -1574,19 +1590,7 @@ mod more_tests {
 pub struct Routing {
     args: ObuArgs,
     boot: Instant,
-    routes: HashMap<
-        MacAddress,
-        IndexMap<
-            u32,
-            (
-                Duration,
-                MacAddress,
-                u32,
-                IndexMap<Duration, MacAddress>,
-                HashMap<MacAddress, Vec<Target>>,
-            ),
-        >,
-    >,
+    routes: RoutingTable,
     cached_upstream: ArcSwapOption<MacAddress>,
     // Remember the last source MAC for which we selected/cached an upstream (e.g., RSU MAC).
     cached_source: ArcSwapOption<MacAddress>,

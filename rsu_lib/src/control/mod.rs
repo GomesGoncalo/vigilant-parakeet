@@ -20,11 +20,14 @@ use std::{
     time::Duration,
 };
 
+// Re-export type aliases for cleaner code
+use node_lib::{Shared, SharedDevice, SharedTun};
+
 pub struct Rsu {
     args: RsuArgs,
-    routing: Arc<RwLock<Routing>>,
-    tun: Arc<Tun>,
-    device: Arc<Device>,
+    routing: Shared<Routing>,
+    tun: SharedTun,
+    device: SharedDevice,
     cache: Arc<ClientCache>,
 }
 
