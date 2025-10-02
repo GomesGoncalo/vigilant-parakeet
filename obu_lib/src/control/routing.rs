@@ -1961,7 +1961,7 @@ impl Routing {
 
         // Log the decision at appropriate level
         match action {
-            "bail" => {}, // Will be logged as warn below
+            "bail" => {} // Will be logged as warn below
             "skip_forward" => {
                 tracing::debug!(
                     pkt_from = %pkt_from,
@@ -1969,7 +1969,7 @@ impl Routing {
                     next_upstream = %next_upstream_copy,
                     "Skipping forward to prevent loop"
                 );
-            },
+            }
             _ => {
                 tracing::trace!(
                     pkt_from = %pkt_from,
@@ -2403,7 +2403,7 @@ impl Routing {
         self.cached_upstream.store(Some(route.mac.into()));
         // Remember the source (e.g., RSU) we selected for
         self.cached_source.store(Some(mac.into()));
-        
+
         // Log when first upstream is selected (important milestone for OBU)
         if !was_cached {
             tracing::info!(

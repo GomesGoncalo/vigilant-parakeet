@@ -193,7 +193,10 @@ impl Channel {
             ),
             loss: f64::from_str(params.get("loss").context("could not get loss")?)?,
             jitter: Duration::from_millis(
-                params.get("jitter").unwrap_or(&"0".to_string()).parse::<u64>()?,
+                params
+                    .get("jitter")
+                    .unwrap_or(&"0".to_string())
+                    .parse::<u64>()?,
             ),
         };
 
@@ -242,7 +245,7 @@ impl Channel {
                             .parameters
                             .read()
                             .expect("channel parameters lock poisoned");
-                        
+
                         // Apply base latency + random jitter
                         let mut latency = params.latency;
                         if !params.jitter.is_zero() {
@@ -264,7 +267,7 @@ impl Channel {
                         }
                         latency
                     }; // Lock is released here
-                    
+
                     let duration = (packet.instant + latency).duration_since(Instant::now());
 
                     if duration.is_zero() {

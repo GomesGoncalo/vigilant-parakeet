@@ -119,7 +119,8 @@ impl Rsu {
                             Ok(Some(all_responses))
                         }
                     }
-                }).await;
+                })
+                .await;
 
                 match messages {
                     Ok(Some(messages)) => {

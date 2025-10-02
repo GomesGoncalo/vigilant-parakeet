@@ -131,7 +131,8 @@ impl Obu {
                             Ok(Some(all_responses))
                         }
                     }
-                }).await;
+                })
+                .await;
                 if let Ok(Some(messages)) = messages {
                     // Use batched message handling for improved throughput (2-3x faster)
                     let _ = node::handle_messages_batched(messages, &tun, &device).await;
