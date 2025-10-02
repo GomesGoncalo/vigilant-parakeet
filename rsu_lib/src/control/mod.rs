@@ -85,7 +85,10 @@ impl Rsu {
                                 Ok(msg) => {
                                     let response = rsu.handle_msg(&msg).await;
                                     let has_response = response.as_ref().map(|r| r.is_some()).unwrap_or(false);
+                                    #[cfg(any(test, feature = "test_helpers"))]
                                     tracing::trace!(has_response = has_response, incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
+                                    #[cfg(not(any(test, feature = "test_helpers")))]
+                                    tracing::trace!(has_response = has_response, incoming = ?msg, "transaction");
 
                                     if let Ok(Some(responses)) = response {
                                         all_responses.extend(responses);

@@ -1,6 +1,4 @@
-use crate::messages::message::Message;
-
-use anyhow::{bail, Result};
+use anyhow::Result;
 use common::device::Device;
 use common::tun::Tun;
 use futures::{future::join_all, Future};
@@ -16,8 +14,8 @@ pub enum ReplyType {
     TapFlat(Vec<u8>),
 }
 
-// This code is only used to trace the messages and so it is mostly unused
-// We want to suppress the warnings
+// Debug types and functions for tracing and testing
+#[cfg(any(test, feature = "test_helpers"))]
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum DebugReplyType {
@@ -25,7 +23,14 @@ pub enum DebugReplyType {
     Wire(String),
 }
 
-pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<DebugReplyType>>> {
+#[cfg(any(test, feature = "test_helpers"))]
+pub fn get_msgs(
+    response: &Result<Option<Vec<ReplyType>>>,
+) -> Result<Option<Vec<DebugReplyType>>> {
+    use crate::messages::message::Message;
+    use anyhow::bail;
+    use itertools::Itertools;
+
     match response {
         Ok(Some(response)) => Ok(Some(
             response
@@ -198,8 +203,7 @@ pub async fn handle_messages_batched(
 
 #[cfg(test)]
 mod tests {
-    use super::{get_msgs, ReplyType};
-    use crate::control::node::DebugReplyType;
+    use super::{get_msgs, DebugReplyType, ReplyType};
     use crate::messages::message::Message;
     use anyhow::Result;
 

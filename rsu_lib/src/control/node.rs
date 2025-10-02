@@ -1,7 +1,5 @@
-use node_lib::messages::message::Message;
-
 use super::routing::Routing;
-use anyhow::{bail, Result};
+use anyhow::Result;
 use common::device::Device;
 use common::tun::Tun;
 use futures::{future::join_all, Future};
@@ -11,15 +9,14 @@ use uninit::uninit_array;
 
 #[derive(Debug)]
 pub enum ReplyType {
-    Wire(Vec<Vec<u8>>),
-    Tap(Vec<Vec<u8>>),
-    // New flat variants for improved performance
+    /// Wire traffic (to device) - flat serialization
     WireFlat(Vec<u8>),
+    /// TAP traffic (to tun) - flat serialization
     TapFlat(Vec<u8>),
 }
 
-// This code is only used to trace the messages and so it is mostly unused
-// We want to suppress the warnings
+// Debug types and functions for tracing and testing
+#[cfg(any(test, feature = "test_helpers"))]
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum DebugReplyType {
@@ -27,20 +24,19 @@ pub enum DebugReplyType {
     Wire(String),
 }
 
-pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<DebugReplyType>>> {
+#[cfg(any(test, feature = "test_helpers"))]
+pub fn get_msgs(
+    response: &Result<Option<Vec<ReplyType>>>,
+) -> Result<Option<Vec<DebugReplyType>>> {
+    use anyhow::bail;
+    use itertools::Itertools;
+    use node_lib::messages::message::Message;
+
     match response {
         Ok(Some(response)) => Ok(Some(
             response
                 .iter()
                 .filter_map(|x| match x {
-                    ReplyType::Tap(x) => Some(DebugReplyType::Tap(x.clone())),
-                    ReplyType::Wire(x) => {
-                        let x = x.iter().flat_map(|x| x.iter()).copied().collect_vec();
-                        let Ok(message) = Message::try_from(&x[..]) else {
-                            return None;
-                        };
-                        Some(DebugReplyType::Wire(format!("{message:?}")))
-                    }
                     ReplyType::TapFlat(x) => Some(DebugReplyType::Tap(vec![x.clone()])),
                     ReplyType::WireFlat(x) => {
                         let Ok(message) = Message::try_from(&x[..]) else {
@@ -77,31 +73,6 @@ pub async fn handle_messages(
             let _routing_clone = routing.clone();
             async move {
                 match reply {
-                    ReplyType::Tap(buf) => {
-                        let vec: Vec<IoSlice> = buf.iter().map(|x| IoSlice::new(x)).collect();
-                        let _ = tun
-                            .send_vectored(&vec)
-                            .await
-                            .inspect_err(|e| tracing::error!(?e, "error sending to tap"));
-                    }
-                    ReplyType::Wire(reply) => {
-                        let vec: Vec<IoSlice> = reply.iter().map(|x| IoSlice::new(x)).collect();
-                        // Attempt to send; on error, if routing is present and this
-                        // wire payload targets the cached upstream for an OBU,
-                        // trigger a failover to the next candidate.
-                        let send_res = dev.send_vectored(&vec).await;
-                        if let Err(e) = send_res {
-                            tracing::error!(?e, "error sending to dev");
-
-                            // For RSUs, we don't have upstream failover logic
-                            // since RSUs don't maintain cached upstream connections
-                            // like OBUs do. Just log the error and continue.
-                            tracing::warn!(
-                                "Send error occurred in RSU, but no failover action needed"
-                            );
-                        }
-                    }
-                    // New flat variants - single allocation, zero fragmentation
                     ReplyType::TapFlat(buf) => {
                         let vec = [IoSlice::new(buf)];
                         let _ = tun
@@ -147,15 +118,6 @@ pub async fn handle_messages_batched(
         match reply {
             ReplyType::WireFlat(buf) => wire_packets.push(buf),
             ReplyType::TapFlat(buf) => tap_packets.push(buf),
-            // Handle legacy formats if present
-            ReplyType::Wire(bufs) => {
-                let flat: Vec<u8> = bufs.iter().flat_map(|b| b.iter()).copied().collect();
-                wire_packets.push(flat);
-            }
-            ReplyType::Tap(bufs) => {
-                let flat: Vec<u8> = bufs.iter().flat_map(|b| b.iter()).copied().collect();
-                tap_packets.push(flat);
-            }
         }
     }
 
@@ -227,8 +189,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{get_msgs, ReplyType};
-    use crate::control::node::DebugReplyType;
+    use super::{get_msgs, DebugReplyType, ReplyType};
     use anyhow::Result;
     use node_lib::messages::message::Message;
 
