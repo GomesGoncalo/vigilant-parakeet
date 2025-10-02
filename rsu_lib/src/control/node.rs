@@ -45,14 +45,8 @@ pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<
     }
 }
 
-/// Return a compact hex string for a byte slice (e.g. "01 02 aa ...").
-pub fn bytes_to_hex(slice: &[u8]) -> String {
-    slice
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+// Re-export shared helper function from node_lib
+pub use node_lib::control::node::bytes_to_hex;
 
 pub async fn handle_messages(
     messages: Vec<ReplyType>,
