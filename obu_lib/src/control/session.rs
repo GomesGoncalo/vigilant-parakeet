@@ -4,15 +4,16 @@ use common::tun::Tun;
 use futures::Future;
 use std::sync::Arc;
 
-#[allow(dead_code)]
+// Session support is under development - types are placeholders for future implementation
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct SessionParams {}
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct InnerSession {
     tun: Arc<Tun>,
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub enum Session {
     NoSession(Arc<Tun>),
     ValidSession(InnerSession),

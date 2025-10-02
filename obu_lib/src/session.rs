@@ -4,27 +4,28 @@ use futures::Future;
 use node_lib::control::node::ReplyType;
 use std::sync::Arc;
 
-#[allow(dead_code)]
+// Session support is under development - types are placeholders for future implementation
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct SessionParams {}
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct InnerSession {
     tun: Arc<Tun>,
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub enum Session {
     NoSession(Arc<Tun>),
     ValidSession(InnerSession),
 }
 
 impl Session {
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(tun: Arc<Tun>) -> Self {
         Self::NoSession(tun)
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn process<Fut>(
         &self,
         callable: impl FnOnce([u8; 1500], usize) -> Fut,

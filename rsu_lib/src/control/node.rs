@@ -12,7 +12,6 @@ pub use node_lib::control::node::ReplyType;
 // Debug types and functions for tracing and testing
 #[cfg(any(test, feature = "test_helpers"))]
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum DebugReplyType {
     Tap(Vec<Vec<u8>>),
     Wire(String),

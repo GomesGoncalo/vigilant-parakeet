@@ -12,6 +12,7 @@ use itertools::Itertools;
 use node_lib::args::NodeType;
 #[cfg(test)]
 use node_lib::PACKET_BUFFER_SIZE;
+#[cfg(any(test, feature = "webview"))]
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -60,7 +61,7 @@ async fn channel_post_fn(
     }
 }
 
-#[allow(dead_code)]
+#[cfg(any(test, feature = "webview"))]
 #[derive(Serialize)]
 struct ErrorMessage {
     code: u16,

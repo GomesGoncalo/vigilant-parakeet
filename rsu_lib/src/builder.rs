@@ -34,9 +34,9 @@ pub struct RsuBuilder {
     cached_candidates: u32,
     enable_encryption: bool,
     // For testing with injected dependencies
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     tun: Option<Arc<Tun>>,
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     device: Option<Arc<Device>>,
 }
 

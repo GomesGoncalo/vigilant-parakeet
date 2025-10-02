@@ -145,7 +145,7 @@ impl Tun {
     /// toggles. This is available when the test shim is compiled in.
     // Keep a convenience alias available for code that used the previous
     // helper name.
-    #[allow(dead_code)]
+    #[cfg(feature = "test_helpers")]
     pub fn from_shim_tun(t: test_tun::TokioTun) -> Self {
         Tun::new_shim(t)
     }

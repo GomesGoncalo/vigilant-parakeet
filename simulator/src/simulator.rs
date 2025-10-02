@@ -1,4 +1,5 @@
 use crate::sim_args::SimArgs;
+#[cfg(any(test, feature = "webview"))]
 use anyhow::Context;
 use anyhow::{bail, Error, Result};
 use common::channel_parameters::ChannelParameters;
@@ -14,12 +15,14 @@ use mac_address::MacAddress;
 use netns_rs::NetNs;
 use node_lib::{Node, PACKET_BUFFER_SIZE};
 use rand::Rng;
+#[cfg(any(test, feature = "webview"))]
 use std::str::FromStr;
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
-    time::Duration,
 };
+#[cfg(any(test, feature = "webview"))]
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 // uninit_array is not used here
@@ -166,14 +169,15 @@ struct Packet {
 
 pub struct Channel {
     tx: mpsc::UnboundedSender<Packet>,
+    #[cfg_attr(not(feature = "webview"), allow(dead_code))]
     param_notify_tx: mpsc::UnboundedSender<()>,
     parameters: RwLock<ChannelParameters>,
     mac: MacAddress,
     tun: Arc<Tun>,
 }
 
-#[allow(dead_code)]
 impl Channel {
+    #[cfg(any(test, feature = "webview"))]
     pub fn params(&self) -> ChannelParameters {
         *self
             .parameters
@@ -181,6 +185,7 @@ impl Channel {
             .expect("channel parameters lock poisoned")
     }
 
+    #[cfg(any(test, feature = "webview"))]
     pub fn set_params(&self, params: HashMap<String, String>) -> Result<()> {
         let result = ChannelParameters {
             latency: Duration::from_millis(
@@ -299,15 +304,14 @@ impl Channel {
 }
 
 #[derive(Clone)]
+#[cfg_attr(not(feature = "webview"), allow(dead_code))]
 pub enum SimNode {
-    #[allow(dead_code)]
     Obu(Arc<dyn Node>),
-    #[allow(dead_code)]
     Rsu(Arc<dyn Node>),
 }
 
 impl SimNode {
-    #[allow(dead_code)]
+    #[cfg(feature = "webview")]
     pub fn as_any(&self) -> &dyn std::any::Any {
         match self {
             SimNode::Obu(o) => o.as_any(),
@@ -320,7 +324,7 @@ pub struct Simulator {
     _namespaces: Vec<NamespaceWrapper>,
     channels: HashMap<String, HashMap<String, Arc<Channel>>>,
     /// Keep created nodes so external code (e.g. webview) may query node state.
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "webview"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     nodes: HashMap<String, (Arc<Device>, Arc<Tun>, SimNode)>,
 }
@@ -477,13 +481,14 @@ impl Simulator {
         Ok((buf, n, node, channel))
     }
 
-    #[allow(dead_code)]
+    #[cfg(feature = "webview")]
     pub fn get_channels(&self) -> HashMap<String, HashMap<String, Arc<Channel>>> {
         self.channels.clone()
     }
 
     /// Return a clone of the created nodes (name -> (dev, tun, node)).
-    #[allow(dead_code, clippy::type_complexity)]
+    #[cfg(feature = "webview")]
+    #[allow(clippy::type_complexity)]
     pub fn get_nodes(&self) -> HashMap<String, (Arc<Device>, Arc<Tun>, SimNode)> {
         self.nodes.clone()
     }

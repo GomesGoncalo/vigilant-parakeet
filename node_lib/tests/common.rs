@@ -2,7 +2,6 @@ use obu_lib::{ObuArgs, ObuParameters};
 use rsu_lib::{RsuArgs, RsuParameters};
 
 /// Helper to create RsuArgs with sensible defaults for tests.
-#[allow(dead_code)]
 pub fn mk_rsu_args(hello_periodicity: u32) -> RsuArgs {
     RsuArgs {
         bind: String::from("unused"),
@@ -19,7 +18,6 @@ pub fn mk_rsu_args(hello_periodicity: u32) -> RsuArgs {
 }
 
 /// Helper to create ObuArgs with sensible defaults for tests.
-#[allow(dead_code)]
 pub fn mk_obu_args() -> ObuArgs {
     ObuArgs {
         bind: String::from("unused"),
@@ -35,7 +33,6 @@ pub fn mk_obu_args() -> ObuArgs {
 }
 
 /// Helper to create RsuArgs with encryption enabled.
-#[allow(dead_code)]
 pub fn mk_rsu_args_encrypted(hello_periodicity: u32) -> RsuArgs {
     RsuArgs {
         bind: String::from("unused"),
@@ -52,7 +49,6 @@ pub fn mk_rsu_args_encrypted(hello_periodicity: u32) -> RsuArgs {
 }
 
 /// Helper to create ObuArgs with encryption enabled.
-#[allow(dead_code)]
 pub fn mk_obu_args_encrypted() -> ObuArgs {
     ObuArgs {
         bind: String::from("unused"),
