@@ -4,6 +4,7 @@ use std::fs::File;
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Debug)]
+#[allow(dead_code)]
 struct Row {
     src: String,
     dst: String,

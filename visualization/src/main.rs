@@ -17,6 +17,7 @@ mod graph_helpers;
 use crate::graph::Graph;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+#[allow(dead_code)]
 struct UpstreamInfo {
     hops: u32,
     mac: String,
@@ -24,6 +25,7 @@ struct UpstreamInfo {
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+#[allow(dead_code)]
 struct NodeInfo {
     node_type: String,
     upstream: Option<UpstreamInfo>,
@@ -31,6 +33,7 @@ struct NodeInfo {
 }
 
 #[derive(Clone, PartialEq, Properties)]
+#[allow(dead_code)]
 struct Props {
     nodes: Vec<String>,
     channels: HashMap<String, HashMap<String, ChannelParameters>>,
