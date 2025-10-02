@@ -66,13 +66,13 @@ pub async fn handle_messages(
                         let _ = tun
                             .send_vectored(&vec)
                             .await
-                            .inspect_err(|e| tracing::error!(?e, "error sending to tap"));
+                            .inspect_err(|e| tracing::error!(error = %e, size = buf.len(), "Failed to send to TAP device"));
                     }
                     ReplyType::WireFlat(buf) => {
                         let vec = [IoSlice::new(buf)];
                         let send_res = dev.send_vectored(&vec).await;
                         if let Err(e) = send_res {
-                            tracing::error!(?e, "error sending to dev");
+                            tracing::error!(error = %e, size = buf.len(), "Failed to send to device");
 
                             // Failover logic for flat buffers
                             if let Some(r) = &routing_clone {
@@ -81,7 +81,7 @@ pub async fn handle_messages(
                                         let cached = match r.read() {
                                             Ok(guard) => guard.get_cached_upstream(),
                                             Err(poisoned) => {
-                                                tracing::error!("routing lock poisoned during failover check, attempting recovery");
+                                                tracing::error!("Routing lock poisoned during failover check, recovering");
                                                 poisoned.into_inner().get_cached_upstream()
                                             }
                                         };
@@ -90,11 +90,16 @@ pub async fn handle_messages(
                                                 let promoted = match r.write() {
                                                     Ok(guard) => guard.failover_cached_upstream(),
                                                     Err(poisoned) => {
-                                                        tracing::error!("routing write lock poisoned during failover, attempting recovery");
+                                                        tracing::error!("Routing write lock poisoned during failover, recovering");
                                                         poisoned.into_inner().failover_cached_upstream()
                                                     }
                                                 };
-                                                tracing::info!(promoted = ?promoted, "promoted cached upstream after send error");
+                                                if let Some(new_upstream) = promoted {
+                                                    tracing::info!(
+                                                        new_upstream = %new_upstream,
+                                                        "Promoted next cached upstream after send failure"
+                                                    );
+                                                }
                                             }
                                         }
                                     }
@@ -135,11 +140,13 @@ pub async fn handle_messages_batched(
     let wire_future = async {
         if !wire_packets.is_empty() {
             let slices: Vec<IoSlice> = wire_packets.iter().map(|p| IoSlice::new(p)).collect();
+            let total_bytes: usize = wire_packets.iter().map(|p| p.len()).sum();
             dev.send_vectored(&slices).await.inspect_err(|e| {
                 tracing::error!(
-                    ?e,
-                    count = wire_packets.len(),
-                    "error batch sending to wire"
+                    error = %e,
+                    packet_count = wire_packets.len(),
+                    total_bytes = total_bytes,
+                    "Failed to batch send to device"
                 )
             })
         } else {
@@ -150,8 +157,14 @@ pub async fn handle_messages_batched(
     let tap_future = async {
         if !tap_packets.is_empty() {
             let slices: Vec<IoSlice> = tap_packets.iter().map(|p| IoSlice::new(p)).collect();
+            let total_bytes: usize = tap_packets.iter().map(|p| p.len()).sum();
             tun.send_vectored(&slices).await.inspect_err(|e| {
-                tracing::error!(?e, count = tap_packets.len(), "error batch sending to tap")
+                tracing::error!(
+                    error = %e,
+                    packet_count = tap_packets.len(),
+                    total_bytes = total_bytes,
+                    "Failed to batch send to TAP device"
+                )
             })
         } else {
             Ok(0)

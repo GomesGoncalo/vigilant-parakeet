@@ -1628,7 +1628,6 @@ impl Routing {
 
     /// Clear the cached upstream (useful when topology changes) and increment metric.
     pub fn clear_cached_upstream(&self) {
-        tracing::trace!("clearing cached_upstream");
         self.cached_upstream.store(None);
         self.cached_candidates.store(None);
         #[cfg(feature = "stats")]
@@ -1840,25 +1839,27 @@ impl Routing {
         match (old_route, self.get_route_to(Some(message.source()))) {
             (None, Some(new_route)) => {
                 tracing::event!(
-                    Level::DEBUG,
+                    Level::INFO,
                     from = %mac,
                     to = %message.source(),
                     through = %new_route,
-                    "route created on heartbeat",
+                    hops = new_route.hops,
+                    "Route discovered",
                 );
-                let sel = self.select_and_cache_upstream(message.source());
-                tracing::trace!(selection = ?sel.as_ref().map(|r| r.mac), "heartbeat: select_and_cache_upstream");
+                let _sel = self.select_and_cache_upstream(message.source());
             }
             (_, None) => (),
             (Some(old_route), Some(new_route)) => {
                 if old_route.mac != new_route.mac {
                     tracing::event!(
-                        Level::DEBUG,
+                        Level::INFO,
                         from = %mac,
                         to = %message.source(),
                         through = %new_route,
                         was_through = %old_route,
-                        "route changed on heartbeat",
+                        old_hops = old_route.hops,
+                        new_hops = new_route.hops,
+                        "Route changed",
                     );
                 }
             }
@@ -1879,12 +1880,14 @@ impl Routing {
                 (Some(old_route_from), Some(new_route)) => {
                     if old_route_from.mac != new_route.mac {
                         tracing::event!(
-                            Level::DEBUG,
+                            Level::INFO,
                             from = %mac,
                             to = %pkt.from()?,
                             through = %new_route,
                             was_through = %old_route_from,
-                            "route changed on heartbeat",
+                            old_hops = old_route_from.hops,
+                            new_hops = new_route.hops,
+                            "Route changed",
                         );
                     }
                 }
@@ -1956,17 +1959,37 @@ impl Routing {
             "forward"
         };
 
-        tracing::debug!(
-            pkt_from = %pkt_from,
-            message_sender = %sender,
-            next_upstream = %next_upstream_copy,
-            action = %action,
-            "heartbeat_reply decision"
-        );
+        // Log the decision at appropriate level
+        match action {
+            "bail" => {}, // Will be logged as warn below
+            "skip_forward" => {
+                tracing::debug!(
+                    pkt_from = %pkt_from,
+                    message_sender = %sender,
+                    next_upstream = %next_upstream_copy,
+                    "Skipping forward to prevent loop"
+                );
+            },
+            _ => {
+                tracing::trace!(
+                    pkt_from = %pkt_from,
+                    message_sender = %sender,
+                    next_upstream = %next_upstream_copy,
+                    action = %action,
+                    "Heartbeat reply forwarding"
+                );
+            }
+        }
 
         if action == "bail" {
             #[cfg(feature = "stats")]
             crate::metrics::inc_loop_detected();
+            tracing::warn!(
+                pkt_from = %pkt_from,
+                message_sender = %sender,
+                next_upstream = %next_upstream_copy,
+                "Routing loop detected, dropping packet"
+            );
             bail!("loop detected");
         }
 
@@ -2024,8 +2047,7 @@ impl Routing {
         // source now that we've recorded downstream observations. Do this
         // before the early-return below so replies that would be skipped for
         // forwarding still cause caching.
-        let selected = self.select_and_cache_upstream(message.source());
-        tracing::debug!(selection = ?selected.as_ref().map(|r| r.mac), "after heartbeat_reply: select_and_cache_upstream");
+        let _selected = self.select_and_cache_upstream(message.source());
 
         // If the reply arrived from the node we'd forward to, don't forward
         // it back: that would produce an immediate bounce. Drop forwarding
@@ -2049,23 +2071,26 @@ impl Routing {
         match (old_route, self.get_route_to(Some(sender))) {
             (None, Some(new_route)) => {
                 tracing::event!(
-                    Level::DEBUG,
+                    Level::INFO,
                     from = %mac,
                     to = %sender,
                     through = %new_route,
-                    "route created on heartbeat reply",
+                    hops = new_route.hops,
+                    "Route discovered",
                 );
             }
             (_, None) => (),
             (Some(old_route), Some(new_route)) => {
                 if old_route.mac != new_route.mac {
                     tracing::event!(
-                        Level::DEBUG,
+                        Level::INFO,
                         from = %mac,
                         to = %sender,
                         through = %new_route,
                         was_through = %old_route,
-                        "route changed on heartbeat reply",
+                        old_hops = old_route.hops,
+                        new_hops = new_route.hops,
+                        "Route changed",
                     );
                     // Do not clear cached upstream; hysteresis in get_route_to will decide switching.
                 }
@@ -2087,12 +2112,14 @@ impl Routing {
                 (Some(old_route_from), Some(new_route)) => {
                     if old_route_from.mac != new_route.mac {
                         tracing::event!(
-                            Level::DEBUG,
+                            Level::INFO,
                             from = %mac,
                             to = %pkt.from()?,
                             through = %new_route,
                             was_through = %old_route_from,
-                            "route changed on heartbeat reply",
+                            old_hops = old_route_from.hops,
+                            new_hops = new_route.hops,
+                            "Route changed",
                         );
                         // Do not clear cached upstream; hysteresis in get_route_to will decide switching.
                     }
@@ -2280,26 +2307,6 @@ impl Routing {
                     } else {
                         cached_min + cached_avg
                     };
-                    tracing::debug!(
-                        "cached candidate: mac={:?} min={} sum={} n={} hops={} avg={} score={}",
-                        cached_mac,
-                        cached_min,
-                        cached_sum,
-                        cached_n,
-                        cached_hops,
-                        cached_avg,
-                        cached_score
-                    );
-                    let cached_avg = if cached_n > 0 {
-                        cached_sum / (cached_n as u128)
-                    } else {
-                        u128::MAX
-                    };
-                    let cached_score = if cached_min == u128::MAX || cached_avg == u128::MAX {
-                        u128::MAX
-                    } else {
-                        cached_min + cached_avg
-                    };
 
                     // If best is the cached, just return it.
                     if best_mac == cached_mac {
@@ -2391,11 +2398,21 @@ impl Routing {
 
     pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
         let route = self.get_route_to(Some(mac))?;
-        tracing::trace!(upstream = %route.mac, source = %mac, "select_and_cache_upstream selected upstream for source");
+        let was_cached = self.cached_upstream.load().is_some();
         // Store primary cached upstream as before
         self.cached_upstream.store(Some(route.mac.into()));
         // Remember the source (e.g., RSU) we selected for
         self.cached_source.store(Some(mac.into()));
+        
+        // Log when first upstream is selected (important milestone for OBU)
+        if !was_cached {
+            tracing::info!(
+                upstream = %route.mac,
+                source = %mac,
+                hops = route.hops,
+                "Upstream selected"
+            );
+        }
         // Also attempt to populate an ordered list of N-best candidates for fast failover.
         // Use the configured value from `Args` (convert to usize), defaulting to 3 if invalid.
         let n_best = usize::try_from(self.args.obu_params.cached_candidates)

@@ -74,14 +74,14 @@ pub async fn handle_messages(
                     let _ = tun
                         .send_vectored(&vec)
                         .await
-                        .inspect_err(|e| tracing::error!(?e, "error sending to tap"));
+                        .inspect_err(|e| tracing::error!(error = %e, size = buf.len(), "Failed to send to TAP device"));
                 }
                 ReplyType::WireFlat(buf) => {
                     let vec = [IoSlice::new(buf)];
                     let _ = dev
                         .send_vectored(&vec)
                         .await
-                        .inspect_err(|e| tracing::error!(?e, "error sending to dev"));
+                        .inspect_err(|e| tracing::error!(error = %e, size = buf.len(), "Failed to send to device"));
                 }
             };
         })
@@ -170,11 +170,13 @@ pub async fn handle_messages_batched(
     // Send batches concurrently
     let wire_future = async {
         if !wire_packets.is_empty() {
+            let total_bytes: usize = wire_packets.iter().map(|p| p.len()).sum();
             batch_send_wire(dev, &wire_packets).await.inspect_err(|e| {
                 tracing::error!(
-                    ?e,
-                    count = wire_packets.len(),
-                    "error batch sending to wire"
+                    error = %e,
+                    packet_count = wire_packets.len(),
+                    total_bytes = total_bytes,
+                    "Failed to batch send to device"
                 )
             })
         } else {
@@ -184,8 +186,14 @@ pub async fn handle_messages_batched(
 
     let tap_future = async {
         if !tap_packets.is_empty() {
+            let total_bytes: usize = tap_packets.iter().map(|p| p.len()).sum();
             batch_send_tap(tun, &tap_packets).await.inspect_err(|e| {
-                tracing::error!(?e, count = tap_packets.len(), "error batch sending to tap")
+                tracing::error!(
+                    error = %e,
+                    packet_count = tap_packets.len(),
+                    total_bytes = total_bytes,
+                    "Failed to batch send to TAP device"
+                )
             })
         } else {
             Ok(0)

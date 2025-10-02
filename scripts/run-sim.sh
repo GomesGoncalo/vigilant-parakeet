@@ -18,4 +18,4 @@ else
   exit 1
 fi
 
-sudo RUST_LOG="obu_lib=debug,rsu_lib=debug" "$ROOT_DIR/target/release/simulator" --config-file "$CONFIG" --pretty
+sudo RUST_LOG="info" "$ROOT_DIR/target/release/simulator" --config-file "$CONFIG" --pretty

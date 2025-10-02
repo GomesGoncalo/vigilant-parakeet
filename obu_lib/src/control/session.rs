@@ -5,15 +5,15 @@ use futures::Future;
 use std::sync::Arc;
 
 // Session support is under development - types are placeholders for future implementation
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub struct SessionParams {}
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) struct InnerSession {
     tun: Arc<Tun>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub enum Session {
     NoSession(Arc<Tun>),
     ValidSession(InnerSession),

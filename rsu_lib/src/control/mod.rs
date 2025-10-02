@@ -41,7 +41,16 @@ impl Rsu {
             cache: ClientCache::default().into(),
         });
 
-        tracing::info!(?rsu.args, "Setup Rsu");
+        tracing::info!(
+            bind = %rsu.args.bind,
+            mac = %rsu.device.mac_address(),
+            mtu = rsu.args.mtu,
+            hello_history = rsu.args.rsu_params.hello_history,
+            hello_period_ms = rsu.args.rsu_params.hello_periodicity,
+            cached_candidates = rsu.args.rsu_params.cached_candidates,
+            encryption = rsu.args.rsu_params.enable_encryption,
+            "RSU initialized"
+        );
         rsu.hello_task()?;
         rsu.process_tap_traffic()?;
         Self::wire_traffic_task(rsu.clone())?;
@@ -82,11 +91,6 @@ impl Rsu {
                             match Message::try_from(&data[offset..]) {
                                 Ok(msg) => {
                                     let response = rsu.handle_msg(&msg).await;
-                                    let has_response = response.as_ref().map(|r| r.is_some()).unwrap_or(false);
-                                    #[cfg(any(test, feature = "test_helpers"))]
-                                    tracing::trace!(has_response = has_response, incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
-                                    #[cfg(not(any(test, feature = "test_helpers")))]
-                                    tracing::trace!(has_response = has_response, incoming = ?msg, "transaction");
 
                                     if let Ok(Some(responses)) = response {
                                         all_responses.extend(responses);
@@ -97,7 +101,13 @@ impl Rsu {
                                     offset += msg_size;
                                 }
                                 Err(e) => {
-                                    tracing::trace!(offset = offset, remaining = data.len() - offset, error = ?e, "could not parse message at offset");
+                                    tracing::trace!(
+                                        offset = offset,
+                                        remaining = data.len() - offset,
+                                        total_size = data.len(),
+                                        error = %e,
+                                        "Failed to parse message, stopping batch processing"
+                                    );
                                     break;
                                 }
                             }
@@ -118,7 +128,7 @@ impl Rsu {
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        tracing::error!("Error in wire_traffic: {:?}", e);
+                        tracing::error!(error = %e, "Wire traffic processing error");
                     }
                 }
             }
@@ -264,14 +274,19 @@ impl Rsu {
                         .write()
                         .expect("routing table write lock poisoned in heartbeat task");
                     let msg = routing.send_heartbeat(device.mac_address());
-                    tracing::trace!(?msg, "generated hello");
                     (&msg).into()
                 };
                 let vec = [IoSlice::new(&msg)];
                 match device.send_vectored(&vec).await {
-                    Ok(_) => {}
+                    Ok(n) => {
+                        tracing::trace!(bytes_sent = n, "Heartbeat sent");
+                    }
                     Err(e) => {
-                        tracing::error!(?e, "RSU failed to send heartbeat");
+                        tracing::error!(
+                            error = %e,
+                            size = msg.len(),
+                            "Failed to send heartbeat"
+                        );
                     }
                 }
                 let _ = tokio_timerfd::sleep(periodicity).await;
@@ -455,7 +470,6 @@ impl Rsu {
                             })
                             .collect_vec()
                     };
-                    tracing::trace!(?outgoing, "outgoing from tap");
                     Ok(Some(outgoing))
                 })
                 .await;

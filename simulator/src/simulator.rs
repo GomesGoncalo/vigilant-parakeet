@@ -178,6 +178,7 @@ pub struct Channel {
 
 impl Channel {
     #[cfg(any(test, feature = "webview"))]
+    #[allow(dead_code)]
     pub fn params(&self) -> ChannelParameters {
         *self
             .parameters

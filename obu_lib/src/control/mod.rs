@@ -44,7 +44,15 @@ impl Obu {
             session: Session::new(tun).into(),
         });
 
-        tracing::info!(?obu.args, "Setup Obu");
+        tracing::info!(
+            bind = %obu.args.bind,
+            mac = %obu.device.mac_address(),
+            mtu = obu.args.mtu,
+            hello_history = obu.args.obu_params.hello_history,
+            cached_candidates = obu.args.obu_params.cached_candidates,
+            encryption = obu.args.obu_params.enable_encryption,
+            "OBU initialized"
+        );
         obu.session_task()?;
         Obu::wire_traffic_task(obu.clone())?;
         Ok(obu)
@@ -95,11 +103,6 @@ impl Obu {
                             match Message::try_from(&data[offset..]) {
                                 Ok(msg) => {
                                     let response = obu.handle_msg(&msg).await;
-                                    let has_response = response.as_ref().map(|r| r.is_some()).unwrap_or(false);
-                                    #[cfg(any(test, feature = "test_helpers"))]
-                                    tracing::trace!(has_response = has_response, incoming = ?msg, outgoing = ?node::get_msgs(&response), "transaction");
-                                    #[cfg(not(any(test, feature = "test_helpers")))]
-                                    tracing::trace!(has_response = has_response, incoming = ?msg, "transaction");
 
                                     if let Ok(Some(responses)) = response {
                                         all_responses.extend(responses);
@@ -110,7 +113,13 @@ impl Obu {
                                     offset += msg_size;
                                 }
                                 Err(e) => {
-                                    tracing::trace!(offset = offset, remaining = data.len() - offset, error = ?e, "could not parse message at offset");
+                                    tracing::trace!(
+                                        offset = offset,
+                                        remaining = data.len() - offset,
+                                        total_size = data.len(),
+                                        error = %e,
+                                        "Failed to parse message, stopping batch processing"
+                                    );
                                     break;
                                 }
                             }
@@ -159,7 +168,11 @@ impl Obu {
                             match node_lib::crypto::encrypt_payload(y) {
                                 Ok(encrypted_data) => encrypted_data,
                                 Err(e) => {
-                                    tracing::error!("Failed to encrypt entire frame: {}", e);
+                                    tracing::error!(
+                                        size = y.len(),
+                                        error = %e,
+                                        "Failed to encrypt upstream frame"
+                                    );
                                     return Ok(None);
                                 }
                             }
@@ -179,7 +192,6 @@ impl Obu {
                             &mut wire,
                         );
                         let outgoing = vec![ReplyType::WireFlat(wire)];
-                        tracing::trace!(?outgoing, "outgoing from tap");
                         Ok(Some(outgoing))
                     })
                     .await;
@@ -235,7 +247,12 @@ impl Obu {
                         match node_lib::crypto::decrypt_payload(buf.data()) {
                             Ok(decrypted_data) => decrypted_data,
                             Err(e) => {
-                                tracing::error!("Failed to decrypt downstream frame: {}", e);
+                                tracing::warn!(
+                                    size = buf.data().len(),
+                                    from = %msg.from().unwrap_or([0u8; 6].into()),
+                                    error = %e,
+                                    "Failed to decrypt downstream frame, dropping"
+                                );
                                 return Ok(None);
                             }
                         }

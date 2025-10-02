@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
         let settings = Config::builder()
             .add_source(config::File::with_name(&config))
             .build()?;
-        tracing::info!(?settings, "settings");
+        tracing::debug!(?settings, "Node configuration loaded");
 
         #[cfg(not(feature = "test_helpers"))]
         let tun = Arc::new({

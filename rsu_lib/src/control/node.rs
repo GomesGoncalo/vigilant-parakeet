@@ -71,11 +71,13 @@ pub async fn handle_messages_batched(
     let wire_future = async {
         if !wire_packets.is_empty() {
             let slices: Vec<IoSlice> = wire_packets.iter().map(|p| IoSlice::new(p)).collect();
+            let total_bytes: usize = wire_packets.iter().map(|p| p.len()).sum();
             dev.send_vectored(&slices).await.inspect_err(|e| {
                 tracing::error!(
-                    ?e,
-                    count = wire_packets.len(),
-                    "error batch sending to wire"
+                    error = %e,
+                    packet_count = wire_packets.len(),
+                    total_bytes = total_bytes,
+                    "Failed to batch send to device"
                 )
             })
         } else {
@@ -86,8 +88,14 @@ pub async fn handle_messages_batched(
     let tap_future = async {
         if !tap_packets.is_empty() {
             let slices: Vec<IoSlice> = tap_packets.iter().map(|p| IoSlice::new(p)).collect();
+            let total_bytes: usize = tap_packets.iter().map(|p| p.len()).sum();
             tun.send_vectored(&slices).await.inspect_err(|e| {
-                tracing::error!(?e, count = tap_packets.len(), "error batch sending to tap")
+                tracing::error!(
+                    error = %e,
+                    packet_count = tap_packets.len(),
+                    total_bytes = total_bytes,
+                    "Failed to batch send to TAP device"
+                )
             })
         } else {
             Ok(0)

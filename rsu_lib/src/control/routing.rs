@@ -94,7 +94,11 @@ impl Routing {
             .map(|(_, _, m)| m);
 
         let Some(map) = map else {
-            tracing::warn!("outdated heartbeat");
+            tracing::debug!(
+                reply_id = hbr.id(),
+                sender = %hbr.sender(),
+                "Ignoring outdated heartbeat reply"
+            );
             return Ok(None);
         };
 
@@ -126,22 +130,25 @@ impl Routing {
         match (old_route, new_route) {
             (None, new_route) => {
                 tracing::event!(
-                    Level::DEBUG,
+                    Level::INFO,
                     from = %address,
                     to = %hbr.sender(),
                     through = %new_route,
-                    "route created from heartbeat reply",
+                    hops = new_route.hops,
+                    "Route discovered",
                 );
             }
             (Some(old_route), new_route) => {
                 if old_route.mac != new_route.mac {
                     tracing::event!(
-                        Level::DEBUG,
+                        Level::INFO,
                         from = %address,
                         to = %hbr.sender(),
                         through = %new_route,
                         was_through = %old_route,
-                        "route changed from heartbeat reply",
+                        old_hops = old_route.hops,
+                        new_hops = new_route.hops,
+                        "Route changed",
                     );
                 }
             }
