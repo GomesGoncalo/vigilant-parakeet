@@ -15,15 +15,13 @@ use netns_rs::NetNs;
 use obu_lib::Node as ObuNode;
 use rand::Rng;
 use rsu_lib::Node as RsuNode;
-use std::collections::VecDeque;
 use std::str::FromStr;
-use std::sync::Mutex;
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
     time::Duration,
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 // uninit_array is not used here
 
@@ -168,11 +166,11 @@ struct Packet {
 }
 
 pub struct Channel {
-    tx: UnboundedSender<()>,
+    tx: mpsc::UnboundedSender<Packet>,
+    param_notify_tx: mpsc::UnboundedSender<()>,
     parameters: RwLock<ChannelParameters>,
     mac: MacAddress,
     tun: Arc<Tun>,
-    queue: Mutex<VecDeque<Packet>>,
 }
 
 #[allow(dead_code)]
@@ -197,7 +195,7 @@ impl Channel {
             .write()
             .expect("channel parameters lock poisoned");
         *inner_params = result;
-        let _ = self.tx.send(());
+        let _ = self.param_notify_tx.send(());
         Ok(())
     }
 
@@ -208,27 +206,28 @@ impl Channel {
         from: &String,
         to: &String,
     ) -> Arc<Self> {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // Use unbounded channels for zero-copy fast path
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (param_notify_tx, mut param_notify_rx) = mpsc::unbounded_channel();
+
         tracing::info!(from, to, ?parameters, "Created channel");
         let this = Arc::new(Self {
             tx,
+            param_notify_tx,
             parameters: parameters.into(),
             mac,
             tun,
-            queue: VecDeque::with_capacity(1024).into(),
         });
         let thisc = this.clone();
+
+        // Spawn task to process packets from channel with latency simulation
         tokio::spawn(async move {
             loop {
-                let Some(packet) = thisc
-                    .queue
-                    .lock()
-                    .expect("packet queue lock poisoned")
-                    .pop_front()
-                else {
-                    let _ = rx.recv().await;
-                    continue;
+                let Some(packet) = rx.recv().await else {
+                    // Channel closed, exit task
+                    break;
                 };
+
                 loop {
                     let latency = thisc
                         .parameters
@@ -236,6 +235,7 @@ impl Channel {
                         .expect("channel parameters lock poisoned")
                         .latency;
                     let duration = (packet.instant + latency).duration_since(Instant::now());
+
                     if duration.is_zero() {
                         let _ = thisc.tun.send_all(&packet.packet[..packet.size]).await;
                         break;
@@ -245,7 +245,9 @@ impl Channel {
                                 let _ = thisc.tun.send_all(&packet.packet[..packet.size]).await;
                                 break;
                             },
-                            _ = rx.recv() => {},
+                            _ = param_notify_rx.recv() => {
+                                // Parameters changed, recalculate duration
+                            },
                         }
                     }
                 }
@@ -256,15 +258,16 @@ impl Channel {
 
     pub async fn send(&self, packet: [u8; 1500], size: usize) -> Result<()> {
         self.should_send(&packet[..size])?;
-        let mut queue = self.queue.lock().expect("packet queue lock poisoned");
-        if queue.is_empty() {
-            let _ = self.tx.send(());
-        }
-        queue.push_back(Packet {
-            packet,
-            size,
-            instant: Instant::now(),
-        });
+
+        // Send packet through unbounded channel - no blocking on fast path
+        self.tx
+            .send(Packet {
+                packet,
+                size,
+                instant: Instant::now(),
+            })
+            .map_err(|_| anyhow::anyhow!("channel send failed"))?;
+
         Ok(())
     }
 
