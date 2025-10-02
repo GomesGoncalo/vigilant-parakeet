@@ -4,33 +4,35 @@
 //! It handles heartbeat-based topology discovery, route selection with latency awareness,
 //! and failover management.
 //!
-//! ## Module Structure (2,520 lines total)
+//! ## Module Structure (1,032 lines)
 //!
-//! - **Type Definitions** (35 lines): Core types and aliases
-//! - **Test Modules** (~1,900 lines): Comprehensive test suites
-//!   - `extra_tests`: Failover and candidate rebuild tests (229 lines)
-//!   - `tests`: Heartbeat processing tests (102 lines)
-//!   - `cache_tests`: Cache management tests (111 lines)
-//!   - `regression_tests`: Specific bug regression tests (122 lines)
-//!   - `more_tests`: Route selection and hysteresis tests (977 lines)
-//! - **Routing struct** (15 lines): Main routing state
-//! - **Implementation** (~570 lines): Core routing logic organized in 4 sections:
+//! - **Type Definitions** (~50 lines): Core types and aliases
+//! - **Routing struct** (~980 lines): Implementation organized in 4 sections:
 //!   1. Construction and cache operations
-//!   2. Failover and candidate management
+//!   2. Failover and candidate management  
 //!   3. Heartbeat message processing (382 lines)
 //!   4. Route selection with hysteresis (424 lines)
+//!
+//! ## Test Organization
+//!
+//! Tests are extracted to separate files in `routing/`:
+//! - `failover_tests.rs` (233 lines): Candidate rebuild and failover logic
+//! - `heartbeat_tests.rs` (102 lines): Heartbeat message processing
+//! - `cache_tests.rs` (112 lines): Upstream caching functionality
+//! - `regression_tests.rs` (123 lines): Loop detection edge cases
+//! - `selection_tests.rs` (270 lines): Route selection with hysteresis
 //!
 //! ## Key Features
 //!
 //! - Latency-based route selection with hop-count fallback
-//! - Hysteresis to prevent route flapping
+//! - Hysteresis to prevent route flapping (10% threshold)
 //! - Multi-candidate caching for fast failover
 //! - Deterministic tie-breaking for reproducible routing
 //!
 //! ## Related Modules
 //!
-//! - `routing_cache`: Cache management (extracted, 229 lines)
-//! - `routing_utils`: Shared routing utilities
+//! - `routing_cache`: Lock-free cache management (extracted, 229 lines)
+//! - `routing_utils`: Shared routing utilities (scoring, selection)
 //! - `route`: Route data structure
 
 use super::{node::ReplyType, route::Route, routing_cache::RoutingCache};
