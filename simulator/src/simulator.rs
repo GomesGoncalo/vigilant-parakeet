@@ -20,9 +20,8 @@ use std::str::FromStr;
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
+    time::Duration,
 };
-#[cfg(any(test, feature = "webview"))]
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 // uninit_array is not used here
@@ -193,6 +192,9 @@ impl Channel {
                 (params.get("latency").context("could not get latency")?).parse::<u64>()?,
             ),
             loss: f64::from_str(params.get("loss").context("could not get loss")?)?,
+            jitter: Duration::from_millis(
+                params.get("jitter").unwrap_or(&"0".to_string()).parse::<u64>()?,
+            ),
         };
 
         let mut inner_params = self
@@ -234,11 +236,35 @@ impl Channel {
                 };
 
                 loop {
-                    let latency = thisc
-                        .parameters
-                        .read()
-                        .expect("channel parameters lock poisoned")
-                        .latency;
+                    // Calculate latency with jitter in a separate scope to drop the lock
+                    let latency = {
+                        let params = thisc
+                            .parameters
+                            .read()
+                            .expect("channel parameters lock poisoned");
+                        
+                        // Apply base latency + random jitter
+                        let mut latency = params.latency;
+                        if !params.jitter.is_zero() {
+                            let mut rng = rand::rng();
+                            // Generate random jitter in range [-jitter, +jitter]
+                            let jitter_ms = params.jitter.as_millis() as i64;
+                            let random_jitter = rng.random_range(-jitter_ms..=jitter_ms);
+                            if random_jitter >= 0 {
+                                latency += Duration::from_millis(random_jitter as u64);
+                            } else {
+                                // Subtract jitter, but don't go negative
+                                let abs_jitter = (-random_jitter) as u64;
+                                if latency > Duration::from_millis(abs_jitter) {
+                                    latency -= Duration::from_millis(abs_jitter);
+                                } else {
+                                    latency = Duration::ZERO;
+                                }
+                            }
+                        }
+                        latency
+                    }; // Lock is released here
+                    
                     let duration = (packet.instant + latency).duration_since(Instant::now());
 
                     if duration.is_zero() {
