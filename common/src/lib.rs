@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod channel_parameters;
 #[cfg(not(target_family = "wasm"))]
 pub mod device;

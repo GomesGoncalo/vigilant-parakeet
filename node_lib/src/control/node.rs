@@ -118,6 +118,84 @@ where
     callable(buf, n).await
 }
 
+/// Batch send multiple packets to device with vectored I/O
+///
+/// This function batches multiple packets and sends them in a single system call
+/// using writev, reducing syscall overhead and improving throughput.
+pub async fn batch_send_wire(dev: &Arc<Device>, packets: &[Vec<u8>]) -> Result<usize> {
+    if packets.is_empty() {
+        return Ok(0);
+    }
+
+    let slices: Vec<IoSlice> = packets.iter().map(|p| IoSlice::new(p)).collect();
+    let total = dev.send_vectored(&slices).await?;
+    Ok(total)
+}
+
+/// Batch send multiple packets to TAP device with vectored I/O
+pub async fn batch_send_tap(tun: &Arc<Tun>, packets: &[Vec<u8>]) -> Result<usize> {
+    if packets.is_empty() {
+        return Ok(0);
+    }
+
+    let slices: Vec<IoSlice> = packets.iter().map(|p| IoSlice::new(p)).collect();
+    let total = tun.send_vectored(&slices).await?;
+    Ok(total)
+}
+
+/// Process and send a batch of replies efficiently
+///
+/// This function groups replies by type (Wire/Tap) and sends them in batches,
+/// reducing the number of system calls and improving throughput.
+pub async fn handle_messages_batched(
+    messages: Vec<ReplyType>,
+    tun: &Arc<Tun>,
+    dev: &Arc<Device>,
+) -> Result<()> {
+    // Separate wire and tap packets
+    let mut wire_packets = Vec::new();
+    let mut tap_packets = Vec::new();
+
+    for reply in messages {
+        match reply {
+            ReplyType::WireFlat(buf) => wire_packets.push(buf),
+            ReplyType::TapFlat(buf) => tap_packets.push(buf),
+        }
+    }
+
+    // Send batches concurrently
+    let wire_future = async {
+        if !wire_packets.is_empty() {
+            batch_send_wire(dev, &wire_packets).await.inspect_err(|e| {
+                tracing::error!(
+                    ?e,
+                    count = wire_packets.len(),
+                    "error batch sending to wire"
+                )
+            })
+        } else {
+            Ok(0)
+        }
+    };
+
+    let tap_future = async {
+        if !tap_packets.is_empty() {
+            batch_send_tap(tun, &tap_packets).await.inspect_err(|e| {
+                tracing::error!(?e, count = tap_packets.len(), "error batch sending to tap")
+            })
+        } else {
+            Ok(0)
+        }
+    };
+
+    let (wire_result, tap_result) = tokio::join!(wire_future, tap_future);
+
+    wire_result?;
+    tap_result?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{get_msgs, ReplyType};
