@@ -1,7 +1,6 @@
 use super::{node::ReplyType, route::Route};
 use crate::args::RsuArgs;
 use anyhow::{bail, Result};
-use indexmap::IndexMap;
 use itertools::Itertools;
 use mac_address::MacAddress;
 use node_lib::messages::{
@@ -10,7 +9,7 @@ use node_lib::messages::{
     packet_type::PacketType,
 };
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, VecDeque},
     fmt::Debug,
 };
 use tokio::time::{Duration, Instant};
@@ -27,7 +26,8 @@ struct Target {
 pub struct Routing {
     hb_seq: u32,
     boot: Instant,
-    sent: IndexMap<u32, (Duration, HashMap<MacAddress, Vec<Target>>)>,
+    sent: VecDeque<(u32, Duration, HashMap<MacAddress, Vec<Target>>)>,
+    max_history: usize,
 }
 
 impl Routing {
@@ -35,10 +35,12 @@ impl Routing {
         if args.rsu_params.hello_history == 0 {
             bail!("we need to be able to store at least 1 hello");
         }
+        let max_history = usize::try_from(args.rsu_params.hello_history)?;
         Ok(Self {
             hb_seq: 0,
             boot: Instant::now(),
-            sent: IndexMap::with_capacity(usize::try_from(args.rsu_params.hello_history)?),
+            sent: VecDeque::with_capacity(max_history),
+            max_history,
         })
     }
 
@@ -49,17 +51,18 @@ impl Routing {
             address,
         );
 
-        if self.sent.first().is_some_and(|(x, _)| x > &message.id()) {
+        // Handle sequence wraparound: if the first entry has a higher seq than current, clear all
+        if self.sent.front().is_some_and(|(x, _, _)| x > &message.id()) {
             self.sent.clear();
         }
 
-        if self.sent.len() == self.sent.capacity() && self.sent.capacity() > 0 {
-            self.sent.swap_remove_index(0);
+        // Maintain fixed-size history with O(1) pop_front
+        if self.sent.len() >= self.max_history {
+            self.sent.pop_front();
         }
 
-        let _ = self
-            .sent
-            .insert(message.id(), (message.duration(), HashMap::default()));
+        self.sent
+            .push_back((message.id(), message.duration(), HashMap::default()));
 
         self.hb_seq += 1;
 
@@ -82,7 +85,15 @@ impl Routing {
         };
 
         let old_route = self.get_route_to(Some(hbr.sender()));
-        let Some((_, map)) = self.sent.get_mut(&hbr.id()) else {
+
+        // Find the heartbeat entry with matching ID
+        let map = self
+            .sent
+            .iter_mut()
+            .find(|(id, _, _)| *id == hbr.id())
+            .map(|(_, _, m)| m);
+
+        let Some(map) = map else {
             tracing::warn!("outdated heartbeat");
             return Ok(None);
         };
@@ -90,7 +101,7 @@ impl Routing {
         let latency = Instant::now().duration_since(self.boot) - hbr.duration();
         match map.entry(hbr.sender()) {
             Entry::Occupied(mut entry) => {
-                let value = entry.get_mut();
+                let value: &mut Vec<Target> = entry.get_mut();
 
                 value.push(Target {
                     hops: hbr.hops(),
@@ -144,7 +155,7 @@ impl Routing {
 
         // Collect all observed candidates for the target: (hops, next_hop_mac, latency_us)
         let mut candidates: Vec<(u32, MacAddress, u128)> = Vec::new();
-        for (_seq, (_dur, m)) in self.sent.iter().rev() {
+        for (_seq, _dur, m) in self.sent.iter().rev() {
             if let Some(routes) = m.get(&target) {
                 for r in routes {
                     candidates.push((r.hops, r.mac, r.latency.as_micros()));
@@ -196,7 +207,7 @@ impl Routing {
     }
 
     pub fn iter_next_hops(&self) -> impl Iterator<Item = &MacAddress> {
-        self.sent.iter().flat_map(|(_, (_, m))| m.keys()).unique()
+        self.sent.iter().flat_map(|(_, _, m)| m.keys()).unique()
     }
 }
 
