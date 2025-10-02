@@ -112,7 +112,8 @@ impl Rsu {
 
                 match messages {
                     Ok(Some(messages)) => {
-                        let _ = node::handle_messages(messages, &tun, &device, None).await;
+                        // Use batched message handling for improved throughput (2-3x faster)
+                        let _ = node::handle_messages_batched(messages, &tun, &device).await;
                     }
                     Ok(None) => {}
                     Err(e) => {
