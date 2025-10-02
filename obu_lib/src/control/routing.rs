@@ -1,3 +1,38 @@
+//! OBU Routing Implementation
+//!
+//! This module implements routing logic for OBU (On-Board Unit) nodes in a vehicular network.
+//! It handles heartbeat-based topology discovery, route selection with latency awareness,
+//! and failover management.
+//!
+//! ## Module Structure (2,520 lines total)
+//!
+//! - **Type Definitions** (35 lines): Core types and aliases
+//! - **Test Modules** (~1,900 lines): Comprehensive test suites
+//!   - `extra_tests`: Failover and candidate rebuild tests (229 lines)
+//!   - `tests`: Heartbeat processing tests (102 lines)
+//!   - `cache_tests`: Cache management tests (111 lines)
+//!   - `regression_tests`: Specific bug regression tests (122 lines)
+//!   - `more_tests`: Route selection and hysteresis tests (977 lines)
+//! - **Routing struct** (15 lines): Main routing state
+//! - **Implementation** (~570 lines): Core routing logic organized in 4 sections:
+//!   1. Construction and cache operations
+//!   2. Failover and candidate management
+//!   3. Heartbeat message processing (382 lines)
+//!   4. Route selection with hysteresis (424 lines)
+//!
+//! ## Key Features
+//!
+//! - Latency-based route selection with hop-count fallback
+//! - Hysteresis to prevent route flapping
+//! - Multi-candidate caching for fast failover
+//! - Deterministic tie-breaking for reproducible routing
+//!
+//! ## Related Modules
+//!
+//! - `routing_cache`: Cache management (extracted, 229 lines)
+//! - `routing_utils`: Shared routing utilities
+//! - `route`: Route data structure
+
 use super::{node::ReplyType, route::Route, routing_cache::RoutingCache};
 use crate::args::ObuArgs;
 use anyhow::{bail, Result};
@@ -7,6 +42,10 @@ use node_lib::messages::{control::Control, message::Message, packet_type::Packet
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 use tokio::time::{Duration, Instant};
 use tracing::Level;
+
+// ============================================================================
+// Type Definitions
+// ============================================================================
 
 // Type aliases for complex routing table structures
 /// Per-hop routing information with latency measurements
@@ -600,982 +639,8 @@ mod regression_tests {
 }
 
 #[cfg(test)]
-mod more_tests {
-    use super::Routing;
-    use super::Target;
-    use crate::args::{ObuArgs, ObuParameters};
-
-    use mac_address::MacAddress;
-    use tokio::time::{Duration, Instant};
-
-    #[test]
-    fn get_route_to_none_when_empty() {
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-
-        let boot = Instant::now();
-        let routing = Routing::new(&args, &boot).expect("routing built");
-
-        let unknown: MacAddress = [1u8; 6].into();
-        // No routes yet
-        assert!(routing.get_route_to(Some(unknown)).is_none());
-        // No cached upstream
-        assert!(routing.get_route_to(None).is_none());
-    }
-
-    #[test]
-    fn tie_break_prefers_lower_mac_when_scores_equal() {
-        // Build args and routing
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-        let boot = Instant::now() - Duration::from_secs(1);
-        let mut routing = Routing::new(&args, &boot).expect("routing built");
-
-        // We'll manually populate routes to create two candidates with equal score
-        // Candidate A: MAC [1,0,0,0,0,1], Candidate B: MAC [2,0,0,0,0,2]
-        let target: MacAddress = [9u8; 6].into();
-        let candidate_a: MacAddress = [1u8, 0, 0, 0, 0, 1].into();
-        let candidate_b: MacAddress = [2u8, 0, 0, 0, 0, 2].into();
-
-        // Populate `routes` with downstream observations for a single RSU/seq
-        let rsu_mac: MacAddress = [100u8; 6].into();
-        let seq = 0u32;
-        let mut seqmap = indexmap::IndexMap::new();
-        let mut downstream_map: std::collections::HashMap<MacAddress, Vec<Target>> =
-            std::collections::HashMap::new();
-
-        // Both candidates have same hops and same latency values so score equal
-        downstream_map.insert(
-            target,
-            vec![
-                Target {
-                    hops: 2,
-                    mac: candidate_a,
-                    latency: Some(Duration::from_millis(10)),
-                },
-                Target {
-                    hops: 2,
-                    mac: candidate_b,
-                    latency: Some(Duration::from_millis(10)),
-                },
-            ],
-        );
-
-        seqmap.insert(
-            seq,
-            (
-                Duration::from_millis(0),
-                rsu_mac,
-                1u32,
-                indexmap::IndexMap::new(),
-                downstream_map,
-            ),
-        );
-        routing.routes.insert(rsu_mac, seqmap);
-
-        // Now ask for route to target; since scores tie, the lower MAC should win
-        let route = routing.get_route_to(Some(target)).expect("route present");
-        assert!(route.mac.bytes() < candidate_b.bytes());
-    }
-
-    #[test]
-    fn none_latency_handling_prefers_min_and_none_ignored_in_avg() {
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-        let boot = Instant::now() - Duration::from_secs(1);
-        let mut routing = Routing::new(&args, &boot).expect("routing built");
-
-        let target: MacAddress = [9u8; 6].into();
-        let candidate_with_none: MacAddress = [5u8; 6].into();
-        let candidate_with_val: MacAddress = [6u8; 6].into();
-
-        let rsu_mac: MacAddress = [101u8; 6].into();
-        let seq = 0u32;
-        let mut seqmap = indexmap::IndexMap::new();
-        let mut downstream_map: std::collections::HashMap<MacAddress, Vec<Target>> =
-            std::collections::HashMap::new();
-
-        // Candidate A has None latency (unmeasured), Candidate B has concrete latencies
-        downstream_map.insert(
-            target,
-            vec![
-                Target {
-                    hops: 1,
-                    mac: candidate_with_none,
-                    latency: None,
-                },
-                Target {
-                    hops: 1,
-                    mac: candidate_with_val,
-                    latency: Some(Duration::from_millis(50)),
-                },
-            ],
-        );
-
-        seqmap.insert(
-            seq,
-            (
-                Duration::from_millis(0),
-                rsu_mac,
-                1u32,
-                indexmap::IndexMap::new(),
-                downstream_map,
-            ),
-        );
-        routing.routes.insert(rsu_mac, seqmap);
-
-        // Candidate with measured latency should be preferred since None is treated as MAX
-        let route = routing.get_route_to(Some(target)).expect("route present");
-        assert_eq!(route.mac, candidate_with_val);
-    }
-
-    #[test]
-    fn duplicate_heartbeat_returns_none() {
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 4,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-
-        let boot = Instant::now();
-        let mut routing = Routing::new(&args, &boot).expect("routing built");
-
-        let hb_source: MacAddress = [5u8; 6].into();
-        let pkt_from: MacAddress = [6u8; 6].into();
-        let our_mac: MacAddress = [7u8; 6].into();
-        let hb = node_lib::messages::control::heartbeat::Heartbeat::new(
-            std::time::Duration::from_millis(1),
-            123u32,
-            hb_source,
-        );
-        let hb_msg = node_lib::messages::message::Message::new(
-            pkt_from,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb.clone()),
-            ),
-        );
-
-        let first = routing.handle_heartbeat(&hb_msg, our_mac).expect("hb1");
-        assert!(first.is_some());
-        let second = routing.handle_heartbeat(&hb_msg, our_mac).expect("hb2");
-        assert!(second.is_none(), "duplicate id should be ignored");
-    }
-
-    #[test]
-    fn hello_history_eviction_keeps_latest() {
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 1,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-
-        let boot = Instant::now();
-        let mut routing = Routing::new(&args, &boot).expect("routing built");
-
-        let hb_source: MacAddress = [1u8, 1, 1, 1, 1, 1].into();
-        let pkt_from: MacAddress = [2u8, 2, 2, 2, 2, 2].into();
-        let our_mac: MacAddress = [9u8; 6].into();
-
-        let hb1 = node_lib::messages::control::heartbeat::Heartbeat::new(
-            std::time::Duration::from_millis(1),
-            1u32,
-            hb_source,
-        );
-        let msg1 = node_lib::messages::message::Message::new(
-            pkt_from,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb1.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
-
-        let hb2 = node_lib::messages::control::heartbeat::Heartbeat::new(
-            std::time::Duration::from_millis(2),
-            2u32,
-            hb_source,
-        );
-        let msg2 = node_lib::messages::message::Message::new(
-            pkt_from,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb2.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
-
-        // Access internal map to assert capacity behavior
-        let entry = routing.routes.get(&hb_source).expect("has entry");
-        assert_eq!(entry.len(), 1, "should keep only one id due to capacity");
-        let (&only_id, _) = entry.last().expect("one element exists");
-        assert_eq!(only_id, 2u32);
-    }
-
-    #[test]
-    fn out_of_order_id_clears_prior_entries() {
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 4,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-
-        let boot = Instant::now();
-        let mut routing = Routing::new(&args, &boot).expect("routing built");
-
-        let hb_source: MacAddress = [9u8, 8, 7, 6, 5, 4].into();
-        let pkt_from: MacAddress = [1u8, 2, 3, 4, 5, 6].into();
-        let our_mac: MacAddress = [0u8; 6].into();
-
-        // Insert id 10 first
-        let hb10 = node_lib::messages::control::heartbeat::Heartbeat::new(
-            std::time::Duration::from_millis(10),
-            10u32,
-            hb_source,
-        );
-        let msg10 = node_lib::messages::message::Message::new(
-            pkt_from,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb10.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg10, our_mac).unwrap();
-
-        // Now insert smaller id 5, which should clear existing entries
-        let hb5 = node_lib::messages::control::heartbeat::Heartbeat::new(
-            std::time::Duration::from_millis(5),
-            5u32,
-            hb_source,
-        );
-        let msg5 = node_lib::messages::message::Message::new(
-            pkt_from,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb5.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg5, our_mac).unwrap();
-
-        let entry = routing.routes.get(&hb_source).expect("entry exists");
-        assert_eq!(entry.len(), 1);
-        let (&only_id, _) = entry.first().expect("one elem");
-        assert_eq!(only_id, 5u32);
-    }
-
-    #[test]
-    fn select_and_cache_upstream_none_when_no_routes() {
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-
-        let boot = Instant::now();
-        let routing = Routing::new(&args, &boot).expect("routing built");
-        let mac: MacAddress = [1u8; 6].into();
-        assert!(routing.select_and_cache_upstream(mac).is_none());
-        assert!(routing.get_route_to(None).is_none());
-    }
-
-    #[test]
-    fn clear_cached_upstream_removes_cache() {
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-
-        let boot = Instant::now();
-        let mut routing = Routing::new(&args, &boot).expect("routing built");
-        let hb_source: MacAddress = [7u8; 6].into();
-        let pkt_from: MacAddress = [8u8; 6].into();
-        let our_mac: MacAddress = [9u8; 6].into();
-
-        let hb = node_lib::messages::control::heartbeat::Heartbeat::new(
-            std::time::Duration::from_millis(1),
-            1u32,
-            hb_source,
-        );
-        let hb_msg = node_lib::messages::message::Message::new(
-            pkt_from,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&hb_msg, our_mac).unwrap();
-        assert!(routing.select_and_cache_upstream(hb_source).is_some());
-        assert!(routing.get_cached_upstream().is_some());
-        routing.clear_cached_upstream();
-        assert!(routing.get_cached_upstream().is_none());
-    }
-
-    #[test]
-    fn hysteresis_keeps_cached_when_hops_equal() {
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-
-        let boot = Instant::now();
-        let mut routing = Routing::new(&args, &boot).expect("routing built");
-
-        let rsu: MacAddress = [1u8; 6].into();
-        let via_b: MacAddress = [2u8; 6].into();
-        let via_c: MacAddress = [3u8; 6].into();
-        let our_mac: MacAddress = [9u8; 6].into();
-
-        // Heartbeat from RSU via B with 2 hops
-        let hb1 = node_lib::messages::control::heartbeat::Heartbeat::new(
-            std::time::Duration::from_millis(1),
-            1u32,
-            rsu,
-        );
-        let msg1 = node_lib::messages::message::Message::new(
-            via_b,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb1.clone()),
-            ),
-        );
-        // Insert, then cache selection chooses B
-        let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
-        let sel1 = routing.select_and_cache_upstream(rsu).expect("selected");
-        assert_eq!(sel1.mac, via_b);
-
-        // Another Heartbeat from RSU via C with same hops (2)
-        let hb2 = node_lib::messages::control::heartbeat::Heartbeat::new(
-            std::time::Duration::from_millis(2),
-            2u32,
-            rsu,
-        );
-        let msg2 = node_lib::messages::message::Message::new(
-            via_c,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb2.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
-
-        // get_route_to(Some) should prefer keeping cached (B) since hops are equal
-        let route = routing.get_route_to(Some(rsu)).expect("route");
-        assert_eq!(route.mac, via_b, "should keep cached when hops equal");
-    }
-
-    #[test]
-    fn hysteresis_switches_when_one_fewer_hop() {
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-
-        let boot = Instant::now();
-        let mut routing = Routing::new(&args, &boot).expect("routing built");
-
-        let rsu: MacAddress = [10u8; 6].into();
-        let via_b: MacAddress = [20u8; 6].into();
-        let via_c: MacAddress = [30u8; 6].into();
-        let our_mac: MacAddress = [99u8; 6].into();
-
-        // First candidate with 2 hops via B (craft borrowed heartbeat bytes)
-        let mut hb1_bytes = Vec::new();
-        hb1_bytes.extend_from_slice(&0u128.to_be_bytes()); // duration 16B
-        hb1_bytes.extend_from_slice(&1u32.to_be_bytes()); // id
-        hb1_bytes.extend_from_slice(&2u32.to_be_bytes()); // hops = 2
-        hb1_bytes.extend_from_slice(&rsu.bytes()); // source
-        let hb1 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..])
-            .expect("hb1 bytes to heartbeat");
-        let msg1 = node_lib::messages::message::Message::new(
-            via_b,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb1.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
-        let sel1 = routing.select_and_cache_upstream(rsu).expect("selected");
-        assert_eq!(sel1.mac, via_b);
-
-        // Better candidate with 1 hop via C (craft borrowed heartbeat bytes)
-        let mut hb2_bytes = Vec::new();
-        hb2_bytes.extend_from_slice(&0u128.to_be_bytes()); // duration 16B
-        hb2_bytes.extend_from_slice(&2u32.to_be_bytes()); // id
-        hb2_bytes.extend_from_slice(&1u32.to_be_bytes()); // hops = 1
-        hb2_bytes.extend_from_slice(&rsu.bytes()); // source
-        let hb2 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..])
-            .expect("hb2 bytes to heartbeat");
-        let msg2 = node_lib::messages::message::Message::new(
-            via_c,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb2.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
-
-        // Now get_route_to(Some) should switch to C due to one fewer hop
-        let route = routing.get_route_to(Some(rsu)).expect("route");
-        assert_eq!(route.mac, via_c, "should switch when one fewer hop");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn hysteresis_latency_improvement_below_10_percent_keeps_cached() {
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-        // Use paused time so we can deterministically advance time
-        tokio::time::pause();
-        let boot = Instant::now();
-        let mut routing = Routing::new(&args, &boot).expect("routing built");
-
-        let rsu: MacAddress = [11u8; 6].into();
-        let via_b: MacAddress = [21u8; 6].into();
-        let via_c: MacAddress = [31u8; 6].into();
-        let our_mac: MacAddress = [101u8; 6].into();
-
-        // HB via B (id 1), then cache B
-        let mut hb1_bytes = Vec::new();
-        hb1_bytes.extend_from_slice(&0u128.to_be_bytes());
-        hb1_bytes.extend_from_slice(&1u32.to_be_bytes());
-        hb1_bytes.extend_from_slice(&2u32.to_be_bytes()); // higher hops for cached
-        hb1_bytes.extend_from_slice(&rsu.bytes());
-        let hb1 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..])
-            .expect("hb1");
-        let msg1 = node_lib::messages::message::Message::new(
-            via_b,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb1.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
-        routing.select_and_cache_upstream(rsu).expect("cached B");
-
-        // Advance 25ms between HB and HBR for B
-        tokio::time::advance(Duration::from_millis(25)).await;
-        let hbr1 = node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb1, rsu);
-        let reply1 = node_lib::messages::message::Message::new(
-            via_b,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::HeartbeatReply(hbr1.clone()),
-            ),
-        );
-        let _ = routing
-            .handle_heartbeat_reply(&reply1, our_mac)
-            .unwrap_or(None);
-
-        // HB via C (id 2) with the SAME number of hops as B to test latency-only hysteresis
-        let mut hb2_bytes = Vec::new();
-        hb2_bytes.extend_from_slice(&0u128.to_be_bytes());
-        hb2_bytes.extend_from_slice(&2u32.to_be_bytes());
-        hb2_bytes.extend_from_slice(&2u32.to_be_bytes()); // same hops as cached
-        hb2_bytes.extend_from_slice(&rsu.bytes());
-        let hb2 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..])
-            .expect("hb2");
-        let msg2 = node_lib::messages::message::Message::new(
-            via_c,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb2.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
-        // Advance 23ms for C (less than 10% better than 25ms)
-        tokio::time::advance(Duration::from_millis(23)).await;
-        let hbr2 = node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb2, rsu);
-        let reply2 = node_lib::messages::message::Message::new(
-            via_c,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::HeartbeatReply(hbr2.clone()),
-            ),
-        );
-        let _ = routing
-            .handle_heartbeat_reply(&reply2, our_mac)
-            .unwrap_or(None);
-
-        // Now selection should keep cached B since improvement < 10%
-        let route = routing.get_route_to(Some(rsu)).expect("route");
-        assert_eq!(route.mac, via_b, "should keep cached when <10% better");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn hysteresis_latency_improvement_above_10_percent_switches() {
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-        // Use paused time so we can deterministically advance time
-        tokio::time::pause();
-        let boot = Instant::now() - Duration::from_secs(1);
-        let mut routing = Routing::new(&args, &boot).expect("routing built");
-
-        let rsu: MacAddress = [12u8; 6].into();
-        let via_b: MacAddress = [22u8; 6].into();
-        let via_c: MacAddress = [32u8; 6].into();
-        let our_mac: MacAddress = [102u8; 6].into();
-
-        // HB via B (id 1), then cache B
-        let mut hb1_bytes = Vec::new();
-        hb1_bytes.extend_from_slice(&0u128.to_be_bytes());
-        hb1_bytes.extend_from_slice(&1u32.to_be_bytes());
-        hb1_bytes.extend_from_slice(&0u32.to_be_bytes());
-        hb1_bytes.extend_from_slice(&rsu.bytes());
-        let hb1 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..])
-            .expect("hb1");
-        let msg1 = node_lib::messages::message::Message::new(
-            via_b,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb1.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
-        routing.select_and_cache_upstream(rsu).expect("cached B");
-
-        // Advance 40ms for B
-        tokio::time::advance(Duration::from_millis(40)).await;
-        let hbr1 = node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb1, rsu);
-        let reply1 = node_lib::messages::message::Message::new(
-            via_b,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::HeartbeatReply(hbr1.clone()),
-            ),
-        );
-        let _ = routing
-            .handle_heartbeat_reply(&reply1, our_mac)
-            .unwrap_or(None);
-
-        // HB via C (id 2)
-        let mut hb2_bytes = Vec::new();
-        hb2_bytes.extend_from_slice(&0u128.to_be_bytes());
-        hb2_bytes.extend_from_slice(&2u32.to_be_bytes());
-        hb2_bytes.extend_from_slice(&0u32.to_be_bytes());
-        hb2_bytes.extend_from_slice(&rsu.bytes());
-        let hb2 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..])
-            .expect("hb2");
-        let msg2 = node_lib::messages::message::Message::new(
-            via_c,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb2.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
-
-        // Advance 20ms for C (>= 10% better than 40ms)
-        tokio::time::advance(Duration::from_millis(20)).await;
-        let hbr2 = node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb2, rsu);
-        let reply2 = node_lib::messages::message::Message::new(
-            via_c,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::HeartbeatReply(hbr2.clone()),
-            ),
-        );
-        let _ = routing
-            .handle_heartbeat_reply(&reply2, our_mac)
-            .unwrap_or(None);
-
-        // Trigger selection and caching now that both latencies are recorded
-        let _ = routing.select_and_cache_upstream(rsu);
-        // Verify both direct selection and cached reflect the better path
-        let route = routing.get_route_to(Some(rsu)).expect("route");
-        assert_eq!(route.mac, via_c, "should switch when >=10% better");
-        let cached = routing.get_route_to(None).expect("cached route");
-        assert_eq!(cached.mac, via_c, "cached should reflect the switch");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn hysteresis_prefers_measured_when_cached_unmeasured() {
-        let args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-        // Use paused time for deterministic latency measurement
-        tokio::time::pause();
-        let boot = Instant::now() - Duration::from_secs(1);
-        let mut routing = Routing::new(&args, &boot).expect("routing built");
-
-        let rsu: MacAddress = [50u8; 6].into();
-        let via_b: MacAddress = [60u8; 6].into();
-        let via_c: MacAddress = [70u8; 6].into();
-        let our_mac: MacAddress = [111u8; 6].into();
-
-        // Insert a heartbeat observed via B (id 1) and make it the cached primary
-        let mut hb1_bytes = Vec::new();
-        hb1_bytes.extend_from_slice(&0u128.to_be_bytes());
-        hb1_bytes.extend_from_slice(&1u32.to_be_bytes());
-        hb1_bytes.extend_from_slice(&0u32.to_be_bytes());
-        hb1_bytes.extend_from_slice(&rsu.bytes());
-        let hb1 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb1_bytes[..])
-            .expect("hb1");
-        let msg1 = node_lib::messages::message::Message::new(
-            via_b,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb1.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg1, our_mac).unwrap();
-        // Force cached primary to via_b but do NOT record any latency for it
-        routing.test_set_cached_candidates(vec![via_b]);
-
-        // Now observe the RSU via C and record a latency for C
-        let mut hb2_bytes = Vec::new();
-        hb2_bytes.extend_from_slice(&0u128.to_be_bytes());
-        hb2_bytes.extend_from_slice(&2u32.to_be_bytes());
-        hb2_bytes.extend_from_slice(&0u32.to_be_bytes());
-        hb2_bytes.extend_from_slice(&rsu.bytes());
-        let hb2 = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb2_bytes[..])
-            .expect("hb2");
-        let msg2 = node_lib::messages::message::Message::new(
-            via_c,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb2.clone()),
-            ),
-        );
-        let _ = routing.handle_heartbeat(&msg2, our_mac).unwrap();
-
-        // Advance time so the reply records a measurable latency for via_c
-        tokio::time::advance(Duration::from_millis(30)).await;
-        let hbr2 = node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb2, rsu);
-        let reply2 = node_lib::messages::message::Message::new(
-            via_c,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::HeartbeatReply(hbr2.clone()),
-            ),
-        );
-        // This will record latency for via_c and also trigger select_and_cache_upstream
-        let _ = routing
-            .handle_heartbeat_reply(&reply2, our_mac)
-            .unwrap_or(None);
-
-        // Now selection should prefer the measured candidate via_c even though
-        // the cached primary (via_b) had no latency observations.
-        let route = routing.get_route_to(Some(rsu)).expect("route");
-        assert_eq!(
-            route.mac, via_c,
-            "should prefer measured candidate when cached unmeasured"
-        );
-
-        // And the cached upstream should reflect the switch after selection
-        let cached = routing.get_route_to(None).expect("cached route");
-        assert_eq!(
-            cached.mac, via_c,
-            "cached should reflect the measured switch"
-        );
-    }
-
-    /// Comprehensive test for latency measurement with mocked time covering OBU functionality.
-    /// This test verifies that OBU can measure latency and use it for routing decisions.
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_latency_measurement_with_mocked_time() {
-        // Use paused time for deterministic latency measurement
-        tokio::time::pause();
-        let boot = Instant::now();
-
-        // Test OBU latency measurement and routing
-        let obu_args = ObuArgs {
-            bind: String::default(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: ObuParameters {
-                hello_history: 3,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
-        let mut obu_routing = Routing::new(&obu_args, &boot).expect("OBU routing built");
-
-        let rsu: MacAddress = [1u8; 6].into();
-        let via_fast: MacAddress = [10u8; 6].into();
-        let via_slow: MacAddress = [20u8; 6].into();
-        let our_mac: MacAddress = [100u8; 6].into();
-
-        // Test scenario: OBU receives heartbeats from RSU via two different paths
-        // and should prefer the one with lower latency when hop counts are equal
-
-        // Heartbeat via fast path (will have 10ms latency)
-        let mut hb_fast_bytes = Vec::new();
-        hb_fast_bytes.extend_from_slice(&0u128.to_be_bytes());
-        hb_fast_bytes.extend_from_slice(&1u32.to_be_bytes()); // sequence id
-        hb_fast_bytes.extend_from_slice(&1u32.to_be_bytes()); // 1 hop
-        hb_fast_bytes.extend_from_slice(&rsu.bytes());
-        let hb_fast =
-            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_fast_bytes[..])
-                .expect("hb_fast");
-        let msg_fast = node_lib::messages::message::Message::new(
-            via_fast,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb_fast.clone()),
-            ),
-        );
-        let _ = obu_routing.handle_heartbeat(&msg_fast, our_mac).unwrap();
-
-        // Advance 10ms and reply
-        tokio::time::advance(Duration::from_millis(10)).await;
-        let hbr_fast =
-            node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_fast, rsu);
-        let reply_fast = node_lib::messages::message::Message::new(
-            via_fast,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::HeartbeatReply(hbr_fast.clone()),
-            ),
-        );
-        let _ = obu_routing
-            .handle_heartbeat_reply(&reply_fast, our_mac)
-            .unwrap_or(None);
-
-        // Heartbeat via slow path (will have 30ms latency)
-        let mut hb_slow_bytes = Vec::new();
-        hb_slow_bytes.extend_from_slice(&0u128.to_be_bytes());
-        hb_slow_bytes.extend_from_slice(&2u32.to_be_bytes()); // different sequence id
-        hb_slow_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
-        hb_slow_bytes.extend_from_slice(&rsu.bytes());
-        let hb_slow =
-            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_slow_bytes[..])
-                .expect("hb_slow");
-        let msg_slow = node_lib::messages::message::Message::new(
-            via_slow,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb_slow.clone()),
-            ),
-        );
-        let _ = obu_routing.handle_heartbeat(&msg_slow, our_mac).unwrap();
-
-        // Advance 30ms and reply
-        tokio::time::advance(Duration::from_millis(30)).await;
-        let hbr_slow =
-            node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_slow, rsu);
-        let reply_slow = node_lib::messages::message::Message::new(
-            via_slow,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::HeartbeatReply(hbr_slow.clone()),
-            ),
-        );
-        let _ = obu_routing
-            .handle_heartbeat_reply(&reply_slow, our_mac)
-            .unwrap_or(None);
-
-        // OBU should prefer the fast path due to latency (since hop counts are equal)
-        let route = obu_routing.get_route_to(Some(rsu)).expect("OBU route");
-        assert_eq!(
-            route.mac, via_fast,
-            "OBU should prefer fast path based on latency measurement"
-        );
-        assert!(
-            route.latency.is_some(),
-            "OBU route should have latency measurement"
-        );
-        assert!(
-            route.latency.unwrap() < Duration::from_millis(15),
-            "OBU should measure fast path latency correctly (~10ms)"
-        );
-
-        // Test that hysteresis works: slightly better latency shouldn't switch
-        // Create a new candidate that's only 5% better (9.5ms vs 10ms)
-        let via_slightly_better: MacAddress = [30u8; 6].into();
-        let mut hb_slightly_bytes = Vec::new();
-        hb_slightly_bytes.extend_from_slice(&0u128.to_be_bytes());
-        hb_slightly_bytes.extend_from_slice(&3u32.to_be_bytes());
-        hb_slightly_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
-        hb_slightly_bytes.extend_from_slice(&rsu.bytes());
-        let hb_slightly =
-            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_slightly_bytes[..])
-                .expect("hb_slightly");
-        let msg_slightly = node_lib::messages::message::Message::new(
-            via_slightly_better,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb_slightly.clone()),
-            ),
-        );
-        let _ = obu_routing
-            .handle_heartbeat(&msg_slightly, our_mac)
-            .unwrap();
-
-        // Cache the current best route first
-        obu_routing.select_and_cache_upstream(rsu).expect("cached");
-
-        // Advance only 9.5ms for slightly better latency
-        tokio::time::advance(Duration::from_millis(9) + Duration::from_micros(500)).await;
-        let hbr_slightly =
-            node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_slightly, rsu);
-        let reply_slightly = node_lib::messages::message::Message::new(
-            via_slightly_better,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::HeartbeatReply(hbr_slightly.clone()),
-            ),
-        );
-        let _ = obu_routing
-            .handle_heartbeat_reply(&reply_slightly, our_mac)
-            .unwrap_or(None);
-
-        // Should keep cached route due to hysteresis (improvement < 10%)
-        let hysteresis_route = obu_routing
-            .get_route_to(Some(rsu))
-            .expect("hysteresis route");
-        assert_eq!(
-            hysteresis_route.mac, via_fast,
-            "Should keep cached route when improvement < 10% (hysteresis)"
-        );
-
-        // Test significant improvement: create a candidate with >10% better latency (8ms vs 10ms = 20% better)
-        let via_much_better: MacAddress = [40u8; 6].into();
-        let mut hb_much_bytes = Vec::new();
-        hb_much_bytes.extend_from_slice(&0u128.to_be_bytes());
-        hb_much_bytes.extend_from_slice(&4u32.to_be_bytes());
-        hb_much_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
-        hb_much_bytes.extend_from_slice(&rsu.bytes());
-        let hb_much =
-            node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_much_bytes[..])
-                .expect("hb_much");
-        let msg_much = node_lib::messages::message::Message::new(
-            via_much_better,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::Heartbeat(hb_much.clone()),
-            ),
-        );
-        let _ = obu_routing.handle_heartbeat(&msg_much, our_mac).unwrap();
-
-        // Advance 8ms for significantly better latency (>10% improvement)
-        tokio::time::advance(Duration::from_millis(8)).await;
-        let hbr_much =
-            node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb_much, rsu);
-        let reply_much = node_lib::messages::message::Message::new(
-            via_much_better,
-            [255u8; 6].into(),
-            node_lib::messages::packet_type::PacketType::Control(
-                node_lib::messages::control::Control::HeartbeatReply(hbr_much.clone()),
-            ),
-        );
-        let _ = obu_routing
-            .handle_heartbeat_reply(&reply_much, our_mac)
-            .unwrap_or(None);
-
-        // Should switch to much better route (>10% improvement)
-        let switched_route = obu_routing.get_route_to(Some(rsu)).expect("switched route");
-        assert_eq!(
-            switched_route.mac, via_much_better,
-            "Should switch to route with >10% latency improvement"
-        );
-
-        // Verify mocked time worked as expected (total: 10 + 30 + 9.5 + 8 = 57.5ms)
-        let total_advance = Duration::from_millis(57) + Duration::from_micros(500);
-        assert!(
-            tokio::time::Instant::now().duration_since(tokio::time::Instant::now() - total_advance)
-                >= total_advance,
-            "Mocked time should have advanced correctly"
-        );
-    }
-}
+#[path = "routing/selection_tests.rs"]
+mod selection_tests;
 
 #[derive(Debug)]
 #[allow(clippy::type_complexity)]
@@ -1589,7 +654,9 @@ pub struct Routing {
 }
 
 impl Routing {
-    // ...existing code...
+    // ============================================================================
+    // SECTION 1: Construction and Basic Cache Operations  
+    // ============================================================================
 
     pub fn new(args: &ObuArgs, boot: &Instant) -> Result<Self> {
         if args.obu_params.hello_history == 0 {
@@ -1611,13 +678,17 @@ impl Routing {
 
     /// Clear the cached upstream (useful when topology changes) and increment metric.
     pub fn clear_cached_upstream(&self) {
-        self.cache.clear();
+        self.cache.clear()
     }
 
     /// Return the ordered cached candidates (primary first) when present.
     pub fn get_cached_candidates(&self) -> Option<Vec<MacAddress>> {
         self.cache.get_cached_candidates()
     }
+    
+    // ============================================================================
+    // SECTION 2: Failover and Candidate Management
+    // ============================================================================
 
     /// Rotate to the next cached candidate (promote the next candidate to primary).
     /// Returns the newly promoted primary if any.
@@ -1697,6 +768,10 @@ impl Routing {
     pub fn test_set_cached_candidates(&self, cands: Vec<MacAddress>) {
         self.cache.test_set_cached_candidates(cands);
     }
+
+    // ============================================================================
+    // SECTION 3: Heartbeat Message Processing (382 lines)
+    // ============================================================================
 
     pub fn handle_heartbeat(
         &mut self,
@@ -2077,6 +1152,11 @@ impl Routing {
 
         reply
     }
+
+    // ============================================================================
+    // SECTION 4: Route Selection and Lookup (424 lines)
+    // Complex logic for finding best routes with latency-based scoring and hysteresis
+    // ============================================================================
 
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
         let Some(target_mac) = mac else {
