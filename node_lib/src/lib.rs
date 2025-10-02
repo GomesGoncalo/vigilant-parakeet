@@ -7,6 +7,13 @@ pub mod data;
 pub mod error;
 pub mod messages;
 pub mod metrics;
+
+/// Shared trait for all node types (OBU and RSU).
+/// Provides a common interface for runtime downcasting to concrete node types.
+pub trait Node: Send + Sync {
+    /// For runtime downcasting to concrete node types.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
 // Re-export test helpers for integration tests.
 // Make this available unconditionally so integration tests can import
 // `node_lib::test_helpers::hub` without passing a feature flag.

@@ -7,14 +7,14 @@ use std::sync::Arc;
 
 use common::device::Device;
 
-use crate::simulator::Node;
+use crate::simulator::SimNode;
 
-/// Create a node (Device, virtual_tun, Node) from parsed settings and an existing node tun.
+/// Create a node (Device, virtual_tun, SimNode) from parsed settings and an existing node tun.
 pub fn create_node_from_settings(
     node_type: node_lib::args::NodeType,
     settings: &Config,
     node_tun: Arc<Tun>,
-) -> Result<(Arc<Device>, Arc<Tun>, Node)> {
+) -> Result<(Arc<Device>, Arc<Tun>, SimNode)> {
     // Read optional cached_candidates; default to 3 when not present or invalid.
     let cached_candidates = settings
         .get_int("cached_candidates")
@@ -80,7 +80,7 @@ pub fn create_node_from_settings(
             },
         };
 
-        Node::Obu(obu_lib::create_with_vdev(
+        SimNode::Obu(obu_lib::create_with_vdev(
             obu_args,
             virtual_tun.clone(),
             dev.clone(),
@@ -105,7 +105,7 @@ pub fn create_node_from_settings(
             },
         };
 
-        Node::Rsu(rsu_lib::create_with_vdev(
+        SimNode::Rsu(rsu_lib::create_with_vdev(
             rsu_args,
             virtual_tun.clone(),
             dev.clone(),

@@ -13,16 +13,13 @@ pub use control::Obu;
 use anyhow::Result;
 use common::device::Device;
 use common::tun::Tun;
-use std::any::Any;
 use std::sync::Arc;
 
-pub trait Node: Send + Sync {
-    /// For runtime downcasting to concrete node types.
-    fn as_any(&self) -> &dyn Any;
-}
+// Re-export the shared Node trait from node_lib
+pub use node_lib::Node;
 
 impl Node for Obu {
-    fn as_any(&self) -> &dyn Any {
+    fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 }
