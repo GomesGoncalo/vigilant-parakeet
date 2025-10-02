@@ -90,8 +90,9 @@ impl Rsu {
                                     if let Ok(Some(responses)) = response {
                                         all_responses.extend(responses);
                                     }
-                                    let msg_bytes: Vec<Vec<u8>> = (&msg).into();
-                                    let msg_size: usize = msg_bytes.iter().map(|chunk| chunk.len()).sum();
+                                    // Use flat serialization for better performance
+                                    let msg_bytes: Vec<u8> = (&msg).into();
+                                    let msg_size: usize = msg_bytes.len();
                                     offset += msg_size;
                                 }
                                 Err(e) => {
@@ -159,7 +160,7 @@ impl Rsu {
                 let mut messages = Vec::with_capacity(1);
 
                 if bcast_or_mcast || target.is_some_and(|x| x == self.device.mac_address()) {
-                    messages.push(ReplyType::Tap(vec![decrypted_payload.clone()]));
+                    messages.push(ReplyType::TapFlat(decrypted_payload.clone()));
                     target = None;
                 }
 
@@ -187,18 +188,17 @@ impl Rsu {
                             };
 
                             // For broadcast distribution, use the original destination (broadcast) not the target OBU
-                            Some(ReplyType::Wire(
-                                (&Message::new(
-                                    self.device.mac_address(),
-                                    next_hop,
-                                    PacketType::Data(Data::Downstream(ToDownstream::new(
-                                        buf.source(),
-                                        to, // Use original broadcast destination, not target OBU
-                                        &downstream_data,
-                                    ))),
-                                ))
-                                    .into(),
+                            let wire: Vec<u8> = (&Message::new(
+                                self.device.mac_address(),
+                                next_hop,
+                                PacketType::Data(Data::Downstream(ToDownstream::new(
+                                    buf.source(),
+                                    to, // Use original broadcast destination, not target OBU
+                                    &downstream_data,
+                                ))),
                             ))
+                                .into();
+                            Some(ReplyType::WireFlat(wire))
                         })
                         .collect_vec()
                 } else if let Some(target) = target {
@@ -216,18 +216,17 @@ impl Rsu {
                         decrypted_payload.clone()
                     };
 
-                    vec![ReplyType::Wire(
-                        (&Message::new(
-                            self.device.mac_address(),
-                            next_hop.mac,
-                            PacketType::Data(Data::Downstream(ToDownstream::new(
-                                buf.source(),
-                                target,
-                                &downstream_data,
-                            ))),
-                        ))
-                            .into(),
-                    )]
+                    let wire: Vec<u8> = (&Message::new(
+                        self.device.mac_address(),
+                        next_hop.mac,
+                        PacketType::Data(Data::Downstream(ToDownstream::new(
+                            buf.source(),
+                            target,
+                            &downstream_data,
+                        ))),
+                    ))
+                        .into();
+                    vec![ReplyType::WireFlat(wire)]
                 } else {
                     vec![]
                 });
@@ -258,7 +257,7 @@ impl Rsu {
 
         tokio::task::spawn(async move {
             loop {
-                let msg: Vec<Vec<u8>> = {
+                let msg: Vec<u8> = {
                     let mut routing = routing
                         .write()
                         .expect("routing table write lock poisoned in heartbeat task");
@@ -266,7 +265,7 @@ impl Rsu {
                     tracing::trace!(?msg, "generated hello");
                     (&msg).into()
                 };
-                let vec: Vec<IoSlice> = msg.iter().map(|x| IoSlice::new(x)).collect();
+                let vec = [IoSlice::new(&msg)];
                 match device.send_vectored(&vec).await {
                     Ok(_) => {}
                     Err(e) => {
@@ -336,7 +335,8 @@ impl Rsu {
                                         &downstream_data,
                                     ))),
                                 );
-                                Some(ReplyType::Wire((&msg).into()))
+                                let wire: Vec<u8> = (&msg).into();
+                                Some(ReplyType::WireFlat(wire))
                             })
                             .collect_vec()
                     } else if let Some(target) = target {
@@ -352,34 +352,32 @@ impl Rsu {
 
                         // Unicast traffic with known target
                         if let Some(hop) = routing.get_route_to(Some(target)) {
-                            vec![ReplyType::Wire(
-                                (&Message::new(
+                            let wire: Vec<u8> = (&Message::new(
+                                devicec.mac_address(),
+                                hop.mac,
+                                PacketType::Data(Data::Downstream(ToDownstream::new(
+                                    &source_mac,
+                                    target,
+                                    &downstream_data,
+                                ))),
+                            ))
+                                .into();
+                            vec![ReplyType::WireFlat(wire)]
+                        } else {
+                            // Fallback: no unicast route yet.
+                            // First try: send directly to the cached node for this client if known.
+                            if let Some(next_hop_mac) = cache.get(target) {
+                                let wire: Vec<u8> = (&Message::new(
                                     devicec.mac_address(),
-                                    hop.mac,
+                                    next_hop_mac,
                                     PacketType::Data(Data::Downstream(ToDownstream::new(
                                         &source_mac,
                                         target,
                                         &downstream_data,
                                     ))),
                                 ))
-                                    .into(),
-                            )]
-                        } else {
-                            // Fallback: no unicast route yet.
-                            // First try: send directly to the cached node for this client if known.
-                            if let Some(next_hop_mac) = cache.get(target) {
-                                vec![ReplyType::Wire(
-                                    (&Message::new(
-                                        devicec.mac_address(),
-                                        next_hop_mac,
-                                        PacketType::Data(Data::Downstream(ToDownstream::new(
-                                            &source_mac,
-                                            target,
-                                            &downstream_data,
-                                        ))),
-                                    ))
-                                        .into(),
-                                )]
+                                    .into();
+                                vec![ReplyType::WireFlat(wire)]
                             } else {
                                 // Second try: fan out toward all known next hops.
                                 routing
@@ -411,7 +409,8 @@ impl Rsu {
                                                 &downstream_data,
                                             ))),
                                         );
-                                        Some(ReplyType::Wire((&msg).into()))
+                                        let wire: Vec<u8> = (&msg).into();
+                                        Some(ReplyType::WireFlat(wire))
                                     })
                                     .collect_vec()
                             }
@@ -448,7 +447,8 @@ impl Rsu {
                                         &downstream_data,
                                     ))),
                                 );
-                                Some(ReplyType::Wire((&msg).into()))
+                                let wire: Vec<u8> = (&msg).into();
+                                Some(ReplyType::WireFlat(wire))
                             })
                             .collect_vec()
                     };
@@ -500,7 +500,7 @@ pub(crate) fn handle_msg_for_test(
             let mut target = cache.get(to);
             let mut messages = Vec::with_capacity(1);
             if bcast_or_mcast || target.is_some_and(|x| x == device_mac) {
-                messages.push(ReplyType::Tap(vec![buf.data().to_vec()]));
+                messages.push(ReplyType::TapFlat(buf.data().to_vec()));
                 target = None;
             }
 
@@ -516,20 +516,19 @@ pub(crate) fn handle_msg_for_test(
                         Some((*x, route.mac))
                     })
                     .map(|(target, next_hop)| {
-                        ReplyType::Wire(
-                            (&node_lib::messages::message::Message::new(
-                                device_mac,
-                                next_hop,
-                                PacketType::Data(Data::Downstream(
-                                    node_lib::messages::data::ToDownstream::new(
-                                        buf.source(),
-                                        target,
-                                        buf.data(),
-                                    ),
-                                )),
-                            ))
-                                .into(),
-                        )
+                        let wire: Vec<u8> = (&node_lib::messages::message::Message::new(
+                            device_mac,
+                            next_hop,
+                            PacketType::Data(Data::Downstream(
+                                node_lib::messages::data::ToDownstream::new(
+                                    buf.source(),
+                                    target,
+                                    buf.data(),
+                                ),
+                            )),
+                        ))
+                            .into();
+                        ReplyType::WireFlat(wire)
                     })
                     .collect::<Vec<_>>()
             } else if let Some(target) = target {
@@ -537,20 +536,19 @@ pub(crate) fn handle_msg_for_test(
                     return Ok(None);
                 };
 
-                vec![ReplyType::Wire(
-                    (&node_lib::messages::message::Message::new(
-                        device_mac,
-                        next_hop.mac,
-                        PacketType::Data(Data::Downstream(
-                            node_lib::messages::data::ToDownstream::new(
-                                buf.source(),
-                                target,
-                                buf.data(),
-                            ),
-                        )),
-                    ))
-                        .into(),
-                )]
+                let wire: Vec<u8> = (&node_lib::messages::message::Message::new(
+                    device_mac,
+                    next_hop.mac,
+                    PacketType::Data(Data::Downstream(
+                        node_lib::messages::data::ToDownstream::new(
+                            buf.source(),
+                            target,
+                            buf.data(),
+                        ),
+                    )),
+                ))
+                    .into();
+                vec![ReplyType::WireFlat(wire)]
             } else {
                 vec![]
             });
@@ -706,11 +704,11 @@ mod rsu_tests {
         let res = handle_msg_for_test(routing, device_mac, cache, &msg).expect("ok");
         assert!(res.is_some());
         let msgs = res.unwrap();
-        // Expect exactly one Tap and no Wire messages
+        // Expect exactly one TapFlat and no Wire messages
         assert_eq!(msgs.len(), 1);
         match &msgs[0] {
-            ReplyType::Tap(_) => {}
-            _ => panic!("expected Tap only"),
+            ReplyType::TapFlat(_) => {}
+            _ => panic!("expected TapFlat only"),
         }
     }
 
@@ -787,15 +785,14 @@ mod rsu_tests {
             handle_msg_for_test(routing.clone(), [9u8; 6].into(), cache.clone(), &msg).expect("ok");
         assert!(res.is_some());
         let msgs = res.unwrap();
-        // Expect exactly one Wire message (no Tap), forwarding toward next_hop
+        // Expect exactly one WireFlat message (no Tap), forwarding toward next_hop
         assert_eq!(msgs.len(), 1);
-        if let ReplyType::Wire(v) = &msgs[0] {
+        if let ReplyType::WireFlat(wire) = &msgs[0] {
             // Deserialize to inspect destination MAC
-            let flat: Vec<u8> = v.iter().flat_map(|x| x.iter()).cloned().collect();
-            let out = Message::try_from(&flat[..]).expect("parse out");
+            let out = Message::try_from(&wire[..]).expect("parse out");
             assert_eq!(out.to().unwrap(), next_hop);
         } else {
-            panic!("expected Wire reply");
+            panic!("expected WireFlat reply");
         }
     }
 

@@ -240,8 +240,8 @@ mod tests {
         assert_eq!(hb.hops(), 0);
         assert_eq!(hb.id(), 0);
 
-        let message: Vec<Vec<u8>> = (&message).into();
-        let message: Vec<u8> = message.iter().flat_map(|x| x.iter()).cloned().collect();
+        // Use flat serialization - simpler and faster
+        let message: Vec<u8> = (&message).into();
         let message: Message = (&message[..]).try_into().expect("same message");
         assert_eq!(message.from().expect(""), [1; 6].into());
         assert_eq!(message.to().expect(""), [255; 6].into());

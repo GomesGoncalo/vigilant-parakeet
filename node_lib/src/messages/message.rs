@@ -69,12 +69,18 @@ impl<'a> TryFrom<&'a [u8]> for Message<'a> {
     }
 }
 
-impl<'a> From<&Message<'a>> for Vec<Vec<u8>> {
+impl<'a> From<&Message<'a>> for Vec<u8> {
     fn from(value: &Message<'a>) -> Self {
-        let mut this = vec![value.to.to_vec(), value.from.to_vec(), vec![0x30, 0x30]];
-        let more: Vec<Vec<u8>> = (&value.next).into();
-        this.extend(more);
-        this
+        // Estimate capacity: to(6) + from(6) + marker(2) + packet_type
+        let mut buf = Vec::with_capacity(64);
+        buf.extend_from_slice(&value.to);
+        buf.extend_from_slice(&value.from);
+        buf.extend_from_slice(&[0x30, 0x30]);
+
+        // Delegate to PacketType serialization
+        let packet_bytes: Vec<u8> = (&value.next).into();
+        buf.extend_from_slice(&packet_bytes);
+        buf
     }
 }
 

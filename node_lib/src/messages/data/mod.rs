@@ -77,6 +77,17 @@ impl<'a> TryFrom<&'a [u8]> for ToUpstream<'a> {
     }
 }
 
+impl<'a> From<&ToUpstream<'a>> for Vec<u8> {
+    fn from(value: &ToUpstream<'a>) -> Self {
+        // Pre-allocate: origin(6) + data (variable)
+        let mut buf = Vec::with_capacity(6 + value.data.len());
+        buf.extend_from_slice(&value.origin);
+        buf.extend_from_slice(&value.data);
+        buf
+    }
+}
+
+// Keep backwards compatibility
 impl<'a> From<&ToUpstream<'a>> for Vec<Vec<u8>> {
     fn from(value: &ToUpstream<'a>) -> Self {
         vec![value.origin.to_vec(), value.data.to_vec()]
@@ -110,6 +121,18 @@ impl<'a> TryFrom<&'a [u8]> for ToDownstream<'a> {
     }
 }
 
+impl<'a> From<&ToDownstream<'a>> for Vec<u8> {
+    fn from(value: &ToDownstream<'a>) -> Self {
+        // Pre-allocate: origin(6) + destination(6) + data (variable)
+        let mut buf = Vec::with_capacity(12 + value.data.len());
+        buf.extend_from_slice(&value.origin);
+        buf.extend_from_slice(&value.destination);
+        buf.extend_from_slice(&value.data);
+        buf
+    }
+}
+
+// Keep backwards compatibility
 impl<'a> From<&ToDownstream<'a>> for Vec<Vec<u8>> {
     fn from(value: &ToDownstream<'a>) -> Self {
         vec![
@@ -139,6 +162,26 @@ impl<'a> TryFrom<&'a [u8]> for Data<'a> {
     }
 }
 
+impl<'a> From<&Data<'a>> for Vec<u8> {
+    fn from(value: &Data<'a>) -> Self {
+        let mut buf = Vec::with_capacity(32);
+        match value {
+            Data::Upstream(c) => {
+                buf.push(0u8);
+                let upstream_bytes: Vec<u8> = c.into();
+                buf.extend_from_slice(&upstream_bytes);
+            }
+            Data::Downstream(c) => {
+                buf.push(1u8);
+                let downstream_bytes: Vec<u8> = c.into();
+                buf.extend_from_slice(&downstream_bytes);
+            }
+        }
+        buf
+    }
+}
+
+// Keep backwards compatibility
 impl<'a> From<&Data<'a>> for Vec<Vec<u8>> {
     fn from(value: &Data<'a>) -> Self {
         match value {

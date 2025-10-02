@@ -16,8 +16,8 @@ async fn handle_messages_sends_to_tun_and_device() -> anyhow::Result<()> {
     let tun = Arc::new(tun);
     let device = Arc::new(device);
 
-    let tap = ReplyType::Tap(vec![vec![1u8, 2u8, 3u8]]);
-    let wire = ReplyType::Wire(vec![vec![0u8; 14]]);
+    let tap = ReplyType::TapFlat(vec![1u8, 2u8, 3u8]);
+    let wire = ReplyType::WireFlat(vec![0u8; 14]);
 
     let msgs = vec![tap, wire];
     handle_messages(msgs, &tun, &device, None).await?;

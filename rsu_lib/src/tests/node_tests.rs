@@ -109,9 +109,9 @@ mod node_tests {
         let out = handle_msg_for_test(routing.clone(), [9u8; 6].into(), cache.clone(), &msg)?;
         assert!(out.is_some());
         let v = out.unwrap();
-        // Should include at least one Tap (to RSU tap) and some Wire fanout
-        assert!(v.iter().any(|x| matches!(x, rsu_lib::control::node::ReplyType::Tap(_))));
-        assert!(v.iter().any(|x| matches!(x, rsu_lib::control::node::ReplyType::Wire(_))));
-        Ok(())
+        // Should include at least one TapFlat (to RSU tap) and some WireFlat fanout
+        assert!(v.iter().any(|x| matches!(x, rsu_lib::control::node::ReplyType::TapFlat(_))));
+        assert!(v.iter().any(|x| matches!(x, rsu_lib::control::node::ReplyType::WireFlat(_))));
+        Ok()
     }
 }

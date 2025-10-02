@@ -13,6 +13,9 @@ use uninit::uninit_array;
 pub enum ReplyType {
     Wire(Vec<Vec<u8>>),
     Tap(Vec<Vec<u8>>),
+    // New flat variants for improved performance
+    WireFlat(Vec<u8>),
+    TapFlat(Vec<u8>),
 }
 
 // This code is only used to trace the messages and so it is mostly unused
@@ -33,6 +36,13 @@ pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<
                     ReplyType::Tap(x) => Some(DebugReplyType::Tap(x.clone())),
                     ReplyType::Wire(x) => {
                         let x = x.iter().flat_map(|x| x.iter()).copied().collect_vec();
+                        let Ok(message) = Message::try_from(&x[..]) else {
+                            return None;
+                        };
+                        Some(DebugReplyType::Wire(format!("{message:?}")))
+                    }
+                    ReplyType::TapFlat(x) => Some(DebugReplyType::Tap(vec![x.clone()])),
+                    ReplyType::WireFlat(x) => {
                         let Ok(message) = Message::try_from(&x[..]) else {
                             return None;
                         };
@@ -86,6 +96,26 @@ pub async fn handle_messages(
                             // For RSUs, we don't have upstream failover logic
                             // since RSUs don't maintain cached upstream connections
                             // like OBUs do. Just log the error and continue.
+                            tracing::warn!(
+                                "Send error occurred in RSU, but no failover action needed"
+                            );
+                        }
+                    }
+                    // New flat variants - single allocation, zero fragmentation
+                    ReplyType::TapFlat(buf) => {
+                        let vec = [IoSlice::new(buf)];
+                        let _ = tun
+                            .send_vectored(&vec)
+                            .await
+                            .inspect_err(|e| tracing::error!(?e, "error sending to tap"));
+                    }
+                    ReplyType::WireFlat(buf) => {
+                        let vec = [IoSlice::new(buf)];
+                        let send_res = dev.send_vectored(&vec).await;
+                        if let Err(e) = send_res {
+                            tracing::error!(?e, "error sending to dev");
+
+                            // For RSUs, just log the error
                             tracing::warn!(
                                 "Send error occurred in RSU, but no failover action needed"
                             );
@@ -147,8 +177,8 @@ mod tests {
 
     #[test]
     fn get_msgs_ok_some_with_unparsable_wire() {
-        // ReplyType::Wire with random bytes that won't parse to Message -> filtered out
-        let replies = vec![ReplyType::Wire(vec![vec![0u8; 3]])];
+        // ReplyType::WireFlat with random bytes that won't parse to Message -> filtered out
+        let replies = vec![ReplyType::WireFlat(vec![0u8; 3])];
         let res: Result<Option<Vec<ReplyType>>> = Ok(Some(replies));
         let dbg = get_msgs(&res).expect("ok some").expect("some");
         // should filter out unparsable wire entries
@@ -170,17 +200,17 @@ mod tests {
         let pkt = PacketType::Data(data);
         let message = Message::new(from, to, pkt);
 
-        let wire: Vec<Vec<u8>> = (&message).into();
-        let replies = vec![ReplyType::Wire(wire)];
+        let wire: Vec<u8> = (&message).into();
+        let replies = vec![ReplyType::WireFlat(wire)];
         let res: Result<Option<Vec<ReplyType>>> = Ok(Some(replies));
         let dbg = get_msgs(&res).expect("ok some").expect("some");
-        // should contain one Wire debug entry
+        // should contain one WireFlat debug entry
         assert_eq!(dbg.len(), 1);
         match &dbg[0] {
             DebugReplyType::Wire(s) => {
                 assert!(s.contains("Message"));
             }
-            _ => panic!("expected Wire debug string"),
+            _ => panic!("expected WireFlat debug string"),
         }
     }
 }

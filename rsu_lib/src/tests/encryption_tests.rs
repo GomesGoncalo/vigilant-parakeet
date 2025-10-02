@@ -94,10 +94,10 @@ mod encryption_tests {
         let out = handle_msg_for_test(routing, [9u8; 6].into(), cache, &msg)?;
         assert!(out.is_some());
         let replies = out.unwrap();
-        // Expect at least one Tap and one Wire
-        assert!(replies.iter().any(|r| matches!(r, rsu_lib::control::node::ReplyType::Tap(_))));
-        assert!(replies.iter().any(|r| matches!(r, rsu_lib::control::node::ReplyType::Wire(_))));
-        Ok(())
+        // Expect at least one TapFlat and one WireFlat
+        assert!(replies.iter().any(|r| matches!(r, rsu_lib::control::node::ReplyType::TapFlat(_))));
+        assert!(replies.iter().any(|r| matches!(r, rsu_lib::control::node::ReplyType::WireFlat(_))));
+        Ok()
     }
 
     #[tokio::test]
@@ -152,11 +152,11 @@ mod encryption_tests {
         let msg = Message::new(from, dest_client, PacketType::Data(Data::Upstream(tu)));
         let out = handle_msg_for_test(routing, [9u8; 6].into(), cache, &msg)?;
         assert!(out.is_some());
-        // Expect a single Wire reply
+        // Expect a single WireFlat reply
         assert!(out
             .unwrap()
             .iter()
-            .any(|r| matches!(r, rsu_lib::control::node::ReplyType::Wire(_))));
+            .any(|r| matches!(r, rsu_lib::control::node::ReplyType::WireFlat(_))));
         Ok(())
     }
 }

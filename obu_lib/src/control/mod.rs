@@ -98,8 +98,9 @@ impl Obu {
                                     if let Ok(Some(responses)) = response {
                                         all_responses.extend(responses);
                                     }
-                                    let msg_bytes: Vec<Vec<u8>> = (&msg).into();
-                                    let msg_size: usize = msg_bytes.iter().map(|chunk| chunk.len()).sum();
+                                    // Use flat serialization for better performance
+                                    let msg_bytes: Vec<u8> = (&msg).into();
+                                    let msg_size: usize = msg_bytes.len();
                                     offset += msg_size;
                                 }
                                 Err(e) => {
@@ -165,17 +166,16 @@ impl Obu {
                             y.to_vec()
                         };
 
-                        let outgoing = vec![ReplyType::Wire(
-                            (&Message::new(
+                        let wire: Vec<u8> = (&Message::new(
+                            devicec.mac_address(),
+                            upstream.mac,
+                            PacketType::Data(Data::Upstream(ToUpstream::new(
                                 devicec.mac_address(),
-                                upstream.mac,
-                                PacketType::Data(Data::Upstream(ToUpstream::new(
-                                    devicec.mac_address(),
-                                    &payload_data,
-                                ))),
-                            ))
-                                .into(),
-                        )];
+                                &payload_data,
+                            ))),
+                        ))
+                            .into();
+                        let outgoing = vec![ReplyType::WireFlat(wire)];
                         tracing::trace!(?outgoing, "outgoing from tap");
                         Ok(Some(outgoing))
                     })
@@ -208,14 +208,13 @@ impl Obu {
                     return Ok(None);
                 };
 
-                Ok(Some(vec![ReplyType::Wire(
-                    (&Message::new(
-                        self.device.mac_address(),
-                        upstream.mac,
-                        PacketType::Data(Data::Upstream(buf.clone())),
-                    ))
-                        .into(),
-                )]))
+                let wire: Vec<u8> = (&Message::new(
+                    self.device.mac_address(),
+                    upstream.mac,
+                    PacketType::Data(Data::Upstream(buf.clone())),
+                ))
+                    .into();
+                Ok(Some(vec![ReplyType::WireFlat(wire)]))
             }
             PacketType::Data(Data::Downstream(buf)) => {
                 let destination: [u8; 6] = buf
@@ -238,7 +237,7 @@ impl Obu {
                     } else {
                         buf.data().to_vec()
                     };
-                    return Ok(Some(vec![ReplyType::Tap(vec![payload_data])]));
+                    return Ok(Some(vec![ReplyType::TapFlat(payload_data)]));
                 }
                 let target = destination;
                 let routing = self
@@ -250,14 +249,13 @@ impl Obu {
                         return Ok(None);
                     };
 
-                    vec![ReplyType::Wire(
-                        (&Message::new(
-                            self.device.mac_address(),
-                            next_hop.mac,
-                            PacketType::Data(Data::Downstream(buf.clone())),
-                        ))
-                            .into(),
-                    )]
+                    let wire: Vec<u8> = (&Message::new(
+                        self.device.mac_address(),
+                        next_hop.mac,
+                        PacketType::Data(Data::Downstream(buf.clone())),
+                    ))
+                        .into();
+                    vec![ReplyType::WireFlat(wire)]
                 }))
             }
             PacketType::Control(Control::Heartbeat(_)) => self
@@ -291,14 +289,13 @@ pub(crate) fn handle_msg_for_test(
                 return Ok(None);
             };
 
-            Ok(Some(vec![ReplyType::Wire(
-                (&node_lib::messages::message::Message::new(
-                    device_mac,
-                    upstream.mac,
-                    PacketType::Data(Data::Upstream(buf.clone())),
-                ))
-                    .into(),
-            )]))
+            let wire: Vec<u8> = (&node_lib::messages::message::Message::new(
+                device_mac,
+                upstream.mac,
+                PacketType::Data(Data::Upstream(buf.clone())),
+            ))
+                .into();
+            Ok(Some(vec![ReplyType::WireFlat(wire)]))
         }
         PacketType::Data(Data::Downstream(buf)) => {
             let destination: [u8; 6] = buf
@@ -308,7 +305,7 @@ pub(crate) fn handle_msg_for_test(
                 .try_into()?;
             let destination: mac_address::MacAddress = destination.into();
             if destination == device_mac {
-                return Ok(Some(vec![ReplyType::Tap(vec![buf.data().to_vec()])]));
+                return Ok(Some(vec![ReplyType::TapFlat(buf.data().to_vec())]));
             }
 
             let target = destination;
@@ -320,14 +317,13 @@ pub(crate) fn handle_msg_for_test(
                     return Ok(None);
                 };
 
-                vec![ReplyType::Wire(
-                    (&node_lib::messages::message::Message::new(
-                        device_mac,
-                        next_hop.mac,
-                        PacketType::Data(Data::Downstream(buf.clone())),
-                    ))
-                        .into(),
-                )]
+                let wire: Vec<u8> = (&node_lib::messages::message::Message::new(
+                    device_mac,
+                    next_hop.mac,
+                    PacketType::Data(Data::Downstream(buf.clone())),
+                ))
+                    .into();
+                vec![ReplyType::WireFlat(wire)]
             }))
         }
         PacketType::Control(Control::Heartbeat(_)) => routing
@@ -415,10 +411,8 @@ mod obu_tests {
         let v = res.unwrap();
         assert_eq!(v.len(), 1);
         match &v[0] {
-            super::ReplyType::Tap(bufs) => {
-                assert_eq!(bufs.len(), 1);
-            }
-            _ => panic!("expected Tap"),
+            super::ReplyType::TapFlat(_) => {}
+            _ => panic!("expected TapFlat"),
         }
     }
 
@@ -470,8 +464,8 @@ mod obu_tests {
         let res = handle_msg_for_test(routing.clone(), our_mac, &msg).expect("ok");
         assert!(res.is_some());
         let v = res.unwrap();
-        // should have at least one Wire reply
-        assert!(v.iter().any(|x| matches!(x, super::ReplyType::Wire(_))));
+        // should have at least one WireFlat reply
+        assert!(v.iter().any(|x| matches!(x, super::ReplyType::WireFlat(_))));
     }
 
     #[test]
@@ -508,7 +502,8 @@ mod obu_tests {
         let v = res.unwrap();
         // expect at least two Wire replies (forward and reply)
         assert!(v.len() >= 2);
-        assert!(v.iter().all(|x| matches!(x, super::ReplyType::Wire(_))));
+        // Updated to check for flat serialization (better performance)
+        assert!(v.iter().all(|x| matches!(x, super::ReplyType::WireFlat(_))));
     }
 
     #[test]
@@ -614,7 +609,7 @@ mod obu_tests {
         let res = handle_msg_for_test(routing.clone(), our_mac, &msg).expect("ok");
         assert!(res.is_some());
         let v = res.unwrap();
-        assert!(v.iter().any(|x| matches!(x, super::ReplyType::Wire(_))));
+        assert!(v.iter().any(|x| matches!(x, super::ReplyType::WireFlat(_))));
     }
 
     #[test]

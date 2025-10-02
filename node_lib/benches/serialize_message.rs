@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use node_lib::messages::{message::Message, packet_type::PacketType};
 
 fn bench_serialize_message(_c: &mut Criterion) {
-    // Build a Message with a small payload and measure From<&Message> -> Vec<Vec<u8>> serialization
+    // Build a Message with a small payload and measure From<&Message> -> Vec<u8> flat serialization
     let msg = Message::new(
         [1u8; 6].into(),
         [2u8; 6].into(),
@@ -29,7 +29,7 @@ fn bench_serialize_message(_c: &mut Criterion) {
 
     cfg.bench_function("serialize_message", |b| {
         b.iter(|| {
-            let _v: Vec<Vec<u8>> = (&msg).into();
+            let _v: Vec<u8> = (&msg).into();
             black_box(_v);
         })
     });

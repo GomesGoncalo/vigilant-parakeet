@@ -25,6 +25,7 @@ arc-swap = { version = "*" }
 tracing-subscriber = { version = "*", features = ["env-filter"] }
 aes-gcm = { version = "0.10", features = ["aes"] }
 thiserror = "*"
+bytes = "*"
 
 [features]
 stats = [ "common/stats" ]
@@ -51,4 +52,8 @@ harness = false
 
 [[bench]]
 name = "client_cache_ops"
+harness = false
+
+[[bench]]
+name = "flat_vs_nested_serialization"
 harness = false

@@ -28,6 +28,26 @@ impl<'a> TryFrom<&'a [u8]> for Control<'a> {
     }
 }
 
+impl<'a> From<&Control<'a>> for Vec<u8> {
+    fn from(value: &Control<'a>) -> Self {
+        let mut buf = Vec::with_capacity(64);
+        match value {
+            Control::Heartbeat(c) => {
+                buf.push(0u8);
+                let hb_bytes: Vec<u8> = c.into();
+                buf.extend_from_slice(&hb_bytes);
+            }
+            Control::HeartbeatReply(c) => {
+                buf.push(1u8);
+                let hbr_bytes: Vec<u8> = c.into();
+                buf.extend_from_slice(&hbr_bytes);
+            }
+        }
+        buf
+    }
+}
+
+// Keep backwards compatibility
 impl<'a> From<&Control<'a>> for Vec<Vec<u8>> {
     fn from(value: &Control<'a>) -> Self {
         match value {

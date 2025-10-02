@@ -85,6 +85,25 @@ impl<'a> TryFrom<&'a [u8]> for Heartbeat<'a> {
     }
 }
 
+impl<'a> From<&Heartbeat<'a>> for Vec<u8> {
+    fn from(value: &Heartbeat<'a>) -> Self {
+        let Some(hops) = value.hops.get(0..4) else {
+            panic!("did not have hops")
+        };
+        let hops: [u8; 4] = hops.try_into().expect("convert");
+        let hops = u32::from_be_bytes(hops) + 1;
+
+        // Pre-allocate: duration(16) + id(4) + hops(4) + source(6) = 30 bytes
+        let mut buf = Vec::with_capacity(30);
+        buf.extend_from_slice(&value.duration);
+        buf.extend_from_slice(&value.id);
+        buf.extend_from_slice(&hops.to_be_bytes());
+        buf.extend_from_slice(&value.source);
+        buf
+    }
+}
+
+// Keep backwards compatibility
 impl<'a> From<&Heartbeat<'a>> for Vec<Vec<u8>> {
     fn from(value: &Heartbeat<'a>) -> Self {
         let Some(hops) = value.hops.get(0..4) else {
@@ -202,6 +221,20 @@ impl<'a> TryFrom<&'a [u8]> for HeartbeatReply<'a> {
     }
 }
 
+impl<'a> From<&HeartbeatReply<'a>> for Vec<u8> {
+    fn from(value: &HeartbeatReply<'a>) -> Self {
+        // Pre-allocate: duration(16) + id(4) + hops(4) + source(6) + sender(6) = 36 bytes
+        let mut buf = Vec::with_capacity(36);
+        buf.extend_from_slice(&value.duration);
+        buf.extend_from_slice(&value.id);
+        buf.extend_from_slice(&value.hops);
+        buf.extend_from_slice(&value.source);
+        buf.extend_from_slice(&value.sender);
+        buf
+    }
+}
+
+// Keep backwards compatibility
 impl<'a> From<&HeartbeatReply<'a>> for Vec<Vec<u8>> {
     fn from(value: &HeartbeatReply<'a>) -> Self {
         vec![
@@ -223,7 +256,8 @@ mod tests {
 
     #[test]
     fn heartbeat_can_be_parsed_and_has_correct_members() {
-        let pkt = vec![
+        // Input packet with hops = [1, 1, 1, 1]
+        let pkt_in = vec![
             vec![1u8; 6],
             vec![2u8; 6],
             vec![0x30, 0x30],
@@ -231,16 +265,17 @@ mod tests {
             vec![0],
             vec![4; 16],
             vec![0; 4],
-            vec![1; 4],
+            vec![1; 4], // Hops = 0x01010101
             vec![2; 6],
         ];
-        let apkt: Vec<u8> = pkt.iter().flat_map(|x| x.iter()).cloned().collect();
+        let apkt: Vec<u8> = pkt_in.iter().flat_map(|x| x.iter()).cloned().collect();
         let msg = Message::try_from(&apkt[..]).expect("is message");
         assert_eq!(msg.from().expect("has from"), MacAddress::new([2u8; 6]));
         assert_eq!(msg.to().expect("has to"), MacAddress::new([1u8; 6]));
 
-        let rpkt: Vec<Vec<u8>> = (&msg).into();
-        let pkt = vec![
+        // After serialization, hops should be incremented by 1: [1, 1, 1, 1] -> [1, 1, 1, 2]
+        let rpkt: Vec<u8> = (&msg).into();
+        let pkt_out = vec![
             vec![1u8; 6],
             vec![2u8; 6],
             vec![0x30, 0x30],
@@ -248,10 +283,11 @@ mod tests {
             vec![0],
             vec![4; 16],
             vec![0; 4],
-            vec![1, 1, 1, 2],
+            vec![1, 1, 1, 2], // Hops = 0x01010102 (incremented)
             vec![2; 6],
         ];
-        assert_eq!(pkt, rpkt);
+        let expected: Vec<u8> = pkt_out.iter().flat_map(|x| x.iter()).cloned().collect();
+        assert_eq!(expected, rpkt);
     }
 
     #[test]
@@ -277,9 +313,10 @@ mod tests {
             vec![0, 0, 0, 1],
             vec![4; 6],
         ];
+        let apkt: Vec<u8> = pkt.iter().flat_map(|x| x.iter()).cloned().collect();
 
-        let to_vec: Vec<Vec<u8>> = (&msg).into();
-        assert_eq!(to_vec, pkt);
+        let to_vec: Vec<u8> = (&msg).into();
+        assert_eq!(to_vec, apkt);
     }
 
     #[test]
@@ -301,8 +338,8 @@ mod tests {
         assert_eq!(msg.from().expect("has from"), MacAddress::new([2u8; 6]));
         assert_eq!(msg.to().expect("has to"), MacAddress::new([1u8; 6]));
 
-        let rpkt: Vec<Vec<u8>> = (&msg).into();
-        assert_eq!(pkt, rpkt);
+        let rpkt: Vec<u8> = (&msg).into();
+        assert_eq!(apkt, rpkt);
     }
 
     #[test]

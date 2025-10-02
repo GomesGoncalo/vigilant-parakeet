@@ -13,6 +13,9 @@ use uninit::uninit_array;
 pub enum ReplyType {
     Wire(Vec<Vec<u8>>),
     Tap(Vec<Vec<u8>>),
+    // New flat variants for improved performance
+    WireFlat(Vec<u8>),
+    TapFlat(Vec<u8>),
 }
 
 // This code is only used to trace the messages and so it is mostly unused
@@ -33,6 +36,13 @@ pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<
                     ReplyType::Tap(x) => Some(DebugReplyType::Tap(x.clone())),
                     ReplyType::Wire(x) => {
                         let x = x.iter().flat_map(|x| x.iter()).copied().collect_vec();
+                        let Ok(message) = Message::try_from(&x[..]) else {
+                            return None;
+                        };
+                        Some(DebugReplyType::Wire(format!("{message:?}")))
+                    }
+                    ReplyType::TapFlat(x) => Some(DebugReplyType::Tap(vec![x.clone()])),
+                    ReplyType::WireFlat(x) => {
                         let Ok(message) = Message::try_from(&x[..]) else {
                             return None;
                         };
@@ -88,6 +98,48 @@ pub async fn handle_messages(
                             if let Some(r) = &routing_clone {
                                 let bytes: Vec<u8> = reply.iter().flat_map(|x| x.iter()).copied().collect();
                                 if let Ok(parsed) = Message::try_from(&bytes[..]) {
+                                    if let Ok(dest) = parsed.to() {
+                                        let cached = match r.read() {
+                                            Ok(guard) => guard.get_cached_upstream(),
+                                            Err(poisoned) => {
+                                                tracing::error!("routing lock poisoned during failover check, attempting recovery");
+                                                poisoned.into_inner().get_cached_upstream()
+                                            }
+                                        };
+                                        if let Some(cached_mac) = cached {
+                                            if cached_mac == dest {
+                                                let promoted = match r.write() {
+                                                    Ok(guard) => guard.failover_cached_upstream(),
+                                                    Err(poisoned) => {
+                                                        tracing::error!("routing write lock poisoned during failover, attempting recovery");
+                                                        poisoned.into_inner().failover_cached_upstream()
+                                                    }
+                                                };
+                                                tracing::info!(promoted = ?promoted, "promoted cached upstream after send error");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // New flat variants - single allocation, zero fragmentation
+                    ReplyType::TapFlat(buf) => {
+                        let vec = [IoSlice::new(buf)];
+                        let _ = tun
+                            .send_vectored(&vec)
+                            .await
+                            .inspect_err(|e| tracing::error!(?e, "error sending to tap"));
+                    }
+                    ReplyType::WireFlat(buf) => {
+                        let vec = [IoSlice::new(buf)];
+                        let send_res = dev.send_vectored(&vec).await;
+                        if let Err(e) = send_res {
+                            tracing::error!(?e, "error sending to dev");
+
+                            // Failover logic for flat buffers
+                            if let Some(r) = &routing_clone {
+                                if let Ok(parsed) = Message::try_from(&buf[..]) {
                                     if let Ok(dest) = parsed.to() {
                                         let cached = match r.read() {
                                             Ok(guard) => guard.get_cached_upstream(),
@@ -192,11 +244,11 @@ mod tests {
         let pkt = PacketType::Data(data);
         let message = Message::new(from, to, pkt);
 
-        let wire: Vec<Vec<u8>> = (&message).into();
-        let replies = vec![ReplyType::Wire(wire)];
+        let wire: Vec<u8> = (&message).into();
+        let replies = vec![ReplyType::WireFlat(wire)];
         let res: Result<Option<Vec<ReplyType>>> = Ok(Some(replies));
         let dbg = get_msgs(&res).expect("ok some").expect("some");
-        // should contain one Wire debug entry
+        // should contain one WireFlat debug entry
         assert_eq!(dbg.len(), 1);
         match &dbg[0] {
             DebugReplyType::Wire(s) => {

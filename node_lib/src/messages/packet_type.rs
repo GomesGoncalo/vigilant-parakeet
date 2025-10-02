@@ -26,6 +26,26 @@ impl<'a> TryFrom<&'a [u8]> for PacketType<'a> {
     }
 }
 
+impl<'a> From<&PacketType<'a>> for Vec<u8> {
+    fn from(value: &PacketType<'a>) -> Self {
+        let mut buf = Vec::with_capacity(32);
+        match value {
+            PacketType::Control(c) => {
+                buf.push(0u8);
+                let control_bytes: Vec<u8> = c.into();
+                buf.extend_from_slice(&control_bytes);
+            }
+            PacketType::Data(d) => {
+                buf.push(1u8);
+                let data_bytes: Vec<u8> = d.into();
+                buf.extend_from_slice(&data_bytes);
+            }
+        }
+        buf
+    }
+}
+
+// Keep backwards compatibility
 impl<'a> From<&PacketType<'a>> for Vec<Vec<u8>> {
     fn from(value: &PacketType<'a>) -> Self {
         match value {
