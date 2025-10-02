@@ -8,13 +8,8 @@ use node_lib::messages::message::Message;
 use std::{io::IoSlice, sync::Arc};
 use uninit::uninit_array;
 
-#[derive(Debug)]
-pub enum ReplyType {
-    /// Wire traffic (to device) - flat serialization
-    WireFlat(Vec<u8>),
-    /// TAP traffic (to tun) - flat serialization
-    TapFlat(Vec<u8>),
-}
+// Re-export shared ReplyType from node_lib
+pub use node_lib::control::node::ReplyType;
 
 // Debug types and functions for tracing and testing
 #[cfg(any(test, feature = "test_helpers"))]
@@ -29,6 +24,7 @@ pub enum DebugReplyType {
 pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<DebugReplyType>>> {
     use anyhow::bail;
     use itertools::Itertools;
+    use node_lib::messages::message::Message;
 
     match response {
         Ok(Some(response)) => Ok(Some(
