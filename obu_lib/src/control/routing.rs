@@ -130,14 +130,14 @@ impl Routing {
     pub fn get_cached_candidates(&self) -> Option<Vec<MacAddress>> {
         self.cache.get_cached_candidates()
     }
-    
+
     /// Rotate to the next cached candidate (promote the next candidate to primary).
     /// Returns the newly promoted primary if any.
     pub fn failover_cached_upstream(&self) -> Option<MacAddress> {
         self.cache.failover(|src, n_best| {
             // Rebuild candidates based on routing table
             let mut cands = Vec::new();
-            
+
             // Compute latency-based candidates first
             let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> =
                 HashMap::default();
@@ -165,10 +165,9 @@ impl Routing {
             }
             if !latency_candidates.is_empty() {
                 // Use the shared helper to score and sort candidates deterministically.
-                let scored_full =
-                    crate::control::routing_utils::score_and_sort_latency_candidates(
-                        latency_candidates,
-                    );
+                let scored_full = crate::control::routing_utils::score_and_sort_latency_candidates(
+                    latency_candidates,
+                );
                 cands = scored_full
                     .into_iter()
                     .map(|(_score, _hops, mac, _avg)| mac)
@@ -199,7 +198,7 @@ impl Routing {
                     }
                 }
             }
-            
+
             cands
         })
     }
@@ -351,7 +350,14 @@ impl Routing {
 
         let new_route = self.get_route_to(Some(message.source()));
         let should_cache = old_route.is_none() && new_route.is_some();
-        Self::log_route_change(old_route, new_route, mac, message.source(), true, "Route discovered");
+        Self::log_route_change(
+            old_route,
+            new_route,
+            mac,
+            message.source(),
+            true,
+            "Route discovered",
+        );
         if should_cache {
             let _sel = self.select_and_cache_upstream(message.source());
         }
@@ -868,7 +874,7 @@ impl Routing {
     pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
         let route = self.get_route_to(Some(mac))?;
         let was_cached = self.cache.get_cached_upstream().is_some();
-        
+
         // Store primary cached upstream and source
         self.cache.set_upstream(route.mac, mac);
 

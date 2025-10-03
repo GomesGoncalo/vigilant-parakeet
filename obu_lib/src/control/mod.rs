@@ -1,8 +1,10 @@
 pub mod node;
-pub mod route;
 pub mod routing;
 mod routing_cache;
-pub mod routing_utils;
+
+// Re-export shared modules from node_lib to avoid duplication
+pub use node_lib::control::route;
+pub use node_lib::control::routing_utils;
 mod session;
 
 use crate::args::ObuArgs;

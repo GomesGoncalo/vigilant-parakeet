@@ -1,12 +1,12 @@
 use anyhow::Result;
 use common::device::Device;
 use common::tun::Tun;
-use futures::Future;
-use node_lib::{SharedDevice, SharedTun, PACKET_BUFFER_SIZE};
 use std::{io::IoSlice, sync::Arc};
 
 // Re-export shared types and functions from node_lib to avoid duplication
-pub use node_lib::control::node::{buffer, bytes_to_hex, handle_messages, ReplyType};
+pub use node_lib::control::node::{
+    buffer, bytes_to_hex, handle_messages, tap_traffic, wire_traffic, ReplyType,
+};
 
 #[cfg(any(test, feature = "test_helpers"))]
 pub use node_lib::control::node::{get_msgs, DebugReplyType};
@@ -72,32 +72,6 @@ pub async fn handle_messages_batched(
     tap_result?;
 
     Ok(())
-}
-
-pub async fn wire_traffic<Fut>(
-    dev: &SharedDevice,
-    callable: impl FnOnce([u8; PACKET_BUFFER_SIZE], usize) -> Fut,
-) -> Result<Option<Vec<ReplyType>>>
-where
-    Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,
-{
-    let mut buf = buffer();
-    let n = dev.recv(&mut buf).await?;
-    // Also emit a debug so test output can capture the raw bytes when tracing
-    tracing::trace!(n = n, raw = %bytes_to_hex(&buf[..n]), "wire_traffic recv");
-    callable(buf, n).await
-}
-
-pub async fn tap_traffic<Fut>(
-    dev: &SharedTun,
-    callable: impl FnOnce([u8; PACKET_BUFFER_SIZE], usize) -> Fut,
-) -> Result<Option<Vec<ReplyType>>>
-where
-    Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,
-{
-    let mut buf = buffer();
-    let n = dev.recv(&mut buf).await?;
-    callable(buf, n).await
 }
 
 #[cfg(test)]

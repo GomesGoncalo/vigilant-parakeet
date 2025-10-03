@@ -82,14 +82,18 @@ impl NodeBuilder {
     }
 
     /// Inject a test TUN device (for testing only)
-    #[cfg(any(test, feature = "test_helpers"))]
+    ///
+    /// This method is always available but only useful during testing.
+    /// In production builds, the injected devices are ignored.
     pub fn with_tun(mut self, tun: Arc<Tun>) -> Self {
         self.tun = Some(tun);
         self
     }
 
     /// Inject a test Device (for testing only)
-    #[cfg(any(test, feature = "test_helpers"))]
+    ///
+    /// This method is always available but only useful during testing.
+    /// In production builds, the injected devices are ignored.
     pub fn with_device(mut self, device: Arc<Device>) -> Self {
         self.device = Some(device);
         self
@@ -130,19 +134,19 @@ impl NodeBuilder {
         Ok(Arc::new(Tun::new_real(real_tun)))
     }
 
-    /// Get TUN device in test mode
+    /// Get injected TUN device (test mode)
     ///
     /// # Errors
     ///
     /// Returns an error if TUN device was not provided via with_tun()
     #[cfg(any(test, feature = "test_helpers"))]
-    pub fn get_tun_device(&self) -> Result<Arc<Tun>> {
+    pub fn create_tun_device(&self) -> Result<Arc<Tun>> {
         self.tun
             .clone()
             .ok_or_else(|| anyhow!("TUN device required in test mode - use with_tun()"))
     }
 
-    /// Create real Device in production mode
+    /// Create real Device (production mode)
     ///
     /// # Errors
     ///
@@ -152,13 +156,13 @@ impl NodeBuilder {
         Ok(Arc::new(Device::new(&self.bind)?))
     }
 
-    /// Get Device in test mode
+    /// Get injected Device (test mode)
     ///
     /// # Errors
     ///
     /// Returns an error if Device was not provided via with_device()
     #[cfg(any(test, feature = "test_helpers"))]
-    pub fn get_device(&self) -> Result<Arc<Device>> {
+    pub fn create_device(&self) -> Result<Arc<Device>> {
         self.device
             .clone()
             .ok_or_else(|| anyhow!("Device required in test mode - use with_device()"))

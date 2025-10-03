@@ -122,8 +122,8 @@ impl ObuBuilder {
     #[cfg(any(test, feature = "test_helpers"))]
     pub fn build(self) -> Result<Arc<Obu>> {
         let args = self.to_args();
-        let tun = self.inner.get_tun_device()?;
-        let device = self.inner.get_device()?;
+        let tun = self.inner.create_tun_device()?;
+        let device = self.inner.create_device()?;
         Obu::new(args, tun, device)
     }
 

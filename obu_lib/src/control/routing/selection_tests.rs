@@ -193,9 +193,8 @@ async fn test_latency_measurement_with_mocked_time() {
     hb_fast_bytes.extend_from_slice(&1u32.to_be_bytes()); // sequence id
     hb_fast_bytes.extend_from_slice(&1u32.to_be_bytes()); // 1 hop
     hb_fast_bytes.extend_from_slice(&rsu.bytes());
-    let hb_fast =
-        node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_fast_bytes[..])
-            .expect("hb_fast");
+    let hb_fast = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_fast_bytes[..])
+        .expect("hb_fast");
     let msg_fast = node_lib::messages::message::Message::new(
         via_fast,
         [255u8; 6].into(),
@@ -226,9 +225,8 @@ async fn test_latency_measurement_with_mocked_time() {
     hb_slow_bytes.extend_from_slice(&2u32.to_be_bytes()); // different sequence id
     hb_slow_bytes.extend_from_slice(&1u32.to_be_bytes()); // same hop count
     hb_slow_bytes.extend_from_slice(&rsu.bytes());
-    let hb_slow =
-        node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_slow_bytes[..])
-            .expect("hb_slow");
+    let hb_slow = node_lib::messages::control::heartbeat::Heartbeat::try_from(&hb_slow_bytes[..])
+        .expect("hb_slow");
     let msg_slow = node_lib::messages::message::Message::new(
         via_slow,
         [255u8; 6].into(),

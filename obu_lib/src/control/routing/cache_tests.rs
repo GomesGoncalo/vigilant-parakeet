@@ -101,7 +101,9 @@ fn failover_promotes_next_candidate() {
     let primary_before = routing.get_cached_upstream().expect("primary");
     let next_candidate: MacAddress = [11u8; 6].into();
     // store ordered candidates [primary, next]
-    routing.cache.set_candidates(vec![primary_before, next_candidate]);
+    routing
+        .cache
+        .set_candidates(vec![primary_before, next_candidate]);
 
     // Simulate a send failure by directly calling failover_cached_upstream()
     let promoted = routing.failover_cached_upstream();

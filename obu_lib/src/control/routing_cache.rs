@@ -103,13 +103,13 @@ impl RoutingCache {
 
         let mut cands = cand_opt.take().unwrap_or_default();
         let was_rebuilt = cands.len() <= 1;
-        
+
         if was_rebuilt {
             // Try to rebuild using the provided function
             if let Some(src) = self.cached_source.load().as_ref().map(|m| **m) {
                 let n_best = self.candidates_count();
                 cands = rebuild_fn(src, n_best);
-                
+
                 // Store rebuilt candidates and set first as primary
                 if !cands.is_empty() {
                     self.cached_candidates.store(Some(Arc::new(cands.clone())));
@@ -123,7 +123,7 @@ impl RoutingCache {
             // Nothing to rotate to
             return cands.first().copied();
         }
-        
+
         // Rotate to next (only if we didn't just rebuild)
         let old = cands.remove(0);
         cands.push(old);
@@ -148,9 +148,9 @@ mod tests {
         let cache = RoutingCache::new(3);
         let upstream: MacAddress = [1, 2, 3, 4, 5, 6].into();
         let source: MacAddress = [7, 8, 9, 10, 11, 12].into();
-        
+
         cache.set_upstream(upstream, source);
-        
+
         assert_eq!(cache.get_cached_upstream(), Some(upstream));
         assert_eq!(cache.get_cached_source(), Some(source));
     }
@@ -160,10 +160,10 @@ mod tests {
         let cache = RoutingCache::new(3);
         let upstream: MacAddress = [1, 2, 3, 4, 5, 6].into();
         let source: MacAddress = [7, 8, 9, 10, 11, 12].into();
-        
+
         cache.set_upstream(upstream, source);
         cache.clear();
-        
+
         assert_eq!(cache.get_cached_upstream(), None);
         assert_eq!(cache.get_cached_candidates(), None);
     }
@@ -171,13 +171,10 @@ mod tests {
     #[test]
     fn set_and_get_candidates() {
         let cache = RoutingCache::new(3);
-        let cands = vec![
-            [1, 2, 3, 4, 5, 6].into(),
-            [7, 8, 9, 10, 11, 12].into(),
-        ];
-        
+        let cands = vec![[1, 2, 3, 4, 5, 6].into(), [7, 8, 9, 10, 11, 12].into()];
+
         cache.set_candidates(cands.clone());
-        
+
         assert_eq!(cache.get_cached_candidates(), Some(cands));
     }
 
@@ -189,15 +186,15 @@ mod tests {
             [2, 2, 2, 2, 2, 2].into(),
             [3, 3, 3, 3, 3, 3].into(),
         ];
-        
+
         cache.set_candidates(cands.clone());
         cache.set_upstream(cands[0], [99, 99, 99, 99, 99, 99].into());
-        
+
         let promoted = cache.failover(|_, _| vec![]);
-        
+
         assert_eq!(promoted, Some(cands[1]));
         assert_eq!(cache.get_cached_upstream(), Some(cands[1]));
-        
+
         // Candidates should be rotated: [2, 3, 1]
         let new_cands = cache.get_cached_candidates().unwrap();
         assert_eq!(new_cands[0], cands[1]);
@@ -211,18 +208,15 @@ mod tests {
         let src: MacAddress = [99, 99, 99, 99, 99, 99].into();
         cache.set_upstream([1, 1, 1, 1, 1, 1].into(), src);
         cache.set_candidates(vec![[1, 1, 1, 1, 1, 1].into()]);
-        
-        let rebuilt_cands = vec![
-            [2, 2, 2, 2, 2, 2].into(),
-            [3, 3, 3, 3, 3, 3].into(),
-        ];
-        
+
+        let rebuilt_cands = vec![[2, 2, 2, 2, 2, 2].into(), [3, 3, 3, 3, 3, 3].into()];
+
         let promoted = cache.failover(|s, n| {
             assert_eq!(s, src);
             assert_eq!(n, 3);
             rebuilt_cands.clone()
         });
-        
+
         assert_eq!(promoted, Some(rebuilt_cands[0]));
         assert_eq!(cache.get_cached_candidates(), Some(rebuilt_cands));
     }
