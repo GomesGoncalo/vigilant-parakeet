@@ -23,6 +23,8 @@ mod simulator;
 mod topology;
 #[cfg(feature = "webview")]
 mod webview;
+#[cfg(feature = "tui")]
+mod tui;
 use node_factory::create_node_from_settings;
 use simulator::Simulator;
 
@@ -69,7 +71,33 @@ async fn main() -> Result<()> {
     // via Server::start() in create_node_from_settings(), ensuring the socket binds within
     // the correct network namespace before returning
 
-    // Spawn metrics printer task (prints every 30 seconds)
+    // Spawn TUI if requested
+    #[cfg(feature = "tui")]
+    if args.tui {
+        tracing::info!("Starting TUI dashboard...");
+        let metrics = simulator.get_metrics();
+        let tui_handle = tokio::spawn(async move {
+            if let Err(e) = tui::run_tui(metrics).await {
+                tracing::error!("TUI error: {}", e);
+            }
+        });
+
+        // Run simulator in background
+        let sim_handle = tokio::spawn(async move {
+            let _ = simulator.run().await;
+        });
+
+        // Wait for either TUI or simulator to exit
+        tokio::select! {
+            _ = tui_handle => {}
+            _ = sim_handle => {}
+            _ = signal::ctrl_c() => {}
+        }
+
+        return Ok(());
+    }
+
+    // Spawn metrics printer task (prints every 30 seconds) if not using TUI
     let metrics = simulator.get_metrics();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));

@@ -82,10 +82,17 @@ Build release artifacts (all crates):
 cargo build --workspace --release
 ```
 
-Build the simulator with the optional webview feature (enables UI integration):
+Build the simulator with optional features:
 
 ```sh
+# With webview (HTTP API and metrics endpoint)
 cargo build -p simulator --release --features webview
+
+# With TUI (Terminal User Interface dashboard)
+cargo build -p simulator --release --features tui
+
+# With both webview and TUI
+cargo build -p simulator --release --features "webview,tui"
 ```
 
 Build the node binary only:
@@ -144,8 +151,23 @@ Start the simulator (from the repo root). The simulator creates network
 namespaces and virtual interfaces, so run with `sudo`:
 
 ```sh
+# Standard mode with console logging
 sudo RUST_LOG="node=debug" ./target/release/simulator --config-file simulator.yaml --pretty
+
+# With TUI dashboard (requires --features tui at build time)
+sudo RUST_LOG="node=debug" ./target/release/simulator --config-file simulator.yaml --tui
 ```
+
+**TUI Dashboard Features:**
+- Real-time packet statistics (sent, dropped, delayed)
+- Performance metrics (drop rate, latency, throughput)
+- Live graphs showing trends over time
+- Active nodes and channels count
+- Press 'q' to quit, 'r' to reset metrics
+
+**Webview API** (if built with `--features webview`):
+- HTTP metrics endpoint: `curl http://localhost:3030/metrics`
+- Returns JSON with all simulation metrics
 
 ### Example: 3-node setup
 
