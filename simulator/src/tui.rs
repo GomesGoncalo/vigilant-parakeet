@@ -5,6 +5,7 @@
 //! - Performance metrics (drop rate, latency, throughput)
 //! - Resource information (active nodes, channels)
 //! - Live sparkline graphs showing trends over time
+//! - Captured logs in a separate tab
 
 use crate::metrics::SimulatorMetrics;
 use anyhow::Result;
@@ -20,19 +21,131 @@ use ratatui::{
     symbols,
     text::{Line, Span},
     widgets::{
-        Axis, Block, Borders, Chart, Dataset, GraphType, List, ListItem, Paragraph,
+        Axis, Block, Borders, Chart, Dataset, GraphType, List, ListItem, Paragraph, Tabs,
     },
     Frame, Terminal,
 };
 use std::{
+    collections::VecDeque,
     io,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::time::interval;
+use tracing_subscriber::Layer;
 
 /// Maximum number of data points to keep for sparkline graphs
 const MAX_HISTORY: usize = 60;
+
+/// Maximum number of log lines to keep
+const MAX_LOGS: usize = 1000;
+
+/// Active tab in the TUI
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Metrics,
+    Logs,
+}
+
+/// Thread-safe log buffer for capturing tracing logs
+pub struct LogBuffer {
+    lines: Arc<Mutex<VecDeque<String>>>,
+}
+
+impl LogBuffer {
+    pub fn new() -> Self {
+        Self {
+            lines: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn push(&self, line: String) {
+        let mut lines = self.lines.lock().unwrap();
+        lines.push_back(line);
+        if lines.len() > MAX_LOGS {
+            lines.pop_front();
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn get_lines(&self) -> Vec<String> {
+        self.lines.lock().unwrap().iter().cloned().collect()
+    }
+
+    pub fn clone_buffer(&self) -> Arc<Mutex<VecDeque<String>>> {
+        Arc::clone(&self.lines)
+    }
+}
+
+/// Custom tracing layer that captures logs to a buffer
+pub struct TuiLogLayer {
+    buffer: Arc<Mutex<VecDeque<String>>>,
+}
+
+impl TuiLogLayer {
+    pub fn new(buffer: Arc<Mutex<VecDeque<String>>>) -> Self {
+        Self { buffer }
+    }
+}
+
+impl<S> Layer<S> for TuiLogLayer
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        // Format the event
+        let mut visitor = LogVisitor::new();
+        event.record(&mut visitor);
+        
+        let level = event.metadata().level();
+        let target = event.metadata().target();
+        let message = visitor.message;
+        
+        let formatted = format!("[{:5}] {}: {}", level, target, message);
+        
+        // Add to buffer
+        let mut lines = self.buffer.lock().unwrap();
+        lines.push_back(formatted);
+        if lines.len() > MAX_LOGS {
+            lines.pop_front();
+        }
+    }
+}
+
+/// Visitor to extract message from tracing events
+struct LogVisitor {
+    message: String,
+}
+
+impl LogVisitor {
+    fn new() -> Self {
+        Self {
+            message: String::new(),
+        }
+    }
+}
+
+impl tracing::field::Visit for LogVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = format!("{:?}", value);
+            // Remove quotes from debug output
+            if self.message.starts_with('"') && self.message.ends_with('"') {
+                self.message = self.message[1..self.message.len() - 1].to_string();
+            }
+        } else {
+            if !self.message.is_empty() {
+                self.message.push_str(", ");
+            }
+            self.message.push_str(&format!("{}={:?}", field.name(), value));
+        }
+    }
+}
 
 /// TUI state maintaining historical data for graphs
 struct TuiState {
@@ -49,10 +162,15 @@ struct TuiState {
     prev_packets_sent: u64,
     prev_packets_dropped: u64,
     prev_timestamp: f64,
+    
+    // UI state
+    active_tab: Tab,
+    log_buffer: Arc<Mutex<VecDeque<String>>>,
+    log_scroll: usize,
 }
 
 impl TuiState {
-    fn new(metrics: Arc<SimulatorMetrics>) -> Self {
+    fn new(metrics: Arc<SimulatorMetrics>, log_buffer: Arc<Mutex<VecDeque<String>>>) -> Self {
         Self {
             metrics,
             start_time: Instant::now(),
@@ -63,6 +181,9 @@ impl TuiState {
             prev_packets_sent: 0,
             prev_packets_dropped: 0,
             prev_timestamp: 0.0,
+            active_tab: Tab::Metrics,
+            log_buffer,
+            log_scroll: 0,
         }
     }
 
@@ -105,16 +226,14 @@ impl TuiState {
 
 /// Render the TUI dashboard
 fn ui(f: &mut Frame, state: &TuiState) {
-    let summary = state.metrics.summary();
-
     // Create main layout
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
             Constraint::Length(3),  // Title
-            Constraint::Length(7),  // Stats summary
-            Constraint::Min(10),    // Graphs
+            Constraint::Length(3),  // Tabs
+            Constraint::Min(10),    // Content
             Constraint::Length(3),  // Help text
         ])
         .split(f.area());
@@ -126,6 +245,57 @@ fn ui(f: &mut Frame, state: &TuiState) {
     ])])
     .block(Block::default().borders(Borders::ALL).style(Style::default()));
     f.render_widget(title, chunks[0]);
+
+    // Tabs
+    let tab_titles = vec!["📊 Metrics", "📜 Logs"];
+    let tabs = Tabs::new(tab_titles)
+        .block(Block::default().borders(Borders::ALL).title("View"))
+        .select(match state.active_tab {
+            Tab::Metrics => 0,
+            Tab::Logs => 1,
+        })
+        .style(Style::default().fg(Color::White))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        );
+    f.render_widget(tabs, chunks[1]);
+
+    // Render content based on active tab
+    match state.active_tab {
+        Tab::Metrics => render_metrics_tab(f, chunks[2], state),
+        Tab::Logs => render_logs_tab(f, chunks[2], state),
+    }
+
+    // Help text
+    let help = Paragraph::new(Line::from(vec![
+        Span::styled("Press ", Style::default().fg(Color::Gray)),
+        Span::styled("'q'", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(" to quit  │  ", Style::default().fg(Color::Gray)),
+        Span::styled("'r'", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(" to reset metrics  │  ", Style::default().fg(Color::Gray)),
+        Span::styled("Tab", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(" to switch views  │  ", Style::default().fg(Color::Gray)),
+        Span::styled("↑/↓", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(" scroll logs", Style::default().fg(Color::Gray)),
+    ]))
+    .block(Block::default().borders(Borders::ALL));
+    f.render_widget(help, chunks[3]);
+}
+
+/// Render the metrics tab content
+fn render_metrics_tab(f: &mut Frame, area: Rect, state: &TuiState) {
+    let summary = state.metrics.summary();
+
+    // Create layout for metrics tab
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(6),  // Stats summary
+            Constraint::Min(10),    // Graphs
+        ])
+        .split(area);
 
     // Stats summary
     let uptime_secs = summary.uptime.as_secs();
@@ -162,7 +332,7 @@ fn ui(f: &mut Frame, state: &TuiState) {
     
     let stats_list = List::new(stats_items)
         .block(Block::default().borders(Borders::ALL).title("Statistics"));
-    f.render_widget(stats_list, chunks[1]);
+    f.render_widget(stats_list, chunks[0]);
 
     // Graphs section
     let graph_chunks = Layout::default()
@@ -171,7 +341,7 @@ fn ui(f: &mut Frame, state: &TuiState) {
             Constraint::Percentage(50),
             Constraint::Percentage(50),
         ])
-        .split(chunks[2]);
+        .split(chunks[1]);
 
     let top_graph_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -218,17 +388,42 @@ fn ui(f: &mut Frame, state: &TuiState) {
         &state.latency_history,
         Color::Cyan,
     );
+}
 
-    // Help text
-    let help = Paragraph::new(Line::from(vec![
-        Span::styled("Press ", Style::default().fg(Color::Gray)),
-        Span::styled("'q'", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(" to quit  │  ", Style::default().fg(Color::Gray)),
-        Span::styled("'r'", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(" to reset metrics", Style::default().fg(Color::Gray)),
-    ]))
-    .block(Block::default().borders(Borders::ALL));
-    f.render_widget(help, chunks[3]);
+/// Render the logs tab content
+fn render_logs_tab(f: &mut Frame, area: Rect, state: &TuiState) {
+    let logs = state.log_buffer.lock().unwrap();
+    let log_count = logs.len();
+    
+    // Convert logs to ListItems with color-coded levels
+    let log_items: Vec<ListItem> = logs
+        .iter()
+        .map(|line| {
+            // Try to detect log level and colorize accordingly
+            let styled_line = if line.contains("ERROR") {
+                Line::from(Span::styled(line.clone(), Style::default().fg(Color::Red)))
+            } else if line.contains("WARN") {
+                Line::from(Span::styled(line.clone(), Style::default().fg(Color::Yellow)))
+            } else if line.contains("INFO") {
+                Line::from(Span::styled(line.clone(), Style::default().fg(Color::Green)))
+            } else if line.contains("DEBUG") {
+                Line::from(Span::styled(line.clone(), Style::default().fg(Color::Cyan)))
+            } else if line.contains("TRACE") {
+                Line::from(Span::styled(line.clone(), Style::default().fg(Color::Gray)))
+            } else {
+                Line::from(line.clone())
+            };
+            
+            ListItem::new(styled_line)
+        })
+        .collect();
+
+    let title = format!("Logs ({} lines)", log_count);
+    let logs_list = List::new(log_items)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .style(Style::default().fg(Color::White));
+    
+    f.render_widget(logs_list, area);
 }
 
 /// Render a single chart with historical data
@@ -292,7 +487,7 @@ fn render_chart(
 ///
 /// This function takes over the terminal and displays a real-time dashboard
 /// until the user presses 'q' to quit.
-pub async fn run_tui(metrics: Arc<SimulatorMetrics>) -> Result<()> {
+pub async fn run_tui(metrics: Arc<SimulatorMetrics>, log_buffer: Arc<Mutex<VecDeque<String>>>) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -301,7 +496,7 @@ pub async fn run_tui(metrics: Arc<SimulatorMetrics>) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app state
-    let mut state = TuiState::new(metrics);
+    let mut state = TuiState::new(metrics, log_buffer);
 
     // Run the TUI loop
     let res = run_tui_loop(&mut terminal, &mut state).await;
@@ -335,6 +530,13 @@ async fn run_tui_loop(
                 if key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char('q') => return Ok(()),
+                        KeyCode::Tab => {
+                            // Switch tabs
+                            state.active_tab = match state.active_tab {
+                                Tab::Metrics => Tab::Logs,
+                                Tab::Logs => Tab::Metrics,
+                            };
+                        }
                         KeyCode::Char('r') => {
                             state.metrics.reset();
                             state.packets_sent_history.clear();
@@ -345,6 +547,16 @@ async fn run_tui_loop(
                             state.prev_packets_dropped = 0;
                             state.prev_timestamp = 0.0;
                             state.start_time = Instant::now();
+                        }
+                        KeyCode::Up => {
+                            // Scroll up in logs (future enhancement)
+                            if state.log_scroll > 0 {
+                                state.log_scroll -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            // Scroll down in logs (future enhancement)
+                            state.log_scroll += 1;
                         }
                         _ => {}
                     }

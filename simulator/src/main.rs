@@ -32,16 +32,46 @@ use simulator::Simulator;
 async fn main() -> Result<()> {
     let args = SimArgs::parse();
 
-    if args.pretty {
+    // Set up logging based on TUI mode
+    #[cfg(feature = "tui")]
+    let log_buffer = if args.tui {
+        let buffer = tui::LogBuffer::new();
+        let tui_layer = tui::TuiLogLayer::new(buffer.clone_buffer());
+        
         tracing_subscriber::registry()
-            .with(fmt::layer().with_thread_ids(true).pretty())
+            .with(tui_layer)
             .with(EnvFilter::from_default_env())
             .init();
+        
+        Some(buffer)
     } else {
-        tracing_subscriber::registry()
-            .with(fmt::layer().with_thread_ids(true))
-            .with(EnvFilter::from_default_env())
-            .init();
+        if args.pretty {
+            tracing_subscriber::registry()
+                .with(fmt::layer().with_thread_ids(true).pretty())
+                .with(EnvFilter::from_default_env())
+                .init();
+        } else {
+            tracing_subscriber::registry()
+                .with(fmt::layer().with_thread_ids(true))
+                .with(EnvFilter::from_default_env())
+                .init();
+        }
+        None
+    };
+
+    #[cfg(not(feature = "tui"))]
+    {
+        if args.pretty {
+            tracing_subscriber::registry()
+                .with(fmt::layer().with_thread_ids(true).pretty())
+                .with(EnvFilter::from_default_env())
+                .init();
+        } else {
+            tracing_subscriber::registry()
+                .with(fmt::layer().with_thread_ids(true))
+                .with(EnvFilter::from_default_env())
+                .init();
+        }
     }
 
     let simulator = Simulator::new(&args, |_name, config| {
@@ -76,8 +106,9 @@ async fn main() -> Result<()> {
     if args.tui {
         tracing::info!("Starting TUI dashboard...");
         let metrics = simulator.get_metrics();
+        let log_buffer = log_buffer.unwrap().clone_buffer();
         let tui_handle = tokio::spawn(async move {
-            if let Err(e) = tui::run_tui(metrics).await {
+            if let Err(e) = tui::run_tui(metrics, log_buffer).await {
                 tracing::error!("TUI error: {}", e);
             }
         });

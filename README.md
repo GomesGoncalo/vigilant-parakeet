@@ -159,11 +159,13 @@ sudo RUST_LOG="node=debug" ./target/release/simulator --config-file simulator.ya
 ```
 
 **TUI Dashboard Features:**
-- Real-time packet statistics (sent, dropped, delayed)
-- Performance metrics (drop rate, latency, throughput)
-- Live graphs showing trends over time
-- Active nodes and channels count
-- Press 'q' to quit, 'r' to reset metrics
+- **Metrics Tab**: Real-time packet statistics, performance metrics, and live graphs
+  - Packets sent/dropped/delayed with totals
+  - Drop rate and average latency
+  - Throughput and uptime tracking
+  - 4 live graphs with 60-second history
+- **Logs Tab**: Captured simulation logs with color-coded levels (ERROR, WARN, INFO, DEBUG, TRACE)
+- **Controls**: Tab to switch views, 'q' to quit, 'r' to reset metrics, ↑/↓ to scroll logs
 
 **Webview API** (if built with `--features webview`):
 - HTTP metrics endpoint: `curl http://localhost:3030/metrics`
