@@ -154,7 +154,7 @@ struct TuiState {
     
     // Historical data for graphs
     packets_sent_history: Vec<(f64, f64)>,
-    packets_dropped_history: Vec<(f64, f64)>,
+    loss_percentage_history: Vec<(f64, f64)>,
     throughput_history: Vec<(f64, f64)>,
     latency_history: Vec<(f64, f64)>,
     
@@ -175,7 +175,7 @@ impl TuiState {
             metrics,
             start_time: Instant::now(),
             packets_sent_history: Vec::new(),
-            packets_dropped_history: Vec::new(),
+            loss_percentage_history: Vec::new(),
             throughput_history: Vec::new(),
             latency_history: Vec::new(),
             prev_packets_sent: 0,
@@ -205,14 +205,14 @@ impl TuiState {
 
         // Add new data points
         self.packets_sent_history.push((elapsed, summary.packets_sent as f64));
-        self.packets_dropped_history.push((elapsed, summary.packets_dropped as f64));
+        self.loss_percentage_history.push((elapsed, summary.drop_rate * 100.0)); // Convert to percentage
         self.throughput_history.push((elapsed, current_throughput));
         self.latency_history.push((elapsed, summary.avg_latency_us / 1000.0)); // Convert to ms
 
         // Keep only recent history
         if self.packets_sent_history.len() > MAX_HISTORY {
             self.packets_sent_history.remove(0);
-            self.packets_dropped_history.remove(0);
+            self.loss_percentage_history.remove(0);
             self.throughput_history.remove(0);
             self.latency_history.remove(0);
         }
@@ -300,32 +300,40 @@ fn render_metrics_tab(f: &mut Frame, area: Rect, state: &TuiState) {
     let uptime_secs = summary.uptime.as_secs();
     let uptime_str = format!("{}h {}m {}s", uptime_secs / 3600, (uptime_secs % 3600) / 60, uptime_secs % 60);
     
+    // Calculate loss percentage with color coding
+    let loss_percentage = summary.drop_rate * 100.0;
+    let loss_color = if loss_percentage > 10.0 {
+        Color::Red
+    } else if loss_percentage > 5.0 {
+        Color::Yellow
+    } else if loss_percentage > 1.0 {
+        Color::LightYellow
+    } else {
+        Color::Green
+    };
+    
     let stats_items = vec![
         ListItem::new(Line::from(vec![
-            Span::styled("Packets Sent: ", Style::default().fg(Color::Green)),
-            Span::raw(format!("{}", summary.packets_sent)),
-            Span::styled("  │  Dropped: ", Style::default().fg(Color::Red)),
-            Span::raw(format!("{}", summary.packets_dropped)),
-            Span::styled("  │  Total: ", Style::default().fg(Color::White)),
+            Span::styled("Total Packets: ", Style::default().fg(Color::White)),
             Span::raw(format!("{}", summary.total_packets)),
+            Span::styled("  │  Packet Loss: ", Style::default().fg(loss_color)),
+            Span::styled(format!("{:.2}%", loss_percentage), Style::default().fg(loss_color).add_modifier(Modifier::BOLD)),
+            Span::styled("  │  Success Rate: ", Style::default().fg(Color::Green)),
+            Span::raw(format!("{:.2}%", (1.0 - summary.drop_rate) * 100.0)),
         ])),
         ListItem::new(Line::from(vec![
-            Span::styled("Drop Rate: ", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("{:.2}%", summary.drop_rate * 100.0)),
-            Span::styled("  │  Avg Latency: ", Style::default().fg(Color::Cyan)),
+            Span::styled("Avg Latency: ", Style::default().fg(Color::Cyan)),
             Span::raw(format!("{:.2}ms", summary.avg_latency_us / 1000.0)),
-        ])),
-        ListItem::new(Line::from(vec![
-            Span::styled("Throughput: ", Style::default().fg(Color::Magenta)),
+            Span::styled("  │  Throughput: ", Style::default().fg(Color::Magenta)),
             Span::raw(format!("{:.1} pps", summary.packets_sent as f64 / summary.uptime.as_secs_f64())),
-            Span::styled("  │  Uptime: ", Style::default().fg(Color::Blue)),
-            Span::raw(uptime_str),
         ])),
         ListItem::new(Line::from(vec![
             Span::styled("Active Nodes: ", Style::default().fg(Color::Green)),
             Span::raw(format!("{}", summary.active_nodes)),
             Span::styled("  │  Active Channels: ", Style::default().fg(Color::Green)),
             Span::raw(format!("{}", summary.active_channels)),
+            Span::styled("  │  Uptime: ", Style::default().fg(Color::Blue)),
+            Span::raw(uptime_str),
         ])),
     ];
     
@@ -361,12 +369,12 @@ fn render_metrics_tab(f: &mut Frame, area: Rect, state: &TuiState) {
         Color::Green,
     );
 
-    // Packets dropped graph
+    // Packet loss percentage graph
     render_chart(
         f,
         top_graph_chunks[1],
-        "Packets Dropped",
-        &state.packets_dropped_history,
+        "Packet Loss (%)",
+        &state.loss_percentage_history,
         Color::Red,
     );
 
@@ -568,7 +576,7 @@ async fn run_tui_loop(
                             KeyCode::Char('r') | KeyCode::Char('R') => {
                                 state.metrics.reset();
                                 state.packets_sent_history.clear();
-                                state.packets_dropped_history.clear();
+                                state.loss_percentage_history.clear();
                                 state.throughput_history.clear();
                                 state.latency_history.clear();
                                 state.prev_packets_sent = 0;
