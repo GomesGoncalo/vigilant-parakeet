@@ -4,7 +4,6 @@ use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
 #[cfg(feature = "webview")]
 use common::network_interface::NetworkInterface;
-#[cfg(not(feature = "test_helpers"))]
 use common::tun::Tun;
 use config::Config;
 #[cfg(feature = "webview")]
@@ -85,48 +84,69 @@ async fn main() -> Result<()> {
     }
 
     let devices = Arc::new(Mutex::new(HashMap::new()));
-    let simulator = Simulator::new(&args, |name, config| {
-        let Some(config) = config.get("config_path") else {
-            bail!("no config for node");
-        };
+    let external_tuns: Arc<Mutex<HashMap<String, Arc<Tun>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let external_tuns_clone = external_tuns.clone();
+    let simulator = Simulator::new(
+        &args,
+        |name, config| {
+            let Some(config) = config.get("config_path") else {
+                bail!("no config for node");
+            };
 
-        let config = config.to_string();
+            let config = config.to_string();
 
-        let settings = Config::builder()
-            .add_source(config::File::with_name(&config))
-            .build()?;
-        tracing::debug!(?settings, "Node configuration loaded");
+            let settings = Config::builder()
+                .add_source(config::File::with_name(&config))
+                .build()?;
+            tracing::debug!(?settings, "Node configuration loaded");
 
-        #[cfg(not(feature = "test_helpers"))]
-        let tun = Arc::new({
-            let real_tun = TokioTun::builder()
-                .name("real")
-                .tap()
-                .up()
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?;
-            Tun::new_real(real_tun)
-        });
-        #[cfg(feature = "test_helpers")]
-        let tun = {
-            // test build: use shared test helper to construct a shim Tun and take one end.
-            let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
-            Arc::new(tun_a)
-        };
+            #[cfg(not(feature = "test_helpers"))]
+            let tun = Arc::new({
+                let real_tun = TokioTun::builder()
+                    .name("real")
+                    .tap()
+                    .up()
+                    .build()?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("no tun devices returned from TokioTun builder")
+                    })?;
+                Tun::new_real(real_tun)
+            });
+            #[cfg(feature = "test_helpers")]
+            let tun = {
+                // test build: use shared test helper to construct a shim Tun and take one end.
+                let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+                Arc::new(tun_a)
+            };
 
-        // Parse node type from config. Map parsing errors into anyhow::Error so `?` works.
-        let node = NodeType::from_str(&settings.get_string("node_type")?, true)
-            .map_err(|e| anyhow::anyhow!(e))?;
+            // Parse node type from config. Map parsing errors into anyhow::Error so `?` works.
+            let node = NodeType::from_str(&settings.get_string("node_type")?, true)
+                .map_err(|e| anyhow::anyhow!(e))?;
 
-        let (dev, _virtual_tun, node) = create_node_from_settings(node, &settings, tun.clone())?;
-        devices
-            .lock()
-            .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
-            .insert(name.to_string(), (dev.clone(), tun.clone()));
-        Ok((dev, tun, node))
-    })?;
+            let (dev, _virtual_tun, node, external_tun) =
+                create_node_from_settings(node, &settings, tun.clone())?;
+            devices
+                .lock()
+                .map_err(|e| anyhow::anyhow!("devices mutex poisoned: {}", e))?
+                .insert(
+                    name.to_string(),
+                    (dev.clone(), tun.clone(), external_tun.clone()),
+                );
+
+            // Store external_tun if present
+            if let Some(ext_tun) = external_tun {
+                external_tuns_clone
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("external_tuns mutex poisoned: {}", e))?
+                    .insert(name.to_string(), ext_tun);
+            }
+
+            Ok((dev, tun, node))
+        },
+        external_tuns.clone(),
+    )?;
 
     #[cfg(feature = "webview")]
     {
@@ -148,7 +168,9 @@ async fn main() -> Result<()> {
                 warp::reply::json(
                     &guard
                         .iter()
-                        .map(|(node, (device, tun))| (node, (device.stats(), tun.stats())))
+                        .map(|(node, (device, tun, _ext_tun))| {
+                            (node, (device.stats(), tun.stats()))
+                        })
                         .collect::<HashMap<_, _>>(),
                 )
             });
@@ -160,7 +182,7 @@ async fn main() -> Result<()> {
                 let guard = devices.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(reply) = &guard
                     .get(&node)
-                    .map(|(device, tun)| (device.stats(), tun.stats()))
+                    .map(|(device, tun, _ext_tun)| (device.stats(), tun.stats()))
                 else {
                     let json = warp::reply::json(&ErrorMessage {
                         code: 404,
