@@ -270,17 +270,16 @@ fn ui(f: &mut Frame, state: &TuiState) {
 
     // Help text
     let help = Paragraph::new(Line::from(vec![
-        Span::styled("Press ", Style::default().fg(Color::Gray)),
-        Span::styled("'q'", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(" to quit  │  ", Style::default().fg(Color::Gray)),
-        Span::styled("'r'", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(" to reset metrics  │  ", Style::default().fg(Color::Gray)),
-        Span::styled("Tab", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(" to switch views  │  ", Style::default().fg(Color::Gray)),
-        Span::styled("↑/↓", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled("Q/Esc/Ctrl+C", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(" quit  │  ", Style::default().fg(Color::Gray)),
+        Span::styled("R", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(" reset  │  ", Style::default().fg(Color::Gray)),
+        Span::styled("Tab/1/2", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(" switch tabs  │  ", Style::default().fg(Color::Gray)),
+        Span::styled("↑/↓/PgUp/PgDn", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         Span::styled(" scroll logs", Style::default().fg(Color::Gray)),
     ]))
-    .block(Block::default().borders(Borders::ALL));
+    .block(Block::default().borders(Borders::ALL).title("Controls"));
     f.render_widget(help, chunks[3]);
 }
 
@@ -486,7 +485,7 @@ fn render_chart(
 /// Run the TUI dashboard
 ///
 /// This function takes over the terminal and displays a real-time dashboard
-/// until the user presses 'q' to quit.
+/// until the user presses 'q', 'Q', Esc, or Ctrl+C to quit.
 pub async fn run_tui(metrics: Arc<SimulatorMetrics>, log_buffer: Arc<Mutex<VecDeque<String>>>) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
@@ -498,17 +497,28 @@ pub async fn run_tui(metrics: Arc<SimulatorMetrics>, log_buffer: Arc<Mutex<VecDe
     // Create app state
     let mut state = TuiState::new(metrics, log_buffer);
 
+    // Set up a panic hook to ensure terminal is restored even on panic
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        original_hook(panic_info);
+    }));
+
     // Run the TUI loop
     let res = run_tui_loop(&mut terminal, &mut state).await;
 
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(
+    // Restore terminal - always run this even if error occurred
+    let _ = disable_raw_mode();
+    let _ = execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    );
+    let _ = terminal.show_cursor();
+
+    // Restore original panic hook
+    let _ = std::panic::take_hook();
 
     res
 }
@@ -524,40 +534,70 @@ async fn run_tui_loop(
         // Draw UI
         terminal.draw(|f| ui(f, state))?;
 
-        // Handle events with timeout
-        if event::poll(Duration::from_millis(100))? {
+        // Handle events with timeout - use a shorter timeout for better responsiveness
+        if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
+                // Handle both Press and Repeat events (some terminals only send one)
+                if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
                     match key.code {
-                        KeyCode::Char('q') => return Ok(()),
-                        KeyCode::Tab => {
-                            // Switch tabs
-                            state.active_tab = match state.active_tab {
-                                Tab::Metrics => Tab::Logs,
-                                Tab::Logs => Tab::Metrics,
-                            };
-                        }
-                        KeyCode::Char('r') => {
-                            state.metrics.reset();
-                            state.packets_sent_history.clear();
-                            state.packets_dropped_history.clear();
-                            state.throughput_history.clear();
-                            state.latency_history.clear();
-                            state.prev_packets_sent = 0;
-                            state.prev_packets_dropped = 0;
-                            state.prev_timestamp = 0.0;
-                            state.start_time = Instant::now();
-                        }
-                        KeyCode::Up => {
-                            // Scroll up in logs (future enhancement)
-                            if state.log_scroll > 0 {
-                                state.log_scroll -= 1;
+                            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                tracing::info!("Quit command received");
+                                return Ok(());
                             }
-                        }
-                        KeyCode::Down => {
-                            // Scroll down in logs (future enhancement)
-                            state.log_scroll += 1;
-                        }
+                            KeyCode::Esc => {
+                                tracing::info!("Escape key received");
+                                return Ok(());
+                            }
+                            KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                tracing::info!("Ctrl+C received");
+                                return Ok(());
+                            }
+                            KeyCode::Tab | KeyCode::BackTab => {
+                                // Switch tabs
+                                state.active_tab = match state.active_tab {
+                                    Tab::Metrics => Tab::Logs,
+                                    Tab::Logs => Tab::Metrics,
+                                };
+                            }
+                            KeyCode::Char('1') => {
+                                state.active_tab = Tab::Metrics;
+                            }
+                            KeyCode::Char('2') => {
+                                state.active_tab = Tab::Logs;
+                            }
+                            KeyCode::Char('r') | KeyCode::Char('R') => {
+                                state.metrics.reset();
+                                state.packets_sent_history.clear();
+                                state.packets_dropped_history.clear();
+                                state.throughput_history.clear();
+                                state.latency_history.clear();
+                                state.prev_packets_sent = 0;
+                                state.prev_packets_dropped = 0;
+                                state.prev_timestamp = 0.0;
+                                state.start_time = Instant::now();
+                            }
+                            KeyCode::Up => {
+                                // Scroll up in logs
+                                if state.log_scroll > 0 {
+                                    state.log_scroll -= 1;
+                                }
+                            }
+                            KeyCode::Down => {
+                                // Scroll down in logs
+                                state.log_scroll += 1;
+                            }
+                            KeyCode::PageUp => {
+                                // Scroll up by 10 lines
+                                state.log_scroll = state.log_scroll.saturating_sub(10);
+                            }
+                            KeyCode::PageDown => {
+                                // Scroll down by 10 lines
+                                state.log_scroll = state.log_scroll.saturating_add(10);
+                            }
+                            KeyCode::Home => {
+                                // Go to top
+                                state.log_scroll = 0;
+                            }
                         _ => {}
                     }
                 }

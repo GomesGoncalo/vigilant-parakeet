@@ -156,6 +156,9 @@ sudo RUST_LOG="node=debug" ./target/release/simulator --config-file simulator.ya
 
 # With TUI dashboard (requires --features tui at build time)
 sudo RUST_LOG="node=debug" ./target/release/simulator --config-file simulator.yaml --tui
+
+# With TUI + Webview API (requires both features)
+sudo RUST_LOG="node=debug" ./target/release/simulator --config-file simulator.yaml --tui
 ```
 
 **TUI Dashboard Features:**
@@ -165,11 +168,17 @@ sudo RUST_LOG="node=debug" ./target/release/simulator --config-file simulator.ya
   - Throughput and uptime tracking
   - 4 live graphs with 60-second history
 - **Logs Tab**: Captured simulation logs with color-coded levels (ERROR, WARN, INFO, DEBUG, TRACE)
-- **Controls**: Tab to switch views, 'q' to quit, 'r' to reset metrics, ↑/↓ to scroll logs
+- **Controls**: 
+  - **Q/Esc/Ctrl+C** - Quit TUI
+  - **R** - Reset metrics
+  - **Tab** or **1/2** - Switch between tabs
+  - **↑/↓/PgUp/PgDn** - Scroll logs
+  - **Home** - Go to top of logs
 
 **Webview API** (if built with `--features webview`):
 - HTTP metrics endpoint: `curl http://localhost:3030/metrics`
 - Returns JSON with all simulation metrics
+- **Works with TUI**: When both features are enabled, webview runs alongside TUI
 
 ### Example: 3-node setup
 

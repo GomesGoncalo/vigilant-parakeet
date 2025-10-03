@@ -107,22 +107,55 @@ async fn main() -> Result<()> {
         tracing::info!("Starting TUI dashboard...");
         let metrics = simulator.get_metrics();
         let log_buffer = log_buffer.unwrap().clone_buffer();
-        let tui_handle = tokio::spawn(async move {
-            if let Err(e) = tui::run_tui(metrics, log_buffer).await {
-                tracing::error!("TUI error: {}", e);
+        
+        // Start webview server if feature is enabled (before moving simulator)
+        #[cfg(feature = "webview")]
+        {
+            tracing::info!("Starting webview API server on http://127.0.0.1:3030");
+            let routes = webview::setup_routes(&simulator);
+            let webview_handle = tokio::spawn(async move {
+                warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
+            });
+
+            // Run simulator in background
+            let sim_handle = tokio::spawn(async move {
+                let _ = simulator.run().await;
+            });
+
+            let tui_handle = tokio::spawn(async move {
+                if let Err(e) = tui::run_tui(metrics, log_buffer).await {
+                    tracing::error!("TUI error: {}", e);
+                }
+            });
+
+            // Wait for either TUI, simulator, or webview to exit
+            tokio::select! {
+                _ = tui_handle => { tracing::info!("TUI exited"); }
+                _ = sim_handle => { tracing::info!("Simulator exited"); }
+                _ = webview_handle => { tracing::info!("Webview exited"); }
+                _ = signal::ctrl_c() => { tracing::info!("Ctrl+C received"); }
             }
-        });
+        }
 
-        // Run simulator in background
-        let sim_handle = tokio::spawn(async move {
-            let _ = simulator.run().await;
-        });
+        // No webview feature - just TUI and simulator
+        #[cfg(not(feature = "webview"))]
+        {
+            let tui_handle = tokio::spawn(async move {
+                if let Err(e) = tui::run_tui(metrics, log_buffer).await {
+                    tracing::error!("TUI error: {}", e);
+                }
+            });
 
-        // Wait for either TUI or simulator to exit
-        tokio::select! {
-            _ = tui_handle => {}
-            _ = sim_handle => {}
-            _ = signal::ctrl_c() => {}
+            // Run simulator in background
+            let sim_handle = tokio::spawn(async move {
+                let _ = simulator.run().await;
+            });
+
+            tokio::select! {
+                _ = tui_handle => { tracing::info!("TUI exited"); }
+                _ = sim_handle => { tracing::info!("Simulator exited"); }
+                _ = signal::ctrl_c() => { tracing::info!("Ctrl+C received"); }
+            }
         }
 
         return Ok(());
