@@ -220,9 +220,20 @@ impl Routing {
     }
 
     // ============================================================================
-    // SECTION 3: Heartbeat Message Processing (382 lines)
+    // SECTION 3: Heartbeat Message Processing (385 lines)
+    // Handles incoming heartbeats: route discovery, duplicate detection, forwarding
     // ============================================================================
 
+    /// Process an incoming Heartbeat message.
+    ///
+    /// This function:
+    /// 1. Records the heartbeat sequence in the routing table
+    /// 2. Tracks the forwarding neighbor (adjacency)
+    /// 3. Detects and handles duplicate sequences
+    /// 4. Discovers new routes or detects route changes
+    /// 5. Forwards the heartbeat (broadcast) and sends a reply
+    ///
+    /// Returns wire-format messages for forwarding and replying, or None if duplicate.
     pub fn handle_heartbeat(
         &mut self,
         pkt: &Message,
@@ -385,6 +396,16 @@ impl Routing {
         ]))
     }
 
+    /// Process an incoming HeartbeatReply message.
+    ///
+    /// This function:
+    /// 1. Records latency measurements in downstream observations
+    /// 2. Detects routing loops (bail if reply came from upstream)
+    /// 3. Prevents immediate bounce-back (skip forward if reply from next hop)
+    /// 4. Updates route selection with fresh latency data
+    /// 5. Forwards the reply toward the next upstream node
+    ///
+    /// Returns wire-format message for forwarding, or None if loop detected or would bounce.
     pub fn handle_heartbeat_reply(
         &mut self,
         pkt: &Message,
@@ -608,6 +629,22 @@ impl Routing {
     // Complex logic for finding best routes with latency-based scoring and hysteresis
     // ============================================================================
 
+    /// Find the best route to a target MAC address with hysteresis.
+    ///
+    /// Selection algorithm:
+    /// 1. **For cached upstream (None)**: Returns current cached upstream if set
+    /// 2. **For non-RSU targets**: Uses downstream observations across all heartbeats
+    /// 3. **For RSU targets**: Applies latency-based scoring with hysteresis:
+    ///    - Prefers lower latency (min + avg scoring)
+    ///    - Applies 10% improvement threshold to prevent flapping
+    ///    - Falls back to hop-count when latency unavailable
+    ///    - Deterministic tie-breaking by MAC address
+    ///
+    /// Hysteresis: Only switches from cached route when:
+    /// - New route has ≥1 fewer hops, OR
+    /// - New route has ≥10% better latency score
+    ///
+    /// Returns None if no route exists.
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
         let Some(target_mac) = mac else {
             return self.cache.get_cached_upstream().map(|mac| Route {
@@ -874,6 +911,20 @@ impl Routing {
         None
     }
 
+    /// Select the best route to an RSU and cache N-best candidates for failover.
+    ///
+    /// This function:
+    /// 1. Calls `get_route_to()` to find the best route with hysteresis
+    /// 2. Caches the selected upstream as primary
+    /// 3. Builds an ordered list of N-best candidates for fast failover
+    /// 4. Logs when first upstream is selected (important OBU milestone)
+    ///
+    /// Candidates are scored using:
+    /// - Latency-based scoring (min + avg) when measurements available
+    /// - Hop-count based backfill for unmeasured routes  
+    /// - Deterministic ordering for reproducible behavior
+    ///
+    /// Returns the selected route, or None if no route exists.
     pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
         let route = self.get_route_to(Some(mac))?;
         let was_cached = self.cache.get_cached_upstream().is_some();
