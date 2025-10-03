@@ -55,6 +55,27 @@ pub fn mk_test_obu_args_encrypted() -> ObuArgs {
     }
 }
 
+/// Create ObuArgs with hello_history: 10 for integration tests.
+/// This is an alias for compatibility with integration tests that need larger history.
+pub fn mk_obu_args() -> ObuArgs {
+    mk_test_obu_args_with_history(10)
+}
+
+/// Create ObuArgs with hello_history: 10 and encryption for integration tests.
+pub fn mk_obu_args_encrypted() -> ObuArgs {
+    ObuArgs {
+        bind: String::from("unused"),
+        tap_name: None,
+        ip: None,
+        mtu: 1500,
+        obu_params: ObuParameters {
+            hello_history: 10,
+            cached_candidates: 3,
+            enable_encryption: true,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

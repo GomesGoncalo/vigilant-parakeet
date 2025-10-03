@@ -35,8 +35,8 @@ test_helpers = [ "common/test_helpers" ]
 criterion = "0.5"
 common = { path = "../common/" }
 proptest = "1.0"
-obu_lib = { path = "../obu_lib/" }
-rsu_lib = { path = "../rsu_lib/" }
+obu_lib = { path = "../obu_lib/", features = ["test_helpers"] }
+rsu_lib = { path = "../rsu_lib/", features = ["test_helpers"] }
 
 [[bench]]
 name = "message_parse"

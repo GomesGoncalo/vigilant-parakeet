@@ -64,6 +64,28 @@ pub fn mk_test_rsu_args_encrypted(hello_periodicity: u32) -> RsuArgs {
     }
 }
 
+/// Create RsuArgs with hello_history: 10 for integration tests.
+/// This is an alias for compatibility with integration tests that need larger history.
+pub fn mk_rsu_args(hello_periodicity: u32) -> RsuArgs {
+    mk_test_rsu_args_with_history(10, hello_periodicity)
+}
+
+/// Create RsuArgs with hello_history: 10 and encryption for integration tests.
+pub fn mk_rsu_args_encrypted(hello_periodicity: u32) -> RsuArgs {
+    RsuArgs {
+        bind: String::from("unused"),
+        tap_name: None,
+        ip: None,
+        mtu: 1500,
+        rsu_params: RsuParameters {
+            hello_history: 10,
+            hello_periodicity,
+            cached_candidates: 3,
+            enable_encryption: true,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
