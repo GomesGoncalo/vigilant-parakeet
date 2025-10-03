@@ -12,5 +12,6 @@ clap = { version = "*", features = ["derive"] }
 node_lib = { path = "../node_lib/" }
 rsu_lib = { path = "../rsu_lib/" }
 obu_lib = { path = "../obu_lib/" }
+server_lib = { path = "../server_lib/" }
 mac_address = "*"
 tracing = "*"
