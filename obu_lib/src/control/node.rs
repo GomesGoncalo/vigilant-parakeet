@@ -7,47 +7,12 @@ use itertools::Itertools;
 use node_lib::messages::message::Message;
 use node_lib::{SharedDevice, SharedTun, PACKET_BUFFER_SIZE};
 use std::{io::IoSlice, sync::Arc};
-use uninit::uninit_array;
 
-// Re-export shared ReplyType from node_lib
-pub use node_lib::control::node::ReplyType;
-
-// Debug types and functions for tracing and testing
-#[cfg(any(test, feature = "test_helpers"))]
-#[derive(Debug)]
-pub enum DebugReplyType {
-    Tap(Vec<Vec<u8>>),
-    Wire(String),
-}
+// Re-export shared types and functions from node_lib to avoid duplication
+pub use node_lib::control::node::{buffer, bytes_to_hex, ReplyType};
 
 #[cfg(any(test, feature = "test_helpers"))]
-pub fn get_msgs(response: &Result<Option<Vec<ReplyType>>>) -> Result<Option<Vec<DebugReplyType>>> {
-    use anyhow::bail;
-    use itertools::Itertools;
-    use node_lib::messages::message::Message;
-
-    match response {
-        Ok(Some(response)) => Ok(Some(
-            response
-                .iter()
-                .filter_map(|x| match x {
-                    ReplyType::TapFlat(x) => Some(DebugReplyType::Tap(vec![x.clone()])),
-                    ReplyType::WireFlat(x) => {
-                        let Ok(message) = Message::try_from(&x[..]) else {
-                            return None;
-                        };
-                        Some(DebugReplyType::Wire(format!("{message:?}")))
-                    }
-                })
-                .collect_vec(),
-        )),
-        Ok(None) => Ok(None),
-        Err(e) => bail!("{:?}", e),
-    }
-}
-
-// Re-export shared helper function from node_lib
-pub use node_lib::control::node::bytes_to_hex;
+pub use node_lib::control::node::{get_msgs, DebugReplyType};
 
 pub async fn handle_messages(
     messages: Vec<ReplyType>,
@@ -226,11 +191,6 @@ pub async fn handle_messages_batched(
     tap_result?;
 
     Ok(())
-}
-
-fn buffer() -> [u8; PACKET_BUFFER_SIZE] {
-    let buf = uninit_array![u8; PACKET_BUFFER_SIZE];
-    unsafe { std::mem::transmute::<_, [u8; PACKET_BUFFER_SIZE]>(buf) }
 }
 
 pub async fn wire_traffic<Fut>(

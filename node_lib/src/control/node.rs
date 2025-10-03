@@ -91,7 +91,12 @@ pub async fn handle_messages(
     Ok(())
 }
 
-fn buffer() -> [u8; PACKET_BUFFER_SIZE] {
+/// Creates an uninitialized buffer for packet reception
+/// 
+/// # Safety
+/// This function uses unsafe code to create an uninitialized buffer.
+/// The buffer must be properly initialized before reading from it.
+pub fn buffer() -> [u8; PACKET_BUFFER_SIZE] {
     let buf = uninit_array![u8; PACKET_BUFFER_SIZE];
     unsafe { std::mem::transmute::<_, [u8; PACKET_BUFFER_SIZE]>(buf) }
 }

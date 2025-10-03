@@ -43,7 +43,7 @@ impl RoutingCache {
         self.cached_upstream.store(None);
         self.cached_candidates.store(None);
         #[cfg(feature = "stats")]
-        crate::metrics::inc_cache_clear();
+        node_lib::metrics::inc_cache_clear();
     }
 
     /// Return the ordered cached candidates (primary first) when present.

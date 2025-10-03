@@ -1,6 +1,7 @@
 pub mod args;
 pub use args::Args;
 pub mod buffer_pool;
+pub mod builder;
 pub mod control;
 pub mod crypto;
 pub mod data;

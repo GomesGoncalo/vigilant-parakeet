@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use common::tun::Tun;
 use config::Config;
 use std::net::Ipv4Addr;
@@ -32,11 +32,12 @@ pub fn create_node_from_settings(
 
     #[cfg(not(feature = "test_helpers"))]
     let virtual_tun = Arc::new({
+        let ip_addr = ip.ok_or_else(|| anyhow::anyhow!("IP address is required"))?;
         let real_tun = if let Some(ref name) = tap_name {
             tokio_tun::Tun::builder()
                 .tap()
                 .name(name)
-                .address(ip.context("")?)
+                .address(ip_addr)
                 .mtu(mtu)
                 .up()
                 .build()?
@@ -46,7 +47,7 @@ pub fn create_node_from_settings(
         } else {
             tokio_tun::Tun::builder()
                 .tap()
-                .address(ip.context("")?)
+                .address(ip_addr)
                 .mtu(mtu)
                 .up()
                 .build()?

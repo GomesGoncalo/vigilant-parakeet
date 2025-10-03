@@ -43,7 +43,6 @@ use mac_address::MacAddress;
 use node_lib::messages::{control::Control, message::Message, packet_type::PacketType};
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 use tokio::time::{Duration, Instant};
-use tracing::Level;
 
 // ============================================================================
 // Type Definitions
@@ -104,10 +103,6 @@ pub struct Routing {
 }
 
 impl Routing {
-    // ============================================================================
-    // SECTION 1: Construction and Basic Cache Operations  
-    // ============================================================================
-
     pub fn new(args: &ObuArgs, boot: &Instant) -> Result<Self> {
         if args.obu_params.hello_history == 0 {
             bail!("we need to be able to store at least 1 hello");
@@ -136,10 +131,6 @@ impl Routing {
         self.cache.get_cached_candidates()
     }
     
-    // ============================================================================
-    // SECTION 2: Failover and Candidate Management
-    // ============================================================================
-
     /// Rotate to the next cached candidate (promote the next candidate to primary).
     /// Returns the newly promoted primary if any.
     pub fn failover_cached_upstream(&self) -> Option<MacAddress> {
@@ -219,10 +210,48 @@ impl Routing {
         self.cache.test_set_cached_candidates(cands);
     }
 
-    // ============================================================================
-    // SECTION 3: Heartbeat Message Processing (385 lines)
-    // Handles incoming heartbeats: route discovery, duplicate detection, forwarding
-    // ============================================================================
+    fn log_route_change(
+        old_route: Option<Route>,
+        new_route: Option<Route>,
+        from_mac: MacAddress,
+        to_mac: MacAddress,
+        is_info: bool,
+        context: &str,
+    ) {
+        match (old_route, new_route) {
+            (None, Some(route)) => {
+                if is_info {
+                    tracing::info!(
+                        from = %from_mac,
+                        to = %to_mac,
+                        through = %route,
+                        hops = route.hops,
+                        "{}", context,
+                    );
+                } else {
+                    tracing::debug!(
+                        from = %from_mac,
+                        to = %to_mac,
+                        through = %route,
+                        hops = route.hops,
+                        "{}", context,
+                    );
+                }
+            }
+            (Some(old), Some(new)) if old.mac != new.mac => {
+                tracing::info!(
+                    from = %from_mac,
+                    to = %to_mac,
+                    through = %new,
+                    was_through = %old,
+                    old_hops = old.hops,
+                    new_hops = new.hops,
+                    "Route changed",
+                );
+            }
+            _ => {}
+        }
+    }
 
     /// Process an incoming Heartbeat message.
     ///
@@ -320,65 +349,25 @@ impl Routing {
             return Ok(None);
         }
 
-        match (old_route, self.get_route_to(Some(message.source()))) {
-            (None, Some(new_route)) => {
-                tracing::event!(
-                    Level::INFO,
-                    from = %mac,
-                    to = %message.source(),
-                    through = %new_route,
-                    hops = new_route.hops,
-                    "Route discovered",
-                );
-                let _sel = self.select_and_cache_upstream(message.source());
-            }
-            (_, None) => (),
-            (Some(old_route), Some(new_route)) => {
-                if old_route.mac != new_route.mac {
-                    tracing::event!(
-                        Level::INFO,
-                        from = %mac,
-                        to = %message.source(),
-                        through = %new_route,
-                        was_through = %old_route,
-                        old_hops = old_route.hops,
-                        new_hops = new_route.hops,
-                        "Route changed",
-                    );
-                }
-            }
+        let new_route = self.get_route_to(Some(message.source()));
+        let should_cache = old_route.is_none() && new_route.is_some();
+        Self::log_route_change(old_route, new_route, mac, message.source(), true, "Route discovered");
+        if should_cache {
+            let _sel = self.select_and_cache_upstream(message.source());
         }
 
         if message.source() != pkt.from()? {
-            match (old_route_from, self.get_route_to(Some(pkt.from()?))) {
-                (None, Some(new_route)) => {
-                    tracing::event!(
-                        Level::DEBUG,
-                        from = %mac,
-                        to = %pkt.from()?,
-                        through = %new_route,
-                        "route created on heartbeat",
-                    );
-                }
-                (_, None) => (),
-                (Some(old_route_from), Some(new_route)) => {
-                    if old_route_from.mac != new_route.mac {
-                        tracing::event!(
-                            Level::INFO,
-                            from = %mac,
-                            to = %pkt.from()?,
-                            through = %new_route,
-                            was_through = %old_route_from,
-                            old_hops = old_route_from.hops,
-                            new_hops = new_route.hops,
-                            "Route changed",
-                        );
-                    }
-                }
-            }
+            let new_route_from = self.get_route_to(Some(pkt.from()?));
+            Self::log_route_change(
+                old_route_from,
+                new_route_from,
+                mac,
+                pkt.from()?,
+                false,
+                "route created on heartbeat",
+            );
         }
 
-        // Use flat serialization for better performance (8.7x faster)
         let broadcast_wire: Vec<u8> = (&Message::new(
             mac,
             [255; 6].into(),
@@ -477,7 +466,7 @@ impl Routing {
 
         if action == "bail" {
             #[cfg(feature = "stats")]
-            crate::metrics::inc_loop_detected();
+            node_lib::metrics::inc_loop_detected();
             tracing::warn!(
                 pkt_from = %pkt_from,
                 message_sender = %sender,
@@ -562,72 +551,23 @@ impl Routing {
 
         let reply = Ok(Some(vec![ReplyType::WireFlat(wire)]));
 
-        match (old_route, self.get_route_to(Some(sender))) {
-            (None, Some(new_route)) => {
-                tracing::event!(
-                    Level::INFO,
-                    from = %mac,
-                    to = %sender,
-                    through = %new_route,
-                    hops = new_route.hops,
-                    "Route discovered",
-                );
-            }
-            (_, None) => (),
-            (Some(old_route), Some(new_route)) => {
-                if old_route.mac != new_route.mac {
-                    tracing::event!(
-                        Level::INFO,
-                        from = %mac,
-                        to = %sender,
-                        through = %new_route,
-                        was_through = %old_route,
-                        old_hops = old_route.hops,
-                        new_hops = new_route.hops,
-                        "Route changed",
-                    );
-                    // Do not clear cached upstream; hysteresis in get_route_to will decide switching.
-                }
-            }
-        }
+        let new_route = self.get_route_to(Some(sender));
+        Self::log_route_change(old_route, new_route, mac, sender, true, "Route discovered");
 
         if sender != pkt.from()? {
-            match (old_route_from, self.get_route_to(Some(pkt.from()?))) {
-                (None, Some(new_route)) => {
-                    tracing::event!(
-                        Level::DEBUG,
-                        from = %mac,
-                        to = %pkt.from()?,
-                        through = %new_route,
-                        "route created on heartbeat reply",
-                    );
-                }
-                (_, None) => (),
-                (Some(old_route_from), Some(new_route)) => {
-                    if old_route_from.mac != new_route.mac {
-                        tracing::event!(
-                            Level::INFO,
-                            from = %mac,
-                            to = %pkt.from()?,
-                            through = %new_route,
-                            was_through = %old_route_from,
-                            old_hops = old_route_from.hops,
-                            new_hops = new_route.hops,
-                            "Route changed",
-                        );
-                        // Do not clear cached upstream; hysteresis in get_route_to will decide switching.
-                    }
-                }
-            }
+            let new_route_from = self.get_route_to(Some(pkt.from()?));
+            Self::log_route_change(
+                old_route_from,
+                new_route_from,
+                mac,
+                pkt.from()?,
+                false,
+                "route created on heartbeat reply",
+            );
         }
 
         reply
     }
-
-    // ============================================================================
-    // SECTION 4: Route Selection and Lookup (424 lines)
-    // Complex logic for finding best routes with latency-based scoring and hysteresis
-    // ============================================================================
 
     /// Find the best route to a target MAC address with hysteresis.
     ///
@@ -1079,7 +1019,7 @@ impl Routing {
             self.cache.set_candidates(candidates);
         }
         #[cfg(feature = "stats")]
-        crate::metrics::inc_cache_select();
+        node_lib::metrics::inc_cache_select();
         Some(route)
     }
 }
