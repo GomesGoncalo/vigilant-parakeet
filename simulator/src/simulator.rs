@@ -19,7 +19,7 @@ use rand::Rng;
 use std::str::FromStr;
 use std::{
     collections::HashMap,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 use tokio::sync::mpsc;
@@ -357,6 +357,9 @@ pub struct Simulator {
     #[cfg_attr(not(feature = "webview"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     nodes: HashMap<String, (Arc<Device>, Arc<Tun>, SimNode)>,
+    /// Keep external tun interfaces alive for RSU nodes
+    #[allow(dead_code)]
+    external_tuns: HashMap<String, Arc<Tun>>,
 }
 
 type CallbackReturn = Result<(Arc<Device>, Arc<Tun>, SimNode)>;
@@ -370,6 +373,7 @@ impl Simulator {
         HashMap<String, HashMap<String, Arc<Channel>>>,
         Vec<NamespaceWrapper>,
         HashMap<String, (Arc<Device>, Arc<Tun>, SimNode)>,
+        HashMap<String, Arc<Tun>>,
     )> {
         let settings = Config::builder()
             .add_source(config::File::with_name(config_file))
@@ -405,12 +409,18 @@ impl Simulator {
             .collect();
 
         Ok(nodes.iter().fold(
-            (HashMap::default(), Vec::default(), HashMap::default()),
-            |(channels, mut namespaces, mut node_map), (node, node_params)| {
+            (
+                HashMap::default(),
+                Vec::default(),
+                HashMap::default(),
+                HashMap::default(),
+            ),
+            |(channels, mut namespaces, mut node_map, external_tuns_map), (node, node_params)| {
                 let Ok(device) =
                     Self::create_namespaces(&mut namespaces, node, node_params, callback.clone())
                 else {
-                    return (channels, namespaces, node_map);
+                    tracing::error!(node = %node, "Failed to create node namespace");
+                    return (channels, namespaces, node_map, external_tuns_map);
                 };
 
                 // Insert node into node_map for later querying.
@@ -438,6 +448,7 @@ impl Simulator {
                         }),
                     namespaces,
                     node_map,
+                    external_tuns_map,
                 )
             },
         ))
@@ -452,25 +463,37 @@ impl Simulator {
         let node_name = format!("sim_ns_{node}");
         let ns = NamespaceWrapper::new(NetNs::new(node_name.clone())?);
         let Some(nsi) = ns.0.as_ref() else {
-            bail!("no namespace");
+            bail!("no namespace for node {}", node);
         };
         // Avoid creating an &&str by passing `node` directly
-        let Ok(Ok(device)) = nsi.run(|_| callback(node, node_type)) else {
-            bail!("error creating namespace");
+        let device = match nsi.run(|_| callback(node, node_type)) {
+            Ok(Ok(dev)) => dev,
+            Ok(Err(e)) => bail!("callback failed for node {}: {}", node, e),
+            Err(e) => bail!("namespace run failed for node {}: {}", node, e),
         };
         ns_list.push(ns);
         Ok(device)
     }
 
-    pub fn new<F>(args: &SimArgs, callback: F) -> Result<Self>
+    pub fn new<F>(
+        args: &SimArgs,
+        callback: F,
+        external_tuns: Arc<Mutex<HashMap<String, Arc<Tun>>>>,
+    ) -> Result<Self>
     where
         F: Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
     {
-        let (channels, namespaces, nodes) = Self::parse_topology(&args.config_file, callback)?;
+        let (channels, namespaces, nodes, _) = Self::parse_topology(&args.config_file, callback)?;
+        // Extract external_tuns after all callbacks have completed
+        let external_tuns_map = external_tuns
+            .lock()
+            .map_err(|e| anyhow::anyhow!("external_tuns mutex poisoned: {}", e))?
+            .clone();
         Ok(Self {
             _namespaces: namespaces,
             channels,
             nodes,
+            external_tuns: external_tuns_map,
         })
     }
 

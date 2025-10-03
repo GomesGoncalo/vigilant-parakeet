@@ -41,6 +41,7 @@ namespaces) and the `visualization` UI (browser-based dashboard).
 
 - Run many instances of `node_lib` inside isolated Linux network namespaces
 - Simulate per-link latency and packet loss
+- **External tap interfaces for RSU nodes** - Connect RSUs to external servers via 172.x.x.x network (see [docs/EXTERNAL_TAP_INTERFACE.md](docs/EXTERNAL_TAP_INTERFACE.md))
 - HTTP API for runtime stats and for changing channel parameters
 - Browser visualization (in `visualization/`) to monitor traffic and change
   parameters interactively (optional `webview` feature)
@@ -124,6 +125,9 @@ node_type: Rsu
 hello_history: 10
 hello_periodicity: 5000
 ip: 10.0.0.1
+# Optional: External tap interface for server connectivity
+external_tap_ip: 172.16.0.1
+external_tap_name: ext_rsu1
 ```
 
 Example node config for an OBU (`n2.yaml`):
