@@ -8,6 +8,9 @@ pub mod control;
 
 pub use control::Rsu;
 
+#[cfg(any(test, feature = "test_helpers"))]
+pub mod test_helpers;
+
 use anyhow::Result;
 use common::device::Device;
 use common::tun::Tun;

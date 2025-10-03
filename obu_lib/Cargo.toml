@@ -35,3 +35,4 @@ test_helpers = [ "common/test_helpers", "node_lib/test_helpers" ]
 criterion = "0.5"
 common = { path = "../common/" }
 proptest = "1.0"
+node_lib = { path = "../node_lib", features = ["test_helpers"] }

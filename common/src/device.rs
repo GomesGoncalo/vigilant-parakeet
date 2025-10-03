@@ -16,16 +16,17 @@ mod test_fd_registry {
     pub fn unregister_owned_fd(_fd: RawFd) {
         // no-op in this shim
     }
+}
 
-    pub fn close_raw_fd(fd: RawFd) {
-        unsafe {
-            libc::close(fd);
-        }
+#[cfg(any(test, feature = "test_helpers"))]
+pub fn close_raw_fd(fd: std::os::unix::io::RawFd) {
+    unsafe {
+        libc::close(fd);
     }
 }
 
 #[cfg(any(test, feature = "test_helpers"))]
-use test_fd_registry::{close_raw_fd, register_owned_fd, unregister_owned_fd};
+use test_fd_registry::{register_owned_fd, unregister_owned_fd};
 
 use futures::ready;
 #[cfg(all(not(test), not(feature = "test_helpers")))]
@@ -39,7 +40,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::convert::TryFrom;
 use std::io;
 use std::io::{ErrorKind, IoSlice, Read, Write};
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "test_helpers")))]
 use std::os::unix::io::IntoRawFd;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::pin::Pin;
