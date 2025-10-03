@@ -3,23 +3,12 @@
 //! Tests for upstream caching and failover functionality.
 
 use super::super::routing::Routing;
-use crate::args::{ObuArgs, ObuParameters};
 use mac_address::MacAddress;
 use tokio::time::{Duration, Instant};
 
 #[test]
 fn select_and_cache_upstream_sets_cache() {
-    let args = ObuArgs {
-        bind: String::default(),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        obu_params: ObuParameters {
-            hello_history: 2,
-            cached_candidates: 3,
-            enable_encryption: false,
-        },
-    };
+    let args = crate::test_helpers::mk_test_obu_args();
 
     let boot = Instant::now() - Duration::from_secs(1);
     let mut routing = Routing::new(&args, &boot).expect("routing built");
@@ -57,17 +46,7 @@ fn select_and_cache_upstream_sets_cache() {
 
 #[test]
 fn failover_promotes_next_candidate() {
-    let args = ObuArgs {
-        bind: String::default(),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        obu_params: ObuParameters {
-            hello_history: 2,
-            cached_candidates: 3,
-            enable_encryption: false,
-        },
-    };
+    let args = crate::test_helpers::mk_test_obu_args();
 
     let boot = Instant::now() - Duration::from_secs(1);
     let mut routing = Routing::new(&args, &boot).expect("routing built");

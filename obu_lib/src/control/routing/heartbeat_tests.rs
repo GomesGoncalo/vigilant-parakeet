@@ -3,7 +3,6 @@
 //! Tests for heartbeat and heartbeat reply message handling.
 
 use super::super::routing::Routing;
-use crate::args::{ObuArgs, ObuParameters};
 use mac_address::MacAddress;
 use node_lib::messages::{
     control::heartbeat::Heartbeat, control::heartbeat::HeartbeatReply, control::Control,
@@ -13,17 +12,7 @@ use tokio::time::{Duration, Instant};
 
 #[test]
 fn handle_heartbeat_creates_route_and_returns_replies() {
-    let args = ObuArgs {
-        bind: String::default(),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        obu_params: ObuParameters {
-            hello_history: 2,
-            cached_candidates: 3,
-            enable_encryption: false,
-        },
-    };
+    let args = crate::test_helpers::mk_test_obu_args();
 
     let boot = Instant::now();
     let mut routing = Routing::new(&args, &boot).expect("routing built");
@@ -52,17 +41,7 @@ fn handle_heartbeat_creates_route_and_returns_replies() {
 
 #[test]
 fn handle_heartbeat_reply_updates_downstream_and_replies() {
-    let args = ObuArgs {
-        bind: String::default(),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        obu_params: ObuParameters {
-            hello_history: 2,
-            cached_candidates: 3,
-            enable_encryption: false,
-        },
-    };
+    let args = crate::test_helpers::mk_test_obu_args();
 
     let boot = Instant::now();
     let mut routing = Routing::new(&args, &boot).expect("routing built");

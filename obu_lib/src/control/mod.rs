@@ -386,17 +386,7 @@ mod obu_tests {
 
     #[test]
     fn upstream_with_no_cached_upstream_returns_none() {
-        let args = crate::args::ObuArgs {
-            bind: String::new(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: crate::args::ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
+        let args = crate::test_helpers::mk_test_obu_args();
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             Routing::new(&args, &boot).expect("routing"),
@@ -414,17 +404,7 @@ mod obu_tests {
 
     #[test]
     fn downstream_to_self_returns_tap() {
-        let args = crate::args::ObuArgs {
-            bind: String::new(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: crate::args::ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
+        let args = crate::test_helpers::mk_test_obu_args();
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             Routing::new(&args, &boot).expect("routing"),
@@ -452,17 +432,7 @@ mod obu_tests {
 
     #[test]
     fn upstream_with_cached_upstream_returns_wire() {
-        let args = crate::args::ObuArgs {
-            bind: String::new(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: crate::args::ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
+        let args = crate::test_helpers::mk_test_obu_args();
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             Routing::new(&args, &boot).expect("routing"),
@@ -504,17 +474,7 @@ mod obu_tests {
 
     #[test]
     fn heartbeat_generates_forward_and_reply() {
-        let args = crate::args::ObuArgs {
-            bind: String::new(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: crate::args::ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
+        let args = crate::test_helpers::mk_test_obu_args();
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             Routing::new(&args, &boot).expect("routing"),
@@ -542,17 +502,7 @@ mod obu_tests {
 
     #[test]
     fn heartbeat_reply_updates_routing_and_replies() {
-        let args = crate::args::ObuArgs {
-            bind: String::new(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: crate::args::ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
+        let args = crate::test_helpers::mk_test_obu_args();
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             Routing::new(&args, &boot).expect("routing"),
@@ -594,17 +544,7 @@ mod obu_tests {
 
     #[test]
     fn downstream_to_other_forwards_wire_when_route_exists() {
-        let args = crate::args::ObuArgs {
-            bind: String::new(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: crate::args::ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
+        let args = crate::test_helpers::mk_test_obu_args();
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             Routing::new(&args, &boot).expect("routing"),
@@ -648,17 +588,7 @@ mod obu_tests {
 
     #[test]
     fn downstream_to_other_returns_none_when_no_route() {
-        let args = crate::args::ObuArgs {
-            bind: String::new(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            obu_params: crate::args::ObuParameters {
-                hello_history: 2,
-                cached_candidates: 3,
-                enable_encryption: false,
-            },
-        };
+        let args = crate::test_helpers::mk_test_obu_args();
         let boot = Instant::now();
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
             Routing::new(&args, &boot).expect("routing"),

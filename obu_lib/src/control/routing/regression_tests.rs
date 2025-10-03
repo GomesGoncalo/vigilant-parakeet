@@ -3,7 +3,6 @@
 //! Tests for specific bug fixes and edge cases discovered during development.
 
 use super::super::routing::Routing;
-use crate::args::{ObuArgs, ObuParameters};
 use mac_address::MacAddress;
 use node_lib::messages::control::heartbeat::{Heartbeat, HeartbeatReply};
 use node_lib::messages::{control::Control, message::Message, packet_type::PacketType};
@@ -17,17 +16,7 @@ use tokio::time::Instant;
 // when pkt.from() == next_upstream but message.sender() != next_upstream.
 #[test]
 fn heartbeat_reply_from_next_hop_does_not_bail() {
-    let args = ObuArgs {
-        bind: String::default(),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        obu_params: ObuParameters {
-            hello_history: 2,
-            cached_candidates: 3,
-            enable_encryption: false,
-        },
-    };
+    let args = crate::test_helpers::mk_test_obu_args();
 
     let boot = Instant::now();
     let mut routing = Routing::new(&args, &boot).expect("routing built");
@@ -72,17 +61,7 @@ fn heartbeat_reply_from_next_hop_does_not_bail() {
 
 #[test]
 fn heartbeat_reply_from_sender_triggers_bail() {
-    let args = ObuArgs {
-        bind: String::default(),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        obu_params: ObuParameters {
-            hello_history: 2,
-            cached_candidates: 3,
-            enable_encryption: false,
-        },
-    };
+    let args = crate::test_helpers::mk_test_obu_args();
 
     let boot = Instant::now();
     let mut routing = Routing::new(&args, &boot).expect("routing built");

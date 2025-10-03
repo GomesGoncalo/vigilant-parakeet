@@ -10,17 +10,7 @@ use tokio::time::{Duration, Instant};
 
 #[test]
 fn get_route_to_none_when_empty() {
-    let args = ObuArgs {
-        bind: String::default(),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        obu_params: ObuParameters {
-            hello_history: 2,
-            cached_candidates: 3,
-            enable_encryption: false,
-        },
-    };
+    let args = crate::test_helpers::mk_test_obu_args();
 
     let boot = Instant::now();
     let routing = Routing::new(&args, &boot).expect("routing built");
@@ -35,17 +25,7 @@ fn get_route_to_none_when_empty() {
 #[test]
 fn tie_break_prefers_lower_mac_when_scores_equal() {
     // Build args and routing
-    let args = ObuArgs {
-        bind: String::default(),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        obu_params: ObuParameters {
-            hello_history: 2,
-            cached_candidates: 3,
-            enable_encryption: false,
-        },
-    };
+    let args = crate::test_helpers::mk_test_obu_args();
     let boot = Instant::now() - Duration::from_secs(1);
     let mut routing = Routing::new(&args, &boot).expect("routing built");
 
@@ -98,17 +78,7 @@ fn tie_break_prefers_lower_mac_when_scores_equal() {
 
 #[test]
 fn none_latency_handling_prefers_min_and_none_ignored_in_avg() {
-    let args = ObuArgs {
-        bind: String::default(),
-        tap_name: None,
-        ip: None,
-        mtu: 1500,
-        obu_params: ObuParameters {
-            hello_history: 2,
-            cached_candidates: 3,
-            enable_encryption: false,
-        },
-    };
+    let args = crate::test_helpers::mk_test_obu_args();
     let boot = Instant::now() - Duration::from_secs(1);
     let mut routing = Routing::new(&args, &boot).expect("routing built");
 
