@@ -206,14 +206,23 @@ impl Simulator {
             if let Some(Ok((buf, size, node, channel))) = future_set.next().await {
                 if let Some(connections) = channel_map_vec.get(&node) {
                     for channel in connections {
+                        let from = channel.from();
+                        let to = channel.to();
                         match channel.send(buf, size).await {
                             Ok(_) => {
-                                self.metrics.record_packet_sent();
+                                self.metrics.record_packet_sent_for_channel(from, to, size);
                                 // Record the latency that will be applied to this packet
                                 let params = channel.params();
                                 self.metrics.record_packet_delayed(params.latency);
+                                self.metrics.record_latency_for_channel(from, to, params.latency);
                             }
-                            Err(_) => self.metrics.record_packet_dropped(),
+                            Err(crate::channel::ChannelError::Dropped) => {
+                                // Count actual packet loss
+                                self.metrics.record_packet_dropped_for_channel(from, to);
+                            }
+                            Err(crate::channel::ChannelError::Filtered) => {
+                                // Silently ignore filtered packets - that's expected MAC filtering
+                            }
                         }
                     }
                 }

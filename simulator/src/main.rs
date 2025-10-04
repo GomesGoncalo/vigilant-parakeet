@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let simulator = Simulator::new(&args, |_name, config| {
+    let simulator = std::sync::Arc::new(Simulator::new(&args, |_name, config| {
         let Some(config) = config.get("config_path") else {
             bail!("no config for node");
         };
@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
 
         // Return complete NodeInterfaces (no more dummy tuns needed!)
         Ok((result.device, result.interfaces, result.node))
-    })?;
+    })?);
 
     // Note: Server nodes are started synchronously in their namespace context during creation
     // via Server::start() in create_node_from_settings(), ensuring the socket binds within
@@ -117,16 +117,18 @@ async fn main() -> Result<()> {
                 warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
             });
 
+            // Clone simulator for both TUI and simulator task
+            let sim_for_task = simulator.clone();
+            let tui_sim = simulator.clone();
             // Run simulator in background
             let sim_handle = tokio::spawn(async move {
-                let _ = simulator.run().await;
+                let _ = sim_for_task.run().await;
             });
-
             let tui_handle = tokio::spawn(async move {
-                if let Err(e) = tui::run_tui(metrics, log_buffer).await {
-                    tracing::error!("TUI error: {}", e);
-                }
-            });
+                    if let Err(e) = tui::run_tui(metrics, log_buffer, tui_sim).await {
+                        tracing::error!("TUI error: {}", e);
+                    }
+                });
 
             // Wait for either TUI, simulator, or webview to exit
             tokio::select! {
@@ -140,8 +142,9 @@ async fn main() -> Result<()> {
         // No webview feature - just TUI and simulator
         #[cfg(not(feature = "webview"))]
         {
+            let nodes = simulator.get_nodes();
             let tui_handle = tokio::spawn(async move {
-                if let Err(e) = tui::run_tui(metrics, log_buffer).await {
+                if let Err(e) = tui::run_tui(metrics, log_buffer, nodes).await {
                     tracing::error!("TUI error: {}", e);
                 }
             });

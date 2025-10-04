@@ -18,8 +18,59 @@
 //! println!("Average latency: {:.2}ms", summary.avg_latency_ms);
 //! ```
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// Per-channel packet statistics (from source -> destination)
+#[derive(Debug, Clone, Default)]
+pub struct ChannelStats {
+    /// Number of packets successfully delivered through this channel
+    pub packets_sent: u64,
+    /// Number of packets dropped on this channel (due to simulated loss)
+    pub packets_dropped: u64,
+    /// Total bytes sent through this channel
+    pub bytes_sent: u64,
+    /// Cumulative latency in microseconds for this channel
+    pub total_latency_us: u64,
+    /// Number of packets delayed on this channel
+    pub packets_delayed: u64,
+    /// Rolling window of (timestamp, bytes) for throughput calculation (last 10 seconds)
+    pub throughput_window: VecDeque<(Instant, u64)>,
+}
+
+impl ChannelStats {
+    /// Calculate throughput over the last `n` seconds in bytes per second
+    #[allow(dead_code)]
+    pub fn throughput_last(&self, n: u32) -> f64 {
+        let now = Instant::now();
+        let cutoff = now - Duration::from_secs(n.into());
+
+        // Sum bytes from entries within the last `n` seconds
+        let total_bytes: u64 = self.throughput_window
+            .iter()
+            .filter(|(timestamp, _)| *timestamp >= cutoff)
+            .map(|(_, bytes)| bytes)
+            .sum();
+        
+        // Calculate actual time span of data
+        let oldest_timestamp = self.throughput_window
+            .iter()
+            .filter(|(timestamp, _)| *timestamp >= cutoff)
+            .map(|(timestamp, _)| *timestamp)
+            .min();
+        
+        if let Some(oldest) = oldest_timestamp {
+            let time_span = now.duration_since(oldest).as_secs_f64();
+            if time_span > 0.0 {
+                return total_bytes as f64 / time_span;
+            }
+        }
+        
+        0.0
+    }
+}
 
 /// Real-time metrics for simulation observability.
 ///
@@ -41,6 +92,8 @@ pub struct SimulatorMetrics {
     active_channels: AtomicU64,
     /// Number of active nodes
     active_nodes: AtomicU64,
+    /// Per-channel statistics (key: "source->destination")
+    channel_stats: Mutex<HashMap<String, ChannelStats>>,
 }
 
 impl SimulatorMetrics {
@@ -54,17 +107,66 @@ impl SimulatorMetrics {
             total_latency_us: AtomicU64::new(0),
             active_channels: AtomicU64::new(0),
             active_nodes: AtomicU64::new(0),
+            channel_stats: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Record a successfully sent packet.
+    /// Record a successfully sent packet for a specific channel.
+    pub fn record_packet_sent_for_channel(&self, from: &str, to: &str, bytes: usize) {
+        self.packets_sent.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut stats) = self.channel_stats.lock() {
+            let key = format!("{}->{}", from, to);
+            let entry = stats.entry(key).or_default();
+            
+            let now = Instant::now();
+            
+            // Add new data point to throughput window
+            entry.throughput_window.push_back((now, bytes as u64));
+            
+            // Remove entries older than 10 seconds
+            let cutoff = now - Duration::from_secs(10);
+            while let Some((timestamp, _)) = entry.throughput_window.front() {
+                if *timestamp < cutoff {
+                    entry.throughput_window.pop_front();
+                } else {
+                    break;
+                }
+            }
+            
+            entry.packets_sent += 1;
+            entry.bytes_sent += bytes as u64;
+        }
+    }
+
+    /// Record a successfully sent packet (global counter).
+    #[allow(dead_code)]
     pub fn record_packet_sent(&self) {
         self.packets_sent.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a dropped packet.
+    /// Record a dropped packet for a specific channel.
+    pub fn record_packet_dropped_for_channel(&self, from: &str, to: &str) {
+        self.packets_dropped.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut stats) = self.channel_stats.lock() {
+            let key = format!("{}->{}", from, to);
+            stats.entry(key).or_default().packets_dropped += 1;
+        }
+    }
+
+    /// Record a dropped packet (global counter).
+    #[allow(dead_code)]
     pub fn record_packet_dropped(&self) {
         self.packets_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record latency for a specific channel.
+    pub fn record_latency_for_channel(&self, from: &str, to: &str, latency: Duration) {
+        if let Ok(mut stats) = self.channel_stats.lock() {
+            let key = format!("{}->{}", from, to);
+            let entry = stats.entry(key).or_default();
+            entry.total_latency_us += latency.as_micros() as u64;
+            entry.packets_delayed += 1;
+        }
     }
 
     /// Record a delayed packet with its latency.
@@ -86,6 +188,18 @@ impl SimulatorMetrics {
     /// Set the number of active nodes.
     pub fn set_active_nodes(&self, count: u64) {
         self.active_nodes.store(count, Ordering::Relaxed);
+    }
+
+    /// Get the elapsed time since metrics collection started.
+    #[allow(dead_code)]
+    pub fn elapsed_time(&self) -> Duration {
+        self.start_time.elapsed()
+    }
+
+    /// Get per-channel statistics snapshot.
+    #[allow(dead_code)]
+    pub fn channel_stats(&self) -> HashMap<String, ChannelStats> {
+        self.channel_stats.lock().unwrap().clone()
     }
 
     /// Get current metrics summary.

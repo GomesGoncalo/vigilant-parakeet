@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 # Build the simulator release binary
-cargo build --bin simulator --release --features webview
+cargo build --bin simulator --release --features webview --features tui
 
 # Prefer examples/simulator.yaml if present
 if [ -f "examples/simulator.yaml" ]; then
@@ -18,4 +18,4 @@ else
   exit 1
 fi
 
-sudo RUST_LOG="info" "$ROOT_DIR/target/release/simulator" --config-file "$CONFIG" --pretty
+sudo RUST_LOG="info" "$ROOT_DIR/target/release/simulator" --config-file "$CONFIG" --pretty --tui

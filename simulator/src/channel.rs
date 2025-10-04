@@ -3,7 +3,7 @@
 //! This module provides a Channel abstraction that simulates network conditions between nodes,
 //! including latency delays, jitter variation, and probabilistic packet loss.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use common::channel_parameters::ChannelParameters;
 use common::tun::Tun;
 use mac_address::MacAddress;
@@ -15,6 +15,15 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tokio::time::Instant;
+
+/// Channel send error types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelError {
+    /// Packet was filtered due to MAC address mismatch (normal operation)
+    Filtered,
+    /// Packet was dropped due to simulated packet loss
+    Dropped,
+}
 
 #[cfg(any(test, feature = "webview"))]
 use anyhow::Context;
@@ -44,6 +53,10 @@ pub struct Channel {
     parameters: RwLock<ChannelParameters>,
     mac: MacAddress,
     tun: Arc<Tun>,
+    /// Source node name
+    from: String,
+    /// Destination node name
+    to: String,
 }
 
 impl Channel {
@@ -53,6 +66,16 @@ impl Channel {
             .parameters
             .read()
             .expect("channel parameters lock poisoned")
+    }
+
+    /// Get source node name
+    pub fn from(&self) -> &str {
+        &self.from
+    }
+
+    /// Get destination node name
+    pub fn to(&self) -> &str {
+        &self.to
     }
 
     /// Update channel parameters dynamically
@@ -117,6 +140,8 @@ impl Channel {
             parameters: parameters.into(),
             mac,
             tun,
+            from: from.clone(),
+            to: to.clone(),
         });
         let thisc = this.clone();
 
@@ -188,30 +213,29 @@ impl Channel {
     /// # Errors
     ///
     /// Returns an error if:
-    /// - Packet MAC address doesn't match (not broadcast or this channel's MAC)
-    /// - Packet is randomly dropped due to configured loss rate
+    /// - Packet MAC address doesn't match (not broadcast or this channel's MAC) - returns ChannelError::Filtered
+    /// - Packet is randomly dropped due to configured loss rate - returns ChannelError::Dropped
     /// - Channel send fails (should not happen with unbounded channel)
-    pub async fn send(&self, packet: [u8; PACKET_BUFFER_SIZE], size: usize) -> Result<()> {
+    pub async fn send(&self, packet: [u8; PACKET_BUFFER_SIZE], size: usize) -> Result<(), ChannelError> {
         self.should_send(&packet[..size])?;
 
         // Send packet through unbounded channel - no blocking on fast path
-        self.tx
-            .send(Packet {
-                packet,
-                size,
-                instant: Instant::now(),
-            })
-            .map_err(|_| anyhow::anyhow!("channel send failed"))?;
+        // This should never fail with unbounded channel unless receiver is dropped
+        let _ = self.tx.send(Packet {
+            packet,
+            size,
+            instant: Instant::now(),
+        });
 
         Ok(())
     }
 
     /// Check if packet should be sent based on MAC filter and loss rate
-    fn should_send(&self, buf: &[u8]) -> Result<()> {
+    fn should_send(&self, buf: &[u8]) -> Result<(), ChannelError> {
         let bcast = vec![255; 6];
         let unicast = self.mac.bytes();
         if buf[0..6] != bcast && buf[0..6] != unicast {
-            bail!("not the right mac address")
+            return Err(ChannelError::Filtered);
         }
 
         let loss = self
@@ -222,7 +246,7 @@ impl Channel {
         if loss > 0.0 {
             let mut rng = rand::rng();
             if rng.random::<f64>() < loss {
-                bail!("packet lost")
+                return Err(ChannelError::Dropped);
             }
         }
 

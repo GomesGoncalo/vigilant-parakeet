@@ -593,11 +593,12 @@ impl Routing {
     /// Returns None if no route exists.
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
         let Some(target_mac) = mac else {
-            return self.cache.get_cached_upstream().map(|mac| Route {
-                hops: 1,
-                mac,
-                latency: None,
-            });
+            // If we have a cached upstream MAC, compute the full route to it
+            // (hops/latency) by delegating to the regular selection path.
+            if let Some(cached_mac) = self.cache.get_cached_upstream() {
+                return self.get_route_to(Some(cached_mac));
+            }
+            return None;
         };
         // If the target_mac is not an RSU we've recorded heartbeats for, attempt to
         // compute a route toward this node using downstream observations across all
