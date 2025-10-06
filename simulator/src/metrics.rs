@@ -48,26 +48,28 @@ impl ChannelStats {
         let cutoff = now - Duration::from_secs(n.into());
 
         // Sum bytes from entries within the last `n` seconds
-        let total_bytes: u64 = self.throughput_window
+        let total_bytes: u64 = self
+            .throughput_window
             .iter()
             .filter(|(timestamp, _)| *timestamp >= cutoff)
             .map(|(_, bytes)| bytes)
             .sum();
-        
+
         // Calculate actual time span of data
-        let oldest_timestamp = self.throughput_window
+        let oldest_timestamp = self
+            .throughput_window
             .iter()
             .filter(|(timestamp, _)| *timestamp >= cutoff)
             .map(|(timestamp, _)| *timestamp)
             .min();
-        
+
         if let Some(oldest) = oldest_timestamp {
             let time_span = now.duration_since(oldest).as_secs_f64();
             if time_span > 0.0 {
                 return total_bytes as f64 / time_span;
             }
         }
-        
+
         0.0
     }
 }
@@ -117,12 +119,12 @@ impl SimulatorMetrics {
         if let Ok(mut stats) = self.channel_stats.lock() {
             let key = format!("{}->{}", from, to);
             let entry = stats.entry(key).or_default();
-            
+
             let now = Instant::now();
-            
+
             // Add new data point to throughput window
             entry.throughput_window.push_back((now, bytes as u64));
-            
+
             // Remove entries older than 10 seconds
             let cutoff = now - Duration::from_secs(10);
             while let Some((timestamp, _)) = entry.throughput_window.front() {
@@ -132,7 +134,7 @@ impl SimulatorMetrics {
                     break;
                 }
             }
-            
+
             entry.packets_sent += 1;
             entry.bytes_sent += bytes as u64;
         }
@@ -338,7 +340,7 @@ mod tests {
     fn metrics_starts_empty() {
         let metrics = SimulatorMetrics::new();
         let summary = metrics.summary();
-        
+
         assert_eq!(summary.packets_sent, 0);
         assert_eq!(summary.packets_dropped, 0);
         assert_eq!(summary.total_packets, 0);
@@ -350,7 +352,7 @@ mod tests {
         let metrics = SimulatorMetrics::new();
         metrics.record_packet_sent();
         metrics.record_packet_sent();
-        
+
         let summary = metrics.summary();
         assert_eq!(summary.packets_sent, 2);
         assert_eq!(summary.total_packets, 2);
@@ -361,7 +363,7 @@ mod tests {
         let metrics = SimulatorMetrics::new();
         metrics.record_packet_sent();
         metrics.record_packet_dropped();
-        
+
         let summary = metrics.summary();
         assert_eq!(summary.packets_sent, 1);
         assert_eq!(summary.packets_dropped, 1);
@@ -378,7 +380,7 @@ mod tests {
         for _ in 0..3 {
             metrics.record_packet_dropped();
         }
-        
+
         let summary = metrics.summary();
         assert_eq!(summary.drop_rate, 30.0); // 3/10 = 30%
     }
@@ -388,7 +390,7 @@ mod tests {
         let metrics = SimulatorMetrics::new();
         metrics.record_packet_delayed(Duration::from_millis(10));
         metrics.record_packet_delayed(Duration::from_millis(20));
-        
+
         let summary = metrics.summary();
         assert_eq!(summary.packets_delayed, 2);
         assert_eq!(summary.avg_latency_ms(), 15.0); // (10+20)/2 = 15
@@ -399,7 +401,7 @@ mod tests {
         let metrics = SimulatorMetrics::new();
         metrics.set_active_nodes(5);
         metrics.set_active_channels(10);
-        
+
         let summary = metrics.summary();
         assert_eq!(summary.active_nodes, 5);
         assert_eq!(summary.active_channels, 10);
@@ -408,14 +410,14 @@ mod tests {
     #[test]
     fn calculates_throughput() {
         let metrics = SimulatorMetrics::new();
-        
+
         // Wait a bit to have measurable uptime
         thread::sleep(Duration::from_millis(100));
-        
+
         for _ in 0..10 {
             metrics.record_packet_sent();
         }
-        
+
         let summary = metrics.summary();
         assert!(summary.packets_per_second() > 0.0);
         assert!(summary.packets_per_second() < 1000.0); // Reasonable bound
@@ -427,9 +429,9 @@ mod tests {
         metrics.record_packet_sent();
         metrics.record_packet_dropped();
         metrics.record_packet_delayed(Duration::from_millis(10));
-        
+
         metrics.reset();
-        
+
         let summary = metrics.summary();
         assert_eq!(summary.packets_sent, 0);
         assert_eq!(summary.packets_dropped, 0);
@@ -442,10 +444,10 @@ mod tests {
         metrics.set_active_nodes(3);
         metrics.set_active_channels(6);
         metrics.record_packet_sent();
-        
+
         let summary = metrics.summary();
         let formatted = summary.to_string_formatted();
-        
+
         assert!(formatted.contains("Nodes: 3"));
         assert!(formatted.contains("Channels: 6"));
         assert!(formatted.contains("Sent: 1"));

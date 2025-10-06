@@ -21,10 +21,10 @@ mod node_factory;
 mod node_interfaces;
 mod simulator;
 mod topology;
-#[cfg(feature = "webview")]
-mod webview;
 #[cfg(feature = "tui")]
 mod tui;
+#[cfg(feature = "webview")]
+mod webview;
 use node_factory::create_node_from_settings;
 use simulator::Simulator;
 
@@ -37,12 +37,12 @@ async fn main() -> Result<()> {
     let log_buffer = if args.tui {
         let buffer = tui::LogBuffer::new();
         let tui_layer = tui::TuiLogLayer::new(buffer.clone_buffer());
-        
+
         tracing_subscriber::registry()
             .with(tui_layer)
             .with(EnvFilter::from_default_env())
             .init();
-        
+
         Some(buffer)
     } else {
         if args.pretty {
@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
         tracing::info!("Starting TUI dashboard...");
         let metrics = simulator.get_metrics();
         let log_buffer = log_buffer.unwrap().clone_buffer();
-        
+
         // Start webview server if feature is enabled (before moving simulator)
         #[cfg(feature = "webview")]
         {
@@ -125,10 +125,10 @@ async fn main() -> Result<()> {
                 let _ = sim_for_task.run().await;
             });
             let tui_handle = tokio::spawn(async move {
-                    if let Err(e) = tui::run_tui(metrics, log_buffer, tui_sim).await {
-                        tracing::error!("TUI error: {}", e);
-                    }
-                });
+                if let Err(e) = tui::run_tui(metrics, log_buffer, tui_sim).await {
+                    tracing::error!("TUI error: {}", e);
+                }
+            });
 
             // Wait for either TUI, simulator, or webview to exit
             tokio::select! {

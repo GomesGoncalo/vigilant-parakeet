@@ -169,15 +169,15 @@ impl Simulator {
     {
         let (channels, namespaces, nodes, node_namespace_map) =
             Self::parse_topology(&args.config_file, callback)?;
-        
+
         // Initialize metrics
         let metrics = Arc::new(crate::metrics::SimulatorMetrics::new());
         metrics.set_active_nodes(nodes.len() as u64);
-        
+
         // Count total channels
         let total_channels: usize = channels.values().map(|m| m.len()).sum();
         metrics.set_active_channels(total_channels as u64);
-        
+
         Ok(Self {
             namespaces,
             channels,
@@ -214,7 +214,8 @@ impl Simulator {
                                 // Record the latency that will be applied to this packet
                                 let params = channel.params();
                                 self.metrics.record_packet_delayed(params.latency);
-                                self.metrics.record_latency_for_channel(from, to, params.latency);
+                                self.metrics
+                                    .record_latency_for_channel(from, to, params.latency);
                             }
                             Err(crate::channel::ChannelError::Dropped) => {
                                 // Count actual packet loss

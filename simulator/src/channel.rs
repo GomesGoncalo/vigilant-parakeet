@@ -216,7 +216,11 @@ impl Channel {
     /// - Packet MAC address doesn't match (not broadcast or this channel's MAC) - returns ChannelError::Filtered
     /// - Packet is randomly dropped due to configured loss rate - returns ChannelError::Dropped
     /// - Channel send fails (should not happen with unbounded channel)
-    pub async fn send(&self, packet: [u8; PACKET_BUFFER_SIZE], size: usize) -> Result<(), ChannelError> {
+    pub async fn send(
+        &self,
+        packet: [u8; PACKET_BUFFER_SIZE],
+        size: usize,
+    ) -> Result<(), ChannelError> {
         self.should_send(&packet[..size])?;
 
         // Send packet through unbounded channel - no blocking on fast path

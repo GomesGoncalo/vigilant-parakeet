@@ -473,10 +473,25 @@ impl Routing {
         if action == "bail" {
             #[cfg(feature = "stats")]
             node_lib::metrics::inc_loop_detected();
+            // Build a compact snapshot of downstream observations for this
+            // heartbeat sequence to aid debugging (mac -> observed targets count).
+            let downstream_snapshot: Option<Vec<String>> =
+                source_entries
+                    .get(&message.id())
+                    .map(|(_, _nu, _h, _r, downstream)| {
+                        downstream
+                            .iter()
+                            .map(|(mac, vec)| format!("{}:{}", mac, vec.len()))
+                            .collect()
+                    });
+
             tracing::warn!(
                 pkt_from = %pkt_from,
                 message_sender = %sender,
                 next_upstream = %next_upstream_copy,
+                source = %message.source(),
+                seq = message.id(),
+                downstream = ?downstream_snapshot,
                 "Routing loop detected, dropping packet"
             );
             bail!("loop detected");
