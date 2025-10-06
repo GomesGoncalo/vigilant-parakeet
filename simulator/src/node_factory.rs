@@ -1,23 +1,96 @@
 use anyhow::Result;
-use common::tun::Tun;
 use config::Config;
+use server_lib::Server;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use common::device::Device;
 
+use crate::interface_builder::InterfaceBuilder;
+use crate::node_interfaces::{NodeCreationResult, NodeInterfaces};
 use crate::simulator::SimNode;
 
-/// Create a node (Device, virtual_tun, SimNode, optional external_tun) from parsed settings and an existing node tun.
-/// For RSU nodes, optionally creates an additional external tap interface if external_tap_ip is configured.
-/// Returns: (Device, virtual_tun, SimNode, Option<external_tun>)
-#[allow(clippy::type_complexity)]
+/// Create a node with all its interfaces from parsed settings.
+///
+/// Creates all necessary network interfaces within the namespace:
+/// - **OBU**: vanet (VANET medium), virtual (decapsulated traffic)
+/// - **RSU**: vanet (VANET medium), virtual (decapsulated traffic), cloud (infrastructure)
+/// - **Server**: virtual (distributed network), cloud (infrastructure)
+///
+/// All interfaces are created inside this function with consistent naming.
+/// Returns a `NodeCreationResult` containing the device, organized interfaces, and node instance.
 pub fn create_node_from_settings(
     node_type: node_lib::args::NodeType,
     settings: &Config,
-    node_tun: Arc<Tun>,
-) -> Result<(Arc<Device>, Arc<Tun>, SimNode, Option<Arc<Tun>>)> {
+) -> Result<NodeCreationResult> {
+    // Handle Server nodes separately - they receive UDP traffic from RSUs via infrastructure
+    // Server nodes have TWO interfaces:
+    // 1. "virtual" TAP interface: Communicates with OBU virtual devices through the distributed routing network (10.x.x.x)
+    // 2. "cloud" interface: Infrastructure connection where RSUs forward encapsulated traffic (172.x.x.x)
+    // Servers do NOT have a "real" interface - they don't participate in the VANET medium
+    if node_type == node_lib::args::NodeType::Server {
+        let virtual_ip = Ipv4Addr::from_str(&settings.get_string("virtual_ip")?)?;
+        let cloud_ip = Ipv4Addr::from_str(&settings.get_string("cloud_ip")?)?;
+        let port = settings
+            .get_int("port")
+            .ok()
+            .and_then(|p| u16::try_from(p).ok())
+            .unwrap_or(8080);
+
+        tracing::info!(
+            virtual_ip = %virtual_ip,
+            cloud_ip = %cloud_ip,
+            port = port,
+            "Creating Server node (UDP receiver)"
+        );
+
+        // Create virtual TAP interface for distributed network communication with OBUs
+        let virtual_tun = InterfaceBuilder::new("virtual")
+            .with_ip(virtual_ip)
+            .with_mtu(1436) // Match OBU/RSU MTU
+            .build_tap()?;
+
+        // Create cloud interface for infrastructure connection (RSU forwarding)
+        let cloud_tun = InterfaceBuilder::new("cloud")
+            .with_ip(cloud_ip)
+            .with_mtu(1500) // Standard MTU for infrastructure connectivity
+            .build_tap()?;
+
+        let server = Arc::new(Server::new(cloud_ip, port));
+
+        // Start the server immediately in the namespace context using block_in_place
+        // This ensures the socket binds within the correct network namespace
+        // block_in_place allows running async code in a sync context without blocking the executor
+        let server_clone = server.clone();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                if let Err(e) = server_clone.start().await {
+                    tracing::error!(error = %e, "Failed to start server in namespace");
+                    return Err(anyhow::anyhow!("Failed to start server: {}", e));
+                }
+                Ok(())
+            })
+        })?;
+
+        // Create a dummy device for compatibility (servers don't use the Device abstraction)
+        #[cfg(not(feature = "test_helpers"))]
+        let dummy_device = Arc::new(Device::new(virtual_tun.name())?);
+        #[cfg(feature = "test_helpers")]
+        let dummy_device = {
+            let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+            Arc::new(Device::new(tun_a.name())?)
+        };
+
+        // Organize interfaces and return result
+        let interfaces = NodeInterfaces::server(virtual_tun, cloud_tun);
+        return Ok(NodeCreationResult::new(
+            dummy_device,
+            interfaces,
+            SimNode::Server(server),
+        ));
+    }
+
     // Read optional cached_candidates; default to 3 when not present or invalid.
     let cached_candidates = settings
         .get_int("cached_candidates")
@@ -26,77 +99,41 @@ pub fn create_node_from_settings(
         .unwrap_or(3u32);
 
     // Common values used for both Obu and Rsu args
-    let bind = node_tun.name().to_string();
-    let tap_name = Some("virtual".to_string());
-    let ip = Some(Ipv4Addr::from_str(&settings.get_string("ip")?)?);
-    let mtu = 1436;
+    let ip = Ipv4Addr::from_str(&settings.get_string("ip")?)?;
+    let mtu: i32 = 1436;
     let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
     let enable_encryption = settings.get_bool("enable_encryption").unwrap_or(false);
 
-    #[cfg(not(feature = "test_helpers"))]
-    let virtual_tun = Arc::new({
-        let ip_addr = ip.ok_or_else(|| anyhow::anyhow!("IP address is required"))?;
-        let real_tun = if let Some(ref name) = tap_name {
-            tokio_tun::Tun::builder()
-                .tap()
-                .name(name)
-                .address(ip_addr)
-                .mtu(mtu)
-                .up()
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
-        } else {
-            tokio_tun::Tun::builder()
-                .tap()
-                .address(ip_addr)
-                .mtu(mtu)
-                .up()
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no tun devices returned from TokioTun builder"))?
-        };
-        Tun::new_real(real_tun)
-    });
+    // Create VANET interface (the wireless medium where control/data messages flow)
+    let vanet_tun = InterfaceBuilder::new("vanet").build_tap()?;
 
-    #[cfg(feature = "test_helpers")]
-    let virtual_tun = {
-        let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
-        Arc::new(tun_a)
-    };
+    // Create virtual interface (for decapsulated data traffic)
+    let virtual_tun = InterfaceBuilder::new("virtual")
+        .with_ip(ip)
+        .with_mtu(mtu as u16)
+        .build_tap()?;
 
-    let dev = Arc::new(Device::new(node_tun.name())?);
+    // Create Device bound to VANET interface
+    let dev = Arc::new(Device::new(vanet_tun.name())?);
 
-    // For RSU nodes, optionally create an external tap interface for server connectivity
-    // This interface is configured but not actively managed by the RSU - it can be used
-    // by external processes or manual routing rules to connect RSU nodes to external servers
-    #[cfg(not(feature = "test_helpers"))]
-    let external_tun = if node_type == node_lib::args::NodeType::Rsu {
+    // For RSU nodes, create cloud interface for server connectivity
+    // RSUs forward encapsulated traffic to servers via this interface
+    let cloud_tun_opt = if node_type == node_lib::args::NodeType::Rsu {
         // Check if external_tap_ip is configured
         if let Ok(external_ip_str) = settings.get_string("external_tap_ip") {
             let external_ip = Ipv4Addr::from_str(&external_ip_str)?;
 
             tracing::info!(
                 external_ip = %external_ip,
-                "Creating external tap interface for RSU server connectivity"
+                "Creating cloud interface for RSU server connectivity"
             );
 
-            let real_external_tun = tokio_tun::Tun::builder()
-                .tap()
-                .name("cloud")
-                .address(external_ip)
-                .mtu(1500) // Standard MTU for external connectivity
-                .up()
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| {
-                    anyhow::anyhow!("no external tun devices returned from TokioTun builder")
-                })?;
+            let cloud_tun = InterfaceBuilder::new("cloud")
+                .with_ip(external_ip)
+                .with_mtu(1500) // Standard MTU for infrastructure connectivity
+                .build_tap()?;
 
-            Some(Arc::new(Tun::new_real(real_external_tun)))
+            Some(cloud_tun)
         } else {
             None
         }
@@ -104,16 +141,13 @@ pub fn create_node_from_settings(
         None
     };
 
-    #[cfg(feature = "test_helpers")]
-    let external_tun: Option<Arc<Tun>> = None;
-
-    let vt = virtual_tun.clone();
-    let node = if node_type == node_lib::args::NodeType::Obu {
-        // Build ObuArgs directly
+    // Create node instance and organize interfaces
+    if node_type == node_lib::args::NodeType::Obu {
+        // Build ObuArgs
         let obu_args = obu_lib::ObuArgs {
-            bind: bind.clone(),
-            tap_name: tap_name.clone(),
-            ip,
+            bind: vanet_tun.name().to_string(),
+            tap_name: Some("virtual".to_string()),
+            ip: Some(ip),
             mtu,
             obu_params: obu_lib::ObuParameters {
                 hello_history,
@@ -122,17 +156,24 @@ pub fn create_node_from_settings(
             },
         };
 
-        SimNode::Obu(obu_lib::create_with_vdev(
+        let node = SimNode::Obu(obu_lib::create_with_vdev(
             obu_args,
             virtual_tun.clone(),
             dev.clone(),
-        )?)
+        )?);
+
+        let interfaces = NodeInterfaces::obu(vanet_tun, virtual_tun);
+        Ok(NodeCreationResult::new(dev, interfaces, node))
     } else {
-        // Build RsuArgs directly
+        // RSU node
+        let cloud_tun = cloud_tun_opt.ok_or_else(|| {
+            anyhow::anyhow!("RSU node requires external_tap_ip configuration for cloud interface")
+        })?;
+
         let rsu_args = rsu_lib::RsuArgs {
-            bind: bind.clone(),
-            tap_name: tap_name.clone(),
-            ip,
+            bind: vanet_tun.name().to_string(),
+            tap_name: Some("virtual".to_string()),
+            ip: Some(ip),
             mtu,
             rsu_params: rsu_lib::RsuParameters {
                 hello_history,
@@ -147,14 +188,15 @@ pub fn create_node_from_settings(
             },
         };
 
-        SimNode::Rsu(rsu_lib::create_with_vdev(
+        let node = SimNode::Rsu(rsu_lib::create_with_vdev(
             rsu_args,
             virtual_tun.clone(),
             dev.clone(),
-        )?)
-    };
+        )?);
 
-    Ok((dev, vt, node, external_tun))
+        let interfaces = NodeInterfaces::rsu(vanet_tun, virtual_tun, cloud_tun);
+        Ok(NodeCreationResult::new(dev, interfaces, node))
+    }
 }
 
 #[cfg(all(test, feature = "test_helpers"))]
@@ -162,7 +204,6 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use config::FileFormat;
-    use std::sync::Arc;
 
     #[tokio::test]
     async fn create_node_obu_from_settings() -> Result<()> {
@@ -175,31 +216,36 @@ mod tests {
             .add_source(config::File::from_str(toml, FileFormat::Toml))
             .build()?;
 
-        let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
-        let node_tun = Arc::new(tun_a);
+        let result = create_node_from_settings(node_lib::args::NodeType::Obu, &settings)?;
 
-        let (_dev, _vt, _node, _ext_tun) =
-            create_node_from_settings(node_lib::args::NodeType::Obu, &settings, node_tun)?;
+        // Verify OBU has correct interfaces
+        assert!(result.interfaces.vanet().is_some());
+        assert!(result.interfaces.virtual_tap().is_some());
+        assert!(result.interfaces.cloud().is_none());
+
         Ok(())
     }
 
     #[tokio::test]
     async fn create_node_rsu_from_settings() -> Result<()> {
-        // build a minimal config for an RSU (requires hello_periodicity)
+        // build a minimal config for an RSU (requires hello_periodicity and external_tap_ip)
         let toml = r#"
             ip = '10.0.0.2'
             hello_history = 5
             hello_periodicity = 5000
+            external_tap_ip = '172.16.0.1'
         "#;
         let settings = Config::builder()
             .add_source(config::File::from_str(toml, FileFormat::Toml))
             .build()?;
 
-        let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
-        let node_tun = Arc::new(tun_a);
+        let result = create_node_from_settings(node_lib::args::NodeType::Rsu, &settings)?;
 
-        let (_dev, _vt, _node, _ext_tun) =
-            create_node_from_settings(node_lib::args::NodeType::Rsu, &settings, node_tun)?;
+        // Verify RSU has correct interfaces
+        assert!(result.interfaces.vanet().is_some());
+        assert!(result.interfaces.virtual_tap().is_some());
+        assert!(result.interfaces.cloud().is_some());
+
         Ok(())
     }
 }
