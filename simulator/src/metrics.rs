@@ -36,6 +36,8 @@ pub struct ChannelStats {
     pub total_latency_us: u64,
     /// Number of packets delayed on this channel
     pub packets_delayed: u64,
+    /// Recent latency samples in microseconds (for percentile calculations)
+    pub latency_samples: VecDeque<u64>,
     /// Rolling window of (timestamp, bytes) for throughput calculation (last 10 seconds)
     pub throughput_window: VecDeque<(Instant, u64)>,
 }
@@ -168,6 +170,11 @@ impl SimulatorMetrics {
             let entry = stats.entry(key).or_default();
             entry.total_latency_us += latency.as_micros() as u64;
             entry.packets_delayed += 1;
+            // Record sample for percentile estimates; keep last 1000 samples
+            entry.latency_samples.push_back(latency.as_micros() as u64);
+            if entry.latency_samples.len() > 1000 {
+                entry.latency_samples.pop_front();
+            }
         }
     }
 

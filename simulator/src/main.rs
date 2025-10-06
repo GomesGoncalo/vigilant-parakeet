@@ -142,9 +142,10 @@ async fn main() -> Result<()> {
         // No webview feature - just TUI and simulator
         #[cfg(not(feature = "webview"))]
         {
-            let nodes = simulator.get_nodes();
+            // Pass the simulator Arc directly to the TUI (run_tui expects Arc<Simulator>)
+            let tui_sim = simulator.clone();
             let tui_handle = tokio::spawn(async move {
-                if let Err(e) = tui::run_tui(metrics, log_buffer, nodes).await {
+                if let Err(e) = tui::run_tui(metrics, log_buffer, tui_sim).await {
                     tracing::error!("TUI error: {}", e);
                 }
             });
