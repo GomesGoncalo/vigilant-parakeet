@@ -27,6 +27,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use state::TuiState;
+use state::TUI_UPDATES_PER_SECOND;
 use std::{
     collections::VecDeque,
     io,
@@ -88,7 +89,9 @@ async fn run_tui_loop(
     state: &mut TuiState,
     simulator: Arc<crate::simulator::Simulator>,
 ) -> Result<()> {
-    let mut update_interval = interval(Duration::from_millis(250)); // Update 4 times per second
+    // Compute tick interval from TUI_UPDATES_PER_SECOND constant (e.g. 4 Hz -> 250ms)
+    let tick_ms = 1000u64.saturating_div(TUI_UPDATES_PER_SECOND as u64);
+    let mut update_interval = interval(Duration::from_millis(tick_ms));
     update_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {

@@ -9,9 +9,15 @@ use std::{
 
 use super::logging::LogFilter;
 
+/// TUI update frequency in Hz
+pub(crate) const TUI_UPDATES_PER_SECOND: usize = 4;
+
+/// Target history duration in seconds
+const HISTORY_DURATION_SECONDS: usize = 75;
+
 /// Maximum number of history points to keep for sparkline/chart series
-/// (4 updates/sec * 60s = 240 -> choose 300 to keep ~75s of history)
-pub const MAX_HISTORY: usize = 300;
+/// Calculated to hold approximately HISTORY_DURATION_SECONDS of data at TUI_UPDATES_PER_SECOND
+pub const MAX_HISTORY: usize = TUI_UPDATES_PER_SECOND * HISTORY_DURATION_SECONDS;
 
 /// Top-level tabs in the TUI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

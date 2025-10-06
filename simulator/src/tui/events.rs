@@ -139,9 +139,7 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
                     state.log_scroll -= 1;
                 }
                 state.log_auto_scroll = false;
-            } else if state.active_tab == Tab::Topology
-                && state.selected_topology_index > 0
-            {
+            } else if state.active_tab == Tab::Topology && state.selected_topology_index > 0 {
                 state.selected_topology_index -= 1;
             }
         }
