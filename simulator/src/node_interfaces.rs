@@ -9,6 +9,7 @@ use common::tun::Tun;
 use std::sync::Arc;
 
 use crate::simulator::SimNode;
+use std::net::Ipv4Addr;
 
 /// All network interfaces for a node, organized by purpose.
 /// All interfaces must be kept alive (Arc) throughout the simulation to prevent closure.
@@ -39,6 +40,11 @@ pub struct NodeInterfaces {
     /// - RSU: UDP socket interface to forward to servers (172.x.x.x)
     /// - Server: UDP listener interface receiving from RSUs (172.x.x.x)
     pub cloud: Option<Arc<Tun>>,
+    /// IP address configured on the virtual TAP (10.x.x.x) when present
+    pub virtual_ip: Option<Ipv4Addr>,
+
+    /// IP address configured on the cloud interface (172.x.x.x) when present
+    pub cloud_ip: Option<Ipv4Addr>,
 }
 
 impl NodeInterfaces {
@@ -47,11 +53,13 @@ impl NodeInterfaces {
     /// OBUs have:
     /// - VANET interface for wireless communication
     /// - Virtual interface for decapsulated data traffic
-    pub fn obu(vanet: Arc<Tun>, virtual_tap: Arc<Tun>) -> Self {
+    pub fn obu(vanet: Arc<Tun>, virtual_tap: Arc<Tun>, virtual_ip: Option<Ipv4Addr>) -> Self {
         Self {
             vanet: Some(vanet),
             virtual_tap: Some(virtual_tap),
             cloud: None,
+            virtual_ip,
+            cloud_ip: None,
         }
     }
 
@@ -61,11 +69,19 @@ impl NodeInterfaces {
     /// - VANET interface for wireless communication
     /// - Virtual interface for decapsulated data traffic
     /// - Cloud interface for forwarding to servers
-    pub fn rsu(vanet: Arc<Tun>, virtual_tap: Arc<Tun>, cloud: Arc<Tun>) -> Self {
+    pub fn rsu(
+        vanet: Arc<Tun>,
+        virtual_tap: Arc<Tun>,
+        cloud: Arc<Tun>,
+        virtual_ip: Option<Ipv4Addr>,
+        cloud_ip: Option<Ipv4Addr>,
+    ) -> Self {
         Self {
             vanet: Some(vanet),
             virtual_tap: Some(virtual_tap),
             cloud: Some(cloud),
+            virtual_ip,
+            cloud_ip,
         }
     }
 
@@ -74,11 +90,18 @@ impl NodeInterfaces {
     /// Servers have:
     /// - Virtual interface for distributed network communication
     /// - Cloud interface for receiving from RSUs
-    pub fn server(virtual_tap: Arc<Tun>, cloud: Arc<Tun>) -> Self {
+    pub fn server(
+        virtual_tap: Arc<Tun>,
+        cloud: Arc<Tun>,
+        virtual_ip: Option<Ipv4Addr>,
+        cloud_ip: Option<Ipv4Addr>,
+    ) -> Self {
         Self {
             vanet: None,
             virtual_tap: Some(virtual_tap),
             cloud: Some(cloud),
+            virtual_ip,
+            cloud_ip,
         }
     }
 
@@ -147,6 +170,16 @@ impl NodeInterfaces {
     #[allow(dead_code)]
     pub fn cloud(&self) -> Option<&Arc<Tun>> {
         self.cloud.as_ref()
+    }
+
+    /// Get configured virtual TAP IP if present
+    pub fn virtual_ip(&self) -> Option<Ipv4Addr> {
+        self.virtual_ip
+    }
+
+    /// Get configured cloud interface IP if present
+    pub fn cloud_ip(&self) -> Option<Ipv4Addr> {
+        self.cloud_ip
     }
 
     /// Validate that required interfaces are present for the given node type

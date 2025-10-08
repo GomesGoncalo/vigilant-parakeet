@@ -2,6 +2,7 @@
 mod channels;
 mod logs;
 mod metrics;
+mod nodes;
 mod registry;
 mod topology;
 mod upstreams;
@@ -21,12 +22,14 @@ pub enum Tab {
     Channels,
     Upstreams,
     Logs,
+    Nodes,
     Topology,
 }
 
 // Re-export tab renderer structs and Tab enum
 pub use channels::ChannelsTab;
 pub use logs::LogsTab;
+pub use nodes::NodesTab;
 pub use metrics::MetricsTab;
 pub use registry::TabRegistry;
 pub use topology::TopologyTab;

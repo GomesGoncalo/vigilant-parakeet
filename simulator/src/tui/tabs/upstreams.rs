@@ -13,7 +13,7 @@ use super::TabRenderer;
 
 /// State data for the Upstreams tab
 pub struct UpstreamsTabState<'a> {
-    pub nodes: &'a HashMap<String, (String, String, crate::simulator::SimNode)>,
+    pub nodes: &'a HashMap<String, (String, String, Option<std::net::Ipv4Addr>, Option<std::net::Ipv4Addr>, crate::simulator::SimNode)>,
     pub paused: bool,
     pub paused_upstreams: &'a Option<Vec<UpstreamSnapshotEntry>>,
 }
@@ -90,7 +90,7 @@ impl TabRenderer for UpstreamsTab {
             // Build live entries from state.nodes where node_type == "Obu", then sort by OBU name
             let mut entries: Vec<(String, Vec<Cell>)> = Vec::new();
 
-            for (name, (mac, node_type, simnode)) in state.nodes.iter() {
+        for (name, (mac, node_type, _virtual_ip, _cloud_ip, simnode)) in state.nodes.iter() {
                 if node_type != "Obu" {
                     continue;
                 }
@@ -122,7 +122,7 @@ impl TabRenderer for UpstreamsTab {
                                 }
                                 depth += 1;
                                 if let Some((nname, (_m, ntype, snode))) =
-                                    state.nodes.iter().find(|(_, (m, _, _))| **m == current_mac)
+                                    state.nodes.iter().find(|(_, (m, _, _, _, _))| **m == current_mac)
                                 {
                                     if ntype == "Rsu" {
                                         break Some(nname.clone());

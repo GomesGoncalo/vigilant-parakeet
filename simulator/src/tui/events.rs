@@ -40,7 +40,8 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
                     Tab::Metrics => Tab::Channels,
                     Tab::Channels => Tab::Upstreams,
                     Tab::Upstreams => Tab::Logs,
-                    Tab::Logs => Tab::Topology,
+                    Tab::Logs => Tab::Nodes,
+                    Tab::Nodes => Tab::Topology,
                     Tab::Topology => Tab::Metrics,
                 };
             }
@@ -58,6 +59,9 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
             state.active_tab = Tab::Logs;
         }
         KeyCode::Char('5') if !state.log_input_mode => {
+            state.active_tab = Tab::Nodes;
+        }
+        KeyCode::Char('6') if !state.log_input_mode => {
             state.active_tab = Tab::Topology;
         }
 
@@ -151,6 +155,8 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
                 state.log_auto_scroll = false;
             } else if state.active_tab == Tab::Topology && state.selected_topology_index > 0 {
                 state.selected_topology_index -= 1;
+            } else if state.active_tab == Tab::Nodes && state.selected_topology_index > 0 {
+                state.selected_topology_index -= 1;
             }
         }
 
@@ -162,6 +168,8 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
             } else if state.active_tab == Tab::Topology
                 && state.selected_topology_index + 1 < state.topology_item_count
             {
+                state.selected_topology_index += 1;
+            } else if state.active_tab == Tab::Nodes && state.selected_topology_index + 1 < state.topology_item_count {
                 state.selected_topology_index += 1;
             }
         }
@@ -197,15 +205,21 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
                 state.log_auto_scroll = false;
             } else if state.active_tab == Tab::Topology {
                 state.selected_topology_index = state.selected_topology_index.saturating_sub(5);
+            } else if state.active_tab == Tab::Nodes {
+                state.selected_topology_index = state.selected_topology_index.saturating_sub(5);
             }
-        }
 
+        }
+        
         // Navigation: Page Down
         KeyCode::PageDown => {
             if state.active_tab == Tab::Logs {
                 state.log_scroll = state.log_scroll.saturating_add(10);
                 state.log_auto_scroll = false;
             } else if state.active_tab == Tab::Topology {
+                state.selected_topology_index = (state.selected_topology_index + 5)
+                    .min(state.topology_item_count.saturating_sub(1));
+            } else if state.active_tab == Tab::Nodes {
                 state.selected_topology_index = (state.selected_topology_index + 5)
                     .min(state.topology_item_count.saturating_sub(1));
             }
@@ -219,6 +233,8 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
                 state.log_auto_scroll = false;
             } else if state.active_tab == Tab::Topology {
                 state.selected_topology_index = 0;
+            } else if state.active_tab == Tab::Nodes {
+                state.selected_topology_index = 0;
             }
         }
 
@@ -229,6 +245,8 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
                 state.log_scroll = log_count.saturating_sub(1);
                 state.log_auto_scroll = true;
             } else if state.active_tab == Tab::Topology && state.topology_item_count > 0 {
+                state.selected_topology_index = state.topology_item_count - 1;
+            } else if state.active_tab == Tab::Nodes && state.topology_item_count > 0 {
                 state.selected_topology_index = state.topology_item_count - 1;
             }
         }
@@ -284,7 +302,7 @@ fn handle_pause_toggle(state: &mut TuiState) {
 fn capture_upstreams_snapshot(state: &mut TuiState) {
     let mut ups: Vec<(String, String, String, String, String, String)> = Vec::new();
 
-    for (name, (mac, ntype, simnode)) in state.nodes.iter() {
+    for (name, (mac, ntype, _virtual_ip, _cloud_ip, simnode)) in state.nodes.iter() {
         if ntype != "Obu" {
             continue;
         }
@@ -313,7 +331,7 @@ fn capture_upstreams_snapshot(state: &mut TuiState) {
                         depth += 1;
 
                         if let Some((nname, (_m, ntype2, snode))) =
-                            state.nodes.iter().find(|(_, (m, _, _))| **m == current_mac)
+                            state.nodes.iter().find(|(_, (m, _, _, _, _))| **m == current_mac)
                         {
                             if ntype2 == "Rsu" {
                                 break Some(nname.clone());

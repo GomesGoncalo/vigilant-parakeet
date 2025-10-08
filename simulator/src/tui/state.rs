@@ -94,8 +94,8 @@ pub type UpstreamSnapshotEntry = (String, String, String, String, String, String
 /// TUI state maintaining historical data for graphs
 pub struct TuiState {
     pub metrics: Arc<SimulatorMetrics>,
-    // Map of nodes: name -> (device mac string, node_type_string, SimNode)
-    pub nodes: HashMap<String, (String, String, crate::simulator::SimNode)>,
+    // Map of nodes: name -> (device mac string, node_type_string, virtual_ip, cloud_ip, SimNode)
+    pub nodes: HashMap<String, (String, String, Option<std::net::Ipv4Addr>, Option<std::net::Ipv4Addr>, crate::simulator::SimNode)>,
     // Last time nodes were refreshed
     pub last_nodes_refresh: Instant,
     pub start_time: Instant,
@@ -188,13 +188,15 @@ impl TuiState {
         let sim_nodes = simulator.get_nodes_with_interfaces();
         let map = sim_nodes
             .into_iter()
-            .map(|(name, (device, _interfaces, node))| {
+            .map(|(name, (device, interfaces, node))| {
                 let node_type = match &node {
                     crate::simulator::SimNode::Obu(_) => "Obu".to_string(),
                     crate::simulator::SimNode::Rsu(_) => "Rsu".to_string(),
                     crate::simulator::SimNode::Server(_) => "Server".to_string(),
                 };
-                (name, (format!("{}", device.mac_address()), node_type, node))
+                let virtual_ip = interfaces.virtual_ip;
+                let cloud_ip = interfaces.cloud_ip;
+                (name, (format!("{}", device.mac_address()), node_type, virtual_ip, cloud_ip, node))
             })
             .collect();
         self.nodes = map;

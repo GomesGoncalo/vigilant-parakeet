@@ -16,7 +16,7 @@ use super::TabRenderer;
 
 /// State data for the Topology tab
 pub struct TopologyTabState<'a> {
-    pub nodes: &'a HashMap<String, (String, String, crate::simulator::SimNode)>,
+    pub nodes: &'a HashMap<String, (String, String, Option<std::net::Ipv4Addr>, Option<std::net::Ipv4Addr>, crate::simulator::SimNode)>,
     pub metrics: &'a Arc<SimulatorMetrics>,
     pub selected_index: &'a mut usize,
     pub item_count: &'a mut usize,
@@ -77,7 +77,7 @@ impl TabRenderer for TopologyTab {
 pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabState) {
     // Map mac -> node name for quick parent lookup
     let mut name_by_mac: HashMap<String, String> = HashMap::new();
-    for (name, (mac, _ntype, _snode)) in state.nodes.iter() {
+        for (name, (mac, node_type, _virtual_ip, _cloud_ip, simnode)) in state.nodes.iter() {
         name_by_mac.insert(mac.clone(), name.clone());
     }
 
@@ -89,7 +89,7 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabSta
     // Ensure every non-server node has an entry
     let mut server_names: HashSet<String> = HashSet::new();
     for (name, (_mac, ntype, _)) in state.nodes.iter() {
-        if ntype == "Server" {
+            if ntype == "Server" {
             server_names.insert(name.clone());
             continue;
         }
