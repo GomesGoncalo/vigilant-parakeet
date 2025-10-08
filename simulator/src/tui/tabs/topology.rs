@@ -16,14 +16,13 @@ use super::TabRenderer;
 
 /// State data for the Topology tab
 pub struct TopologyTabState<'a> {
-    pub nodes: &'a HashMap<String, (String, String, Option<std::net::Ipv4Addr>, Option<std::net::Ipv4Addr>, crate::simulator::SimNode)>,
+    pub nodes: &'a crate::tui::state::NodesMap,
     pub metrics: &'a Arc<SimulatorMetrics>,
     pub selected_index: &'a mut usize,
     pub item_count: &'a mut usize,
 }
 
 /// Topology tab renderer
-#[derive(Default)]
 pub struct TopologyTab;
 
 impl TabRenderer for TopologyTab {
@@ -77,7 +76,7 @@ impl TabRenderer for TopologyTab {
 pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabState) {
     // Map mac -> node name for quick parent lookup
     let mut name_by_mac: HashMap<String, String> = HashMap::new();
-        for (name, (mac, node_type, _virtual_ip, _cloud_ip, simnode)) in state.nodes.iter() {
+    for (name, (mac, _, _, _, _)) in state.nodes.iter() {
         name_by_mac.insert(mac.clone(), name.clone());
     }
 
@@ -88,8 +87,8 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabSta
 
     // Ensure every non-server node has an entry
     let mut server_names: HashSet<String> = HashSet::new();
-    for (name, (_mac, ntype, _)) in state.nodes.iter() {
-            if ntype == "Server" {
+    for (name, (_mac, ntype, _v, _c, _)) in state.nodes.iter() {
+        if ntype == "Server" {
             server_names.insert(name.clone());
             continue;
         }
@@ -99,7 +98,7 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabSta
     let mut unattached: Vec<String> = Vec::new();
 
     // For each OBU, attempt to attach it to its immediate upstream node (by route.mac)
-    for (name, (_mac, ntype, simnode)) in state.nodes.iter() {
+    for (name, (_mac, ntype, _v, _c, simnode)) in state.nodes.iter() {
         if ntype != "Obu" {
             continue;
         }
@@ -131,7 +130,7 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabSta
     let mut rsus: Vec<String> = state
         .nodes
         .iter()
-        .filter_map(|(n, (_mac, ntype, _))| {
+        .filter_map(|(n, (_mac, ntype, _v, _c, _))| {
             if ntype == "Rsu" {
                 Some(n.clone())
             } else {
@@ -145,7 +144,7 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabSta
     let mut other_roots: Vec<String> = state
         .nodes
         .iter()
-        .filter_map(|(n, (_mac, ntype, _))| {
+        .filter_map(|(n, (_mac, ntype, _v, _c, _))| {
             if ntype == "Server" {
                 None
             } else if !parent_map.contains_key(n) && !rsus.contains(n) {
@@ -192,7 +191,7 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabSta
     let mut unattached_display: Vec<String> = Vec::new();
     for name in unattached.iter() {
         if !parent_map.contains_key(name) && !rsus.contains(name) {
-            if let Some((mac, _ntype, _snode)) = state.nodes.get(name) {
+            if let Some((mac, _ntype, _v, _c, _snode)) = state.nodes.get(name) {
                 unattached_display.push(format!("{} ({})", name, mac));
             } else {
                 unattached_display.push(name.clone());
@@ -269,7 +268,7 @@ fn render_node_details(
     while !seen_path.contains(&current) {
         seen_path.insert(current.clone());
         // get this node's immediate upstream via cached_upstream_route if OBU
-        if let Some((_mac, ntype, snode)) = state.nodes.get(&current) {
+        if let Some((_mac, ntype, _v, _c, snode)) = state.nodes.get(&current) {
             if ntype == "Rsu" {
                 reached_rsu = true;
                 break;
@@ -438,7 +437,7 @@ fn collect_node(
     }
     ctx.visited.insert(name.to_string());
 
-    let label = if let Some((mac, _ntype, _snode)) = ctx.state.nodes.get(name) {
+    let label = if let Some((mac, _ntype, _v, _c, _snode)) = ctx.state.nodes.get(name) {
         format!("{} ({})", name, mac)
     } else {
         name.to_string()
@@ -510,7 +509,7 @@ fn compute_hops(
         visited.insert(current.clone());
 
         // If current is RSU, we're done
-        if let Some((_mac, ntype, _snode)) = state.nodes.get(&current) {
+        if let Some((_mac, ntype, _v, _c, _snode)) = state.nodes.get(&current) {
             if ntype == "Rsu" {
                 return Some(total);
             }
@@ -519,7 +518,7 @@ fn compute_hops(
         }
 
         // Otherwise, current must be an OBU; try to get its immediate upstream route
-        if let Some((_mac, ntype, snode)) = state.nodes.get(&current) {
+        if let Some((_mac, ntype, _v, _c, snode)) = state.nodes.get(&current) {
             if ntype != "Obu" {
                 return None;
             }

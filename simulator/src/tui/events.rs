@@ -153,9 +153,9 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
                     state.log_scroll -= 1;
                 }
                 state.log_auto_scroll = false;
-            } else if state.active_tab == Tab::Topology && state.selected_topology_index > 0 {
-                state.selected_topology_index -= 1;
-            } else if state.active_tab == Tab::Nodes && state.selected_topology_index > 0 {
+            } else if (state.active_tab == Tab::Topology || state.active_tab == Tab::Nodes)
+                && state.selected_topology_index > 0
+            {
                 state.selected_topology_index -= 1;
             }
         }
@@ -165,11 +165,9 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
             if state.active_tab == Tab::Logs {
                 state.log_scroll += 1;
                 state.log_auto_scroll = false;
-            } else if state.active_tab == Tab::Topology
+            } else if (state.active_tab == Tab::Topology || state.active_tab == Tab::Nodes)
                 && state.selected_topology_index + 1 < state.topology_item_count
             {
-                state.selected_topology_index += 1;
-            } else if state.active_tab == Tab::Nodes && state.selected_topology_index + 1 < state.topology_item_count {
                 state.selected_topology_index += 1;
             }
         }
@@ -203,23 +201,17 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
             if state.active_tab == Tab::Logs {
                 state.log_scroll = state.log_scroll.saturating_sub(10);
                 state.log_auto_scroll = false;
-            } else if state.active_tab == Tab::Topology {
-                state.selected_topology_index = state.selected_topology_index.saturating_sub(5);
-            } else if state.active_tab == Tab::Nodes {
+            } else if state.active_tab == Tab::Topology || state.active_tab == Tab::Nodes {
                 state.selected_topology_index = state.selected_topology_index.saturating_sub(5);
             }
-
         }
-        
+
         // Navigation: Page Down
         KeyCode::PageDown => {
             if state.active_tab == Tab::Logs {
                 state.log_scroll = state.log_scroll.saturating_add(10);
                 state.log_auto_scroll = false;
-            } else if state.active_tab == Tab::Topology {
-                state.selected_topology_index = (state.selected_topology_index + 5)
-                    .min(state.topology_item_count.saturating_sub(1));
-            } else if state.active_tab == Tab::Nodes {
+            } else if state.active_tab == Tab::Topology || state.active_tab == Tab::Nodes {
                 state.selected_topology_index = (state.selected_topology_index + 5)
                     .min(state.topology_item_count.saturating_sub(1));
             }
@@ -231,9 +223,7 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
                 state.log_scroll = 0;
                 state.log_horizontal_scroll = 0;
                 state.log_auto_scroll = false;
-            } else if state.active_tab == Tab::Topology {
-                state.selected_topology_index = 0;
-            } else if state.active_tab == Tab::Nodes {
+            } else if state.active_tab == Tab::Topology || state.active_tab == Tab::Nodes {
                 state.selected_topology_index = 0;
             }
         }
@@ -244,9 +234,9 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
                 let log_count = state.log_buffer.lock().unwrap().len();
                 state.log_scroll = log_count.saturating_sub(1);
                 state.log_auto_scroll = true;
-            } else if state.active_tab == Tab::Topology && state.topology_item_count > 0 {
-                state.selected_topology_index = state.topology_item_count - 1;
-            } else if state.active_tab == Tab::Nodes && state.topology_item_count > 0 {
+            } else if (state.active_tab == Tab::Topology || state.active_tab == Tab::Nodes)
+                && state.topology_item_count > 0
+            {
                 state.selected_topology_index = state.topology_item_count - 1;
             }
         }
@@ -330,8 +320,10 @@ fn capture_upstreams_snapshot(state: &mut TuiState) {
                         }
                         depth += 1;
 
-                        if let Some((nname, (_m, ntype2, snode))) =
-                            state.nodes.iter().find(|(_, (m, _, _, _, _))| **m == current_mac)
+                        if let Some((nname, (_m, ntype2, _v, _c, snode))) = state
+                            .nodes
+                            .iter()
+                            .find(|(_, (m, _, _, _, _))| **m == current_mac)
                         {
                             if ntype2 == "Rsu" {
                                 break Some(nname.clone());

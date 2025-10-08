@@ -41,9 +41,11 @@ pub struct NodeInterfaces {
     /// - Server: UDP listener interface receiving from RSUs (172.x.x.x)
     pub cloud: Option<Arc<Tun>>,
     /// IP address configured on the virtual TAP (10.x.x.x) when present
+    #[cfg_attr(not(any(feature = "tui", feature = "webview", feature = "test_helpers")), allow(dead_code))]
     pub virtual_ip: Option<Ipv4Addr>,
 
     /// IP address configured on the cloud interface (172.x.x.x) when present
+    #[cfg_attr(not(any(feature = "tui", feature = "webview", feature = "test_helpers")), allow(dead_code))]
     pub cloud_ip: Option<Ipv4Addr>,
 }
 
@@ -105,55 +107,10 @@ impl NodeInterfaces {
         }
     }
 
-    /// Get the number of configured interfaces
-    #[allow(dead_code)]
-    pub fn interface_count(&self) -> usize {
-        let mut count = 0;
-        if self.vanet.is_some() {
-            count += 1;
-        }
-        if self.virtual_tap.is_some() {
-            count += 1;
-        }
-        if self.cloud.is_some() {
-            count += 1;
-        }
-        count
-    }
-
-    /// Get a list of all configured interface names
-    #[allow(dead_code)]
-    pub fn interface_names(&self) -> Vec<&'static str> {
-        let mut names = Vec::new();
-        if self.vanet.is_some() {
-            names.push("vanet");
-        }
-        if self.virtual_tap.is_some() {
-            names.push("virtual_tap");
-        }
-        if self.cloud.is_some() {
-            names.push("cloud");
-        }
-        names
-    }
-
-    /// Check if this node has VANET connectivity
-    #[allow(dead_code)]
-    pub fn has_vanet(&self) -> bool {
-        self.vanet.is_some()
-    }
-
-    /// Check if this node has virtual TAP interface
-    #[allow(dead_code)]
-    pub fn has_virtual_tap(&self) -> bool {
-        self.virtual_tap.is_some()
-    }
-
-    /// Check if this node has cloud connectivity
-    #[allow(dead_code)]
-    pub fn has_cloud(&self) -> bool {
-        self.cloud.is_some()
-    }
+    // Removed several convenience helpers (interface_count, interface_names, has_*)
+    // because they were not used anywhere in the codebase. The user requested
+    // unused API be removed rather than silenced; callers should inspect the
+    // fields directly when needed.
 
     /// Get the VANET interface (if present)
     pub fn vanet(&self) -> Option<&Arc<Tun>> {
@@ -161,29 +118,24 @@ impl NodeInterfaces {
     }
 
     /// Get the virtual interface (if present)
-    #[allow(dead_code)]
+    #[cfg(feature = "test_helpers")]
     pub fn virtual_tap(&self) -> Option<&Arc<Tun>> {
         self.virtual_tap.as_ref()
     }
 
     /// Get the cloud interface (if present)
-    #[allow(dead_code)]
+    #[cfg(feature = "test_helpers")]
     pub fn cloud(&self) -> Option<&Arc<Tun>> {
         self.cloud.as_ref()
     }
 
-    /// Get configured virtual TAP IP if present
-    pub fn virtual_ip(&self) -> Option<Ipv4Addr> {
-        self.virtual_ip
-    }
-
-    /// Get configured cloud interface IP if present
-    pub fn cloud_ip(&self) -> Option<Ipv4Addr> {
-        self.cloud_ip
-    }
+    // Note: accessors for the stored IPs were removed in favor of reading
+    // the fields directly where needed (TUI snapshot extraction reads
+    // `interfaces.virtual_ip` and `interfaces.cloud_ip`). Keeping these
+    // methods was creating dead-code warnings; remove them to avoid
+    // unused API surface.
 
     /// Validate that required interfaces are present for the given node type
-    #[allow(dead_code)]
     pub fn validate(&self, node_type: &str) -> Result<()> {
         match node_type {
             "Obu" => {

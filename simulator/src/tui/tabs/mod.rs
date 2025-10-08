@@ -29,8 +29,8 @@ pub enum Tab {
 // Re-export tab renderer structs and Tab enum
 pub use channels::ChannelsTab;
 pub use logs::LogsTab;
-pub use nodes::NodesTab;
 pub use metrics::MetricsTab;
+pub use nodes::NodesTab;
 pub use registry::TabRegistry;
 pub use topology::TopologyTab;
 pub use upstreams::UpstreamsTab;

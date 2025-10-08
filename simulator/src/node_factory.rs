@@ -84,7 +84,12 @@ pub fn create_node_from_settings(
         };
 
         // Organize interfaces and return result
-    let interfaces = NodeInterfaces::server(virtual_tun.clone(), cloud_tun.clone(), Some(virtual_ip), Some(cloud_ip));
+        let interfaces = NodeInterfaces::server(
+            virtual_tun.clone(),
+            cloud_tun.clone(),
+            Some(virtual_ip),
+            Some(cloud_ip),
+        );
         return Ok(NodeCreationResult::new(
             dummy_device,
             interfaces,
@@ -110,19 +115,22 @@ pub fn create_node_from_settings(
 
     // Create virtual interface (for decapsulated data traffic)
     let virtual_tun = InterfaceBuilder::new("virtual")
-    .with_ip(ip)
-    .with_mtu(mtu as u16)
-    .build_tap()?;
+        .with_ip(ip)
+        .with_mtu(mtu as u16)
+        .build_tap()?;
 
     // Create Device bound to VANET interface
     let dev = Arc::new(Device::new(vanet_tun.name())?);
 
     // For RSU nodes, create cloud interface for server connectivity
     // RSUs forward encapsulated traffic to servers via this interface
+    // Also capture the configured external/cloud IP so we can surface it in the UI
+    let mut cloud_ip_opt: Option<Ipv4Addr> = None;
     let cloud_tun_opt = if node_type == node_lib::args::NodeType::Rsu {
         // Check if external_tap_ip is configured
         if let Ok(external_ip_str) = settings.get_string("external_tap_ip") {
             let external_ip = Ipv4Addr::from_str(&external_ip_str)?;
+            cloud_ip_opt = Some(external_ip);
 
             tracing::info!(
                 external_ip = %external_ip,
@@ -164,7 +172,7 @@ pub fn create_node_from_settings(
             node_name,
         )?);
 
-    let interfaces = NodeInterfaces::obu(vanet_tun, virtual_tun.clone(), Some(ip));
+        let interfaces = NodeInterfaces::obu(vanet_tun, virtual_tun.clone(), Some(ip));
         Ok(NodeCreationResult::new(dev, interfaces, node))
     } else {
         // RSU node
@@ -197,9 +205,15 @@ pub fn create_node_from_settings(
             node_name,
         )?);
 
-    // external_ip was created when building cloud_tun_opt; reuse it via parsing from cloud_tun interface isn't possible
-    // Instead we have `external_ip` in the branch where cloud_tun was created; to keep types simple, pass Some(ip) for virtual and Some(external_ip) for cloud
-    let interfaces = NodeInterfaces::rsu(vanet_tun, virtual_tun.clone(), cloud_tun, Some(ip), Some(ip));
+        // external_ip was created when building cloud_tun_opt; reuse it via parsing from cloud_tun interface isn't possible
+        // Instead we have `external_ip` in the branch where cloud_tun was created; to keep types simple, pass Some(ip) for virtual and Some(external_ip) for cloud
+        let interfaces = NodeInterfaces::rsu(
+            vanet_tun,
+            virtual_tun.clone(),
+            cloud_tun,
+            Some(ip),
+            cloud_ip_opt,
+        );
         Ok(NodeCreationResult::new(dev, interfaces, node))
     }
 }

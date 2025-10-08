@@ -13,13 +13,14 @@ use super::TabRenderer;
 
 /// State data for the Upstreams tab
 pub struct UpstreamsTabState<'a> {
-    pub nodes: &'a HashMap<String, (String, String, Option<std::net::Ipv4Addr>, Option<std::net::Ipv4Addr>, crate::simulator::SimNode)>,
+    pub nodes: &'a HashMap<
+        String, crate::tui::state::NodeSnapshot,
+    >,
     pub paused: bool,
     pub paused_upstreams: &'a Option<Vec<UpstreamSnapshotEntry>>,
 }
 
 /// Upstreams tab renderer
-#[derive(Default)]
 pub struct UpstreamsTab;
 
 impl TabRenderer for UpstreamsTab {
@@ -90,7 +91,7 @@ impl TabRenderer for UpstreamsTab {
             // Build live entries from state.nodes where node_type == "Obu", then sort by OBU name
             let mut entries: Vec<(String, Vec<Cell>)> = Vec::new();
 
-        for (name, (mac, node_type, _virtual_ip, _cloud_ip, simnode)) in state.nodes.iter() {
+            for (name, (mac, node_type, _virtual_ip, _cloud_ip, simnode)) in state.nodes.iter() {
                 if node_type != "Obu" {
                     continue;
                 }
@@ -121,8 +122,10 @@ impl TabRenderer for UpstreamsTab {
                                     break None;
                                 }
                                 depth += 1;
-                                if let Some((nname, (_m, ntype, snode))) =
-                                    state.nodes.iter().find(|(_, (m, _, _, _, _))| **m == current_mac)
+                                if let Some((nname, (_m, ntype, _v, _c, snode))) = state
+                                    .nodes
+                                    .iter()
+                                    .find(|(_, (m, _, _, _, _))| **m == current_mac)
                                 {
                                     if ntype == "Rsu" {
                                         break Some(nname.clone());
@@ -167,7 +170,7 @@ impl TabRenderer for UpstreamsTab {
                         upstream_display.to_string()
                     } else {
                         // Lookup by name
-                        if let Some((_, (umac, _, _))) =
+                        if let Some((_, (umac, _ntype, _v, _c, _snode))) =
                             state.nodes.iter().find(|(n, _)| *n == &upstream_display)
                         {
                             format!("{} ({})", upstream_display, umac)

@@ -92,10 +92,22 @@ pub struct DisplayChannelStats {
 pub type UpstreamSnapshotEntry = (String, String, String, String, String, String);
 
 /// TUI state maintaining historical data for graphs
+/// Node snapshot type used across TUI tabs
+pub type NodeSnapshot = (
+    String,
+    String,
+    Option<std::net::Ipv4Addr>,
+    Option<std::net::Ipv4Addr>,
+    crate::simulator::SimNode,
+);
+
+/// Map of node name -> snapshot
+pub type NodesMap = HashMap<String, NodeSnapshot>;
+
 pub struct TuiState {
     pub metrics: Arc<SimulatorMetrics>,
-    // Map of nodes: name -> (device mac string, node_type_string, virtual_ip, cloud_ip, SimNode)
-    pub nodes: HashMap<String, (String, String, Option<std::net::Ipv4Addr>, Option<std::net::Ipv4Addr>, crate::simulator::SimNode)>,
+    /// Map of nodes: name -> NodeSnapshot
+    pub nodes: NodesMap,
     // Last time nodes were refreshed
     pub last_nodes_refresh: Instant,
     pub start_time: Instant,
@@ -196,7 +208,16 @@ impl TuiState {
                 };
                 let virtual_ip = interfaces.virtual_ip;
                 let cloud_ip = interfaces.cloud_ip;
-                (name, (format!("{}", device.mac_address()), node_type, virtual_ip, cloud_ip, node))
+                (
+                    name,
+                    (
+                        format!("{}", device.mac_address()),
+                        node_type,
+                        virtual_ip,
+                        cloud_ip,
+                        node,
+                    ),
+                )
             })
             .collect();
         self.nodes = map;
