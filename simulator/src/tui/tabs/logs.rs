@@ -102,7 +102,9 @@ impl TabRenderer for LogsTab {
             .iter()
             .map(|line| {
                 // Apply horizontal scroll offset
-                let scrolled_line = if *state.log_horizontal_scroll > 0 && line.len() > *state.log_horizontal_scroll {
+                let scrolled_line = if *state.log_horizontal_scroll > 0
+                    && line.len() > *state.log_horizontal_scroll
+                {
                     &line[*state.log_horizontal_scroll..]
                 } else if *state.log_horizontal_scroll > 0 {
                     "" // Line is too short, show empty
@@ -156,44 +158,101 @@ impl TabRenderer for LogsTab {
         } else {
             String::new()
         };
-        let title = format!(
-            "{}Logs ({} lines, filter: {}){}{}",
-            auto_scroll_indicator, log_count, filter_text, h_scroll_indicator, input_indicator
-        );
-        use ratatui::widgets::{Paragraph, Wrap};
+        // paragraph/wrap not needed after switching to per-line wrapping
 
-        // Append wrap indicator to title
-        let wrap_indicator = if state.log_input_mode {
-            ""
-        } else if state.log_auto_scroll {
-            ""
-        } else {
-            ""
-        };
+        // Show explicit wrap indicator in title
+        let wrap_indicator = format!(" wrap: {}", if state.log_wrap { "ON" } else { "OFF" });
 
         let title = format!(
             "{}Logs ({} lines, filter: {}){}{}{}",
-            auto_scroll_indicator, log_count, filter_text, h_scroll_indicator, input_indicator, wrap_indicator
+            auto_scroll_indicator,
+            log_count,
+            filter_text,
+            h_scroll_indicator,
+            input_indicator,
+            wrap_indicator
         );
 
         if state.log_wrap {
-            // Render wrapped logs as a Paragraph (multi-line) and allow vertical scrolling
-            let joined = filtered_logs
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<&str>>()
-                .join("\n");
-            let para = Paragraph::new(joined)
+            // Render wrapped logs while preserving color and allow vertical scrolling.
+            // We'll flatten each log into multiple wrapped sub-lines (taking
+            // horizontal scroll into account) and render them as a List so we
+            // can reuse the same scrolling/select logic.
+            let inner_width = area.width.saturating_sub(2) as usize; // account for borders
+            let wrap_width = if inner_width == 0 { 1 } else { inner_width };
+
+            let mut wrapped_items: Vec<ListItem> = Vec::new();
+
+            for line in filtered_logs.iter() {
+                // Apply horizontal scroll offset
+                let scrolled_line = if *state.log_horizontal_scroll > 0
+                    && line.len() > *state.log_horizontal_scroll
+                {
+                    &line[*state.log_horizontal_scroll..]
+                } else if *state.log_horizontal_scroll > 0 {
+                    "" // Line is too short, show empty
+                } else {
+                    line.as_str()
+                };
+
+                // Determine color/style for the whole logical line
+                let style = if line.contains("ERROR") {
+                    Style::default().fg(Color::Red)
+                } else if line.contains("WARN") {
+                    Style::default().fg(Color::Yellow)
+                } else if line.contains("INFO") {
+                    Style::default().fg(Color::Green)
+                } else if line.contains("DEBUG") {
+                    Style::default().fg(Color::Cyan)
+                } else if line.contains("TRACE") {
+                    Style::default().fg(Color::Gray)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+
+                // Grapheme-aware wrapping: iterate over grapheme clusters and
+                // measure their display width so we wrap at column boundaries.
+                use unicode_segmentation::UnicodeSegmentation;
+                use unicode_width::UnicodeWidthStr;
+
+                let mut buf = String::new();
+                let mut cur_width = 0usize;
+                for g in UnicodeSegmentation::graphemes(scrolled_line, true) {
+                    let gw = UnicodeWidthStr::width(g);
+                    // If adding this grapheme would exceed the wrap width,
+                    // flush buffer first.
+                    if cur_width + gw > wrap_width && !buf.is_empty() {
+                        let li = ListItem::new(Line::from(Span::styled(buf.clone(), style)));
+                        wrapped_items.push(li);
+                        buf.clear();
+                        cur_width = 0;
+                    }
+                    buf.push_str(g);
+                    cur_width += gw;
+                }
+                if !buf.is_empty() {
+                    let li = ListItem::new(Line::from(Span::styled(buf.clone(), style)));
+                    wrapped_items.push(li);
+                }
+            }
+
+            // Clamp scroll to wrapped items length
+            let wrapped_count = wrapped_items.len();
+            if *state.log_scroll >= wrapped_count && wrapped_count > 0 {
+                *state.log_scroll = wrapped_count - 1;
+            }
+
+            let logs_list = List::new(wrapped_items)
                 .block(Block::default().borders(Borders::ALL).title(title))
-                .wrap(Wrap { trim: true })
                 .style(Style::default().fg(Color::White));
 
-            // We emulate vertical scroll by slicing lines
-            // Compute visible slice based on area.height and log_scroll
-            let lines: Vec<&str> = filtered_logs.iter().map(|s| s.as_str()).collect();
-            let start = *state.log_scroll;
-            // Nothing special for horizontal scroll when wrapped
-            f.render_widget(para, area);
+            // Create list state for scrolling into the wrapped list
+            let mut list_state = ListState::default();
+            if wrapped_count > 0 {
+                list_state.select(Some(*state.log_scroll));
+            }
+
+            f.render_stateful_widget(logs_list, area, &mut list_state);
         } else {
             let logs_list = List::new(log_items)
                 .block(Block::default().borders(Borders::ALL).title(title))

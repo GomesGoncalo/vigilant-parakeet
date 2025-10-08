@@ -57,9 +57,24 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Resul
     let args_obu2 = mk_obu_args();
 
     // Construct nodes
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu), "test_rsu".to_string())?;
-    let _obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1), "test_obu1".to_string())?;
-    let obu2 = Obu::new(args_obu2, Arc::new(tun_obu2), Arc::new(dev_obu2), "test_obu2".to_string())?;
+    let _rsu = Rsu::new(
+        args_rsu,
+        Arc::new(tun_rsu),
+        Arc::new(dev_rsu),
+        "test_rsu".to_string(),
+    )?;
+    let _obu1 = Obu::new(
+        args_obu1,
+        Arc::new(tun_obu1),
+        Arc::new(dev_obu1),
+        "test_obu1".to_string(),
+    )?;
+    let obu2 = Obu::new(
+        args_obu2,
+        Arc::new(tun_obu2),
+        Arc::new(dev_obu2),
+        "test_obu2".to_string(),
+    )?;
 
     // Wait for OBU2 to cache upstream route; expect it to eventually prefer OBU1
     // (two-hop path). Poll until the desired selection is observed.

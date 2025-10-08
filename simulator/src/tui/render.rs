@@ -1,9 +1,6 @@
 //! Main UI rendering logic for the TUI
 
-use crate::tui::{
-    state::TuiState,
-    tabs::Tab,
-};
+use crate::tui::{state::TuiState, tabs::Tab};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},

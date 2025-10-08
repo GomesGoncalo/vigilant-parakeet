@@ -75,14 +75,17 @@ impl TabRegistry {
         ];
 
         let size = entries.len();
-        entries.into_iter().enumerate().fold(Self {
-            entries: Vec::with_capacity(size),
-            lookup: std::collections::HashMap::with_capacity(size),
-        }, |mut acc, (index, (tab, entry))| {
-            acc.entries.push(entry);
-            acc.lookup.insert(tab, index);
-            acc
-        })
+        entries.into_iter().enumerate().fold(
+            Self {
+                entries: Vec::with_capacity(size),
+                lookup: std::collections::HashMap::with_capacity(size),
+            },
+            |mut acc, (index, (tab, entry))| {
+                acc.entries.push(entry);
+                acc.lookup.insert(tab, index);
+                acc
+            },
+        )
     }
 
     /// Get the global tab registry instance

@@ -122,11 +122,7 @@ where
         }
     }
 
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
+    fn on_event(&self, event: &tracing::Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
         // Format the event
         let mut visitor = LogVisitor::new();
         event.record(&mut visitor);
@@ -156,18 +152,14 @@ where
         let formatted = if let Some(name) = node_name {
             format!(
                 "{} {:>5} [{:<8}] {}: {}",
-                timestamp,
-                level,
-                name,
-                target,
-                message
+                timestamp, level, name, target, message
             )
         } else {
             format!(
                 "{} {:>5} {:10} {}: {}",
                 timestamp,
                 level,
-                "",  // Empty space where node name would be
+                "", // Empty space where node name would be
                 target,
                 message
             )

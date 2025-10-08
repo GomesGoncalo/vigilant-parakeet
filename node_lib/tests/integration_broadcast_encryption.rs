@@ -98,9 +98,27 @@ async fn test_obu_broadcast_spreads_to_other_nodes() {
     let args_obu2 = mk_obu_args_encrypted();
 
     // Create nodes
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu), "test_rsu".to_string()).unwrap();
-    let obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1), "test_obu1".to_string()).unwrap();
-    let obu2 = Obu::new(args_obu2, Arc::new(tun_obu2), Arc::new(dev_obu2), "test_obu2".to_string()).unwrap();
+    let _rsu = Rsu::new(
+        args_rsu,
+        Arc::new(tun_rsu),
+        Arc::new(dev_rsu),
+        "test_rsu".to_string(),
+    )
+    .unwrap();
+    let obu1 = Obu::new(
+        args_obu1,
+        Arc::new(tun_obu1),
+        Arc::new(dev_obu1),
+        "test_obu1".to_string(),
+    )
+    .unwrap();
+    let obu2 = Obu::new(
+        args_obu2,
+        Arc::new(tun_obu2),
+        Arc::new(dev_obu2),
+        "test_obu2".to_string(),
+    )
+    .unwrap();
 
     // Wait for both OBUs to discover RSU as upstream
     tokio::time::advance(Duration::from_millis(200)).await;
@@ -269,9 +287,27 @@ async fn test_rsu_broadcast_individual_encryption() {
     let args_obu2 = mk_obu_args_encrypted();
 
     // Create nodes
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu), "test_rsu2".to_string()).unwrap();
-    let obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1), "test_obu1_2".to_string()).unwrap();
-    let obu2 = Obu::new(args_obu2, Arc::new(tun_obu2), Arc::new(dev_obu2), "test_obu2_2".to_string()).unwrap();
+    let _rsu = Rsu::new(
+        args_rsu,
+        Arc::new(tun_rsu),
+        Arc::new(dev_rsu),
+        "test_rsu2".to_string(),
+    )
+    .unwrap();
+    let obu1 = Obu::new(
+        args_obu1,
+        Arc::new(tun_obu1),
+        Arc::new(dev_obu1),
+        "test_obu1_2".to_string(),
+    )
+    .unwrap();
+    let obu2 = Obu::new(
+        args_obu2,
+        Arc::new(tun_obu2),
+        Arc::new(dev_obu2),
+        "test_obu2_2".to_string(),
+    )
+    .unwrap();
 
     // Wait for OBUs to discover RSU
     tokio::time::advance(Duration::from_millis(200)).await;

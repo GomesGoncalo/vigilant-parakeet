@@ -31,6 +31,8 @@ obu_lib = { path = "../obu_lib/" }
 rsu_lib = { path = "../rsu_lib/" }
 server_lib = { path = "../server_lib/" }
 human_format = "*"
+unicode-segmentation = "*"
+unicode-width = "*"
 
 [features]
 webview = [ "dep:warp", "dep:serde_json", "node_lib/stats" ]

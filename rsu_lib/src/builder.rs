@@ -134,7 +134,10 @@ impl RsuBuilder {
         let args = self.to_args();
         let tun = self.inner.create_tun_device()?;
         let device = self.inner.create_device()?;
-        let node_name = self.inner.node_name.unwrap_or_else(|| "unknown".to_string());
+        let node_name = self
+            .inner
+            .node_name
+            .unwrap_or_else(|| "unknown".to_string());
         Rsu::new(args, tun, device, node_name)
     }
 
@@ -146,7 +149,10 @@ impl RsuBuilder {
         let args = self.to_args();
         let tun = self.inner.create_tun_device()?;
         let device = self.inner.create_device()?;
-        let node_name = self.inner.node_name.unwrap_or_else(|| "unknown".to_string());
+        let node_name = self
+            .inner
+            .node_name
+            .unwrap_or_else(|| "unknown".to_string());
         Rsu::new(args, tun, device, node_name)
     }
 

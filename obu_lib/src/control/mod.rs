@@ -104,7 +104,7 @@ impl Obu {
         let tun = obu.tun.clone();
         let routing_handle = obu.routing.clone();
         let node_name = obu.node_name.clone();
-        
+
         // Create span for this node - will be attached to the async task
         let span = tracing::info_span!("node", name = %node_name);
         tokio::task::spawn(
@@ -152,19 +152,19 @@ impl Obu {
                         }
                     })
                     .await;
-                if let Ok(Some(messages)) = messages {
-                    // Use batched message handling for improved throughput (2-3x faster)
-                    let _ = node::handle_messages_batched(
-                        messages,
-                        &tun,
-                        &device,
-                        Some(routing_handle.clone()),
-                    )
-                    .await;
-                }
+                    if let Ok(Some(messages)) = messages {
+                        // Use batched message handling for improved throughput (2-3x faster)
+                        let _ = node::handle_messages_batched(
+                            messages,
+                            &tun,
+                            &device,
+                            Some(routing_handle.clone()),
+                        )
+                        .await;
+                    }
                 }
             }
-            .instrument(span)
+            .instrument(span),
         );
         Ok(())
     }
@@ -177,7 +177,7 @@ impl Obu {
         let routing_handle = routing.clone();
         let enable_encryption = self.args.obu_params.enable_encryption;
         let node_name = self.node_name.clone();
-        
+
         let span = tracing::info_span!("node", name = %node_name);
         tokio::task::spawn(
             async move {
@@ -241,7 +241,7 @@ impl Obu {
                     }
                 }
             }
-            .instrument(span)
+            .instrument(span),
         );
         Ok(())
     }

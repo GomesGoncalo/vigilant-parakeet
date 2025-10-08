@@ -60,11 +60,28 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     let args_obu2 = mk_obu_args();
 
     // Construct nodes
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu), "test_rsu".to_string()).expect("Rsu::new failed");
-    let _obu1 =
-        Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1), "test_obu1".to_string()).expect("Obu::new failed");
+    let _rsu = Rsu::new(
+        args_rsu,
+        Arc::new(tun_rsu),
+        Arc::new(dev_rsu),
+        "test_rsu".to_string(),
+    )
+    .expect("Rsu::new failed");
+    let _obu1 = Obu::new(
+        args_obu1,
+        Arc::new(tun_obu1),
+        Arc::new(dev_obu1),
+        "test_obu1".to_string(),
+    )
+    .expect("Obu::new failed");
     let tun_obu2_arc = Arc::new(tun_obu2);
-    let obu2 = Obu::new(args_obu2, tun_obu2_arc, Arc::new(dev_obu2), "test_obu2".to_string()).expect("Obu::new failed");
+    let obu2 = Obu::new(
+        args_obu2,
+        tun_obu2_arc,
+        Arc::new(dev_obu2),
+        "test_obu2".to_string(),
+    )
+    .expect("Obu::new failed");
 
     // Wait for OBU2 to cache upstream route using await/timeout pattern
     // RSU sends heartbeats every 50ms, allow up to 10 seconds
@@ -157,10 +174,27 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let args_obu = mk_obu_args();
 
     // Construct nodes
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu), "test_rsu2".to_string()).expect("Rsu::new failed");
-    let _obu1 = Obu::new(args_obu.clone(), Arc::new(tun_obu1), Arc::new(dev_obu1), "test_obu1_2".to_string())
-        .expect("Obu::new failed");
-    let obu2 = Obu::new(args_obu, Arc::new(tun_obu2), Arc::new(dev_obu2), "test_obu2_2".to_string()).expect("Obu::new failed");
+    let _rsu = Rsu::new(
+        args_rsu,
+        Arc::new(tun_rsu),
+        Arc::new(dev_rsu),
+        "test_rsu2".to_string(),
+    )
+    .expect("Rsu::new failed");
+    let _obu1 = Obu::new(
+        args_obu.clone(),
+        Arc::new(tun_obu1),
+        Arc::new(dev_obu1),
+        "test_obu1_2".to_string(),
+    )
+    .expect("Obu::new failed");
+    let obu2 = Obu::new(
+        args_obu,
+        Arc::new(tun_obu2),
+        Arc::new(dev_obu2),
+        "test_obu2_2".to_string(),
+    )
+    .expect("Obu::new failed");
 
     // Wait for OBU2 to cache upstream via OBU1 (two-hop path preferred) using await/timeout
     let result = await_condition_with_time_advance(

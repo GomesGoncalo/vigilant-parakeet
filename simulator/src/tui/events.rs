@@ -169,7 +169,11 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
         // Navigation: Left (horizontal scroll left)
         KeyCode::Left => {
             if state.active_tab == Tab::Logs {
-                let step = if key.modifiers.contains(KeyModifiers::SHIFT) { 20 } else { 5 };
+                let step = if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    20
+                } else {
+                    5
+                };
                 state.log_horizontal_scroll = state.log_horizontal_scroll.saturating_sub(step);
             }
         }
@@ -177,7 +181,11 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
         // Navigation: Right (horizontal scroll right)
         KeyCode::Right => {
             if state.active_tab == Tab::Logs {
-                let step = if key.modifiers.contains(KeyModifiers::SHIFT) { 20 } else { 5 };
+                let step = if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    20
+                } else {
+                    5
+                };
                 state.log_horizontal_scroll = state.log_horizontal_scroll.saturating_add(step);
             }
         }
