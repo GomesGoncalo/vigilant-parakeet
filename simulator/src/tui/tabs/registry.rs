@@ -71,6 +71,7 @@ impl TabRegistry {
             (Tab::Channels, TabEntry::new::<ChannelsTab>()), // Position 1
             (Tab::Upstreams, TabEntry::new::<UpstreamsTab>()), // Position 2
             (Tab::Logs, TabEntry::new::<LogsTab>()),       // Position 3
+            (Tab::Nodes, TabEntry::new::<super::NodesTab>()), // Position 4
             (Tab::Topology, TabEntry::new::<TopologyTab>()), // Position 4
         ];
 

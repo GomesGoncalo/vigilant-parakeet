@@ -31,7 +31,6 @@ pub struct MetricsTabState<'a> {
 }
 
 /// Metrics tab renderer
-#[derive(Default)]
 pub struct MetricsTab;
 
 impl TabRenderer for MetricsTab {
