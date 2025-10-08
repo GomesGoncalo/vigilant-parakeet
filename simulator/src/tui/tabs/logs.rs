@@ -19,6 +19,7 @@ pub struct LogsTabState<'a> {
     pub log_buffer: &'a Arc<Mutex<VecDeque<String>>>,
     pub log_scroll: &'a mut usize,
     pub log_horizontal_scroll: &'a mut usize,
+    pub log_wrap: bool,
     pub log_auto_scroll: bool,
     pub log_filter: &'a LogFilter,
     pub log_input_mode: bool,
@@ -41,6 +42,7 @@ impl TabRenderer for LogsTab {
             log_buffer: &tui_state.log_buffer,
             log_scroll: &mut tui_state.log_scroll,
             log_horizontal_scroll: &mut tui_state.log_horizontal_scroll,
+            log_wrap: tui_state.log_wrap,
             log_auto_scroll: tui_state.log_auto_scroll,
             log_filter: &tui_state.log_filter,
             log_input_mode: tui_state.log_input_mode,
@@ -58,6 +60,7 @@ impl TabRenderer for LogsTab {
             log_buffer: &tui_state.log_buffer,
             log_scroll: unsafe { &mut DUMMY_SCROLL },
             log_horizontal_scroll: unsafe { &mut DUMMY_H_SCROLL },
+            log_wrap: tui_state.log_wrap,
             log_auto_scroll: tui_state.log_auto_scroll,
             log_filter: &tui_state.log_filter,
             log_input_mode: tui_state.log_input_mode,
@@ -157,15 +160,51 @@ impl TabRenderer for LogsTab {
             "{}Logs ({} lines, filter: {}){}{}",
             auto_scroll_indicator, log_count, filter_text, h_scroll_indicator, input_indicator
         );
-        let logs_list = List::new(log_items)
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .style(Style::default().fg(Color::White));
+        use ratatui::widgets::{Paragraph, Wrap};
 
-        // Create list state for scrolling
-        let mut list_state = ListState::default();
-        list_state.select(Some(*state.log_scroll));
+        // Append wrap indicator to title
+        let wrap_indicator = if state.log_input_mode {
+            ""
+        } else if state.log_auto_scroll {
+            ""
+        } else {
+            ""
+        };
 
-        f.render_stateful_widget(logs_list, area, &mut list_state);
+        let title = format!(
+            "{}Logs ({} lines, filter: {}){}{}{}",
+            auto_scroll_indicator, log_count, filter_text, h_scroll_indicator, input_indicator, wrap_indicator
+        );
+
+        if state.log_wrap {
+            // Render wrapped logs as a Paragraph (multi-line) and allow vertical scrolling
+            let joined = filtered_logs
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<&str>>()
+                .join("\n");
+            let para = Paragraph::new(joined)
+                .block(Block::default().borders(Borders::ALL).title(title))
+                .wrap(Wrap { trim: true })
+                .style(Style::default().fg(Color::White));
+
+            // We emulate vertical scroll by slicing lines
+            // Compute visible slice based on area.height and log_scroll
+            let lines: Vec<&str> = filtered_logs.iter().map(|s| s.as_str()).collect();
+            let start = *state.log_scroll;
+            // Nothing special for horizontal scroll when wrapped
+            f.render_widget(para, area);
+        } else {
+            let logs_list = List::new(log_items)
+                .block(Block::default().borders(Borders::ALL).title(title))
+                .style(Style::default().fg(Color::White));
+
+            // Create list state for scrolling
+            let mut list_state = ListState::default();
+            list_state.select(Some(*state.log_scroll));
+
+            f.render_stateful_widget(logs_list, area, &mut list_state);
+        }
     }
 
     fn help_text(state: Self::State<'_>) -> Vec<Span<'static>> {

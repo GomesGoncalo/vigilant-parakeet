@@ -105,6 +105,13 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
             }
         }
 
+        // Toggle wrap mode for logs
+        KeyCode::Char('w') | KeyCode::Char('W') if !state.log_input_mode => {
+            if state.active_tab == Tab::Logs {
+                state.log_wrap = !state.log_wrap;
+            }
+        }
+
         // Enter custom filter mode (Logs tab only)
         KeyCode::Char('/') if !state.log_input_mode => {
             if state.active_tab == Tab::Logs {
@@ -162,14 +169,16 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
         // Navigation: Left (horizontal scroll left)
         KeyCode::Left => {
             if state.active_tab == Tab::Logs {
-                state.log_horizontal_scroll = state.log_horizontal_scroll.saturating_sub(5);
+                let step = if key.modifiers.contains(KeyModifiers::SHIFT) { 20 } else { 5 };
+                state.log_horizontal_scroll = state.log_horizontal_scroll.saturating_sub(step);
             }
         }
 
         // Navigation: Right (horizontal scroll right)
         KeyCode::Right => {
             if state.active_tab == Tab::Logs {
-                state.log_horizontal_scroll = state.log_horizontal_scroll.saturating_add(5);
+                let step = if key.modifiers.contains(KeyModifiers::SHIFT) { 20 } else { 5 };
+                state.log_horizontal_scroll = state.log_horizontal_scroll.saturating_add(step);
             }
         }
 
