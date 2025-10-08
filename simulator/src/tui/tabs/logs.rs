@@ -27,7 +27,6 @@ pub struct LogsTabState<'a> {
 }
 
 /// Logs tab renderer
-#[derive(Default)]
 pub struct LogsTab;
 
 impl TabRenderer for LogsTab {
