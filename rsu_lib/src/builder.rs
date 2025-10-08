@@ -101,6 +101,12 @@ impl RsuBuilder {
         self
     }
 
+    /// Set the node name for tracing/logging identification
+    pub fn with_node_name(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.with_node_name(name);
+        self
+    }
+
     /// Inject a test TUN device (for testing only)
     #[cfg(any(test, feature = "test_helpers"))]
     pub fn with_tun(mut self, tun: Arc<common::tun::Tun>) -> Self {
@@ -128,7 +134,8 @@ impl RsuBuilder {
         let args = self.to_args();
         let tun = self.inner.create_tun_device()?;
         let device = self.inner.create_device()?;
-        Rsu::new(args, tun, device)
+        let node_name = self.inner.node_name.unwrap_or_else(|| "unknown".to_string());
+        Rsu::new(args, tun, device, node_name)
     }
 
     /// Build the Rsu instance (test mode)
@@ -139,7 +146,8 @@ impl RsuBuilder {
         let args = self.to_args();
         let tun = self.inner.create_tun_device()?;
         let device = self.inner.create_device()?;
-        Rsu::new(args, tun, device)
+        let node_name = self.inner.node_name.unwrap_or_else(|| "unknown".to_string());
+        Rsu::new(args, tun, device, node_name)
     }
 
     /// Convert builder to RsuArgs

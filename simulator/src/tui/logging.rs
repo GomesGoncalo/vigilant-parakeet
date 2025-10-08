@@ -102,12 +102,30 @@ impl TuiLogLayer {
 
 impl<S> Layer<S> for TuiLogLayer
 where
-    S: tracing::Subscriber,
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        // If this is a "node" span, extract the "name" field and store it
+        if let Some(span) = ctx.span(id) {
+            if span.name() == "node" {
+                let mut visitor = NameFieldVisitor::default();
+                attrs.record(&mut visitor);
+                if let Some(name) = visitor.name {
+                    span.extensions_mut().insert(NodeNameExtension { name });
+                }
+            }
+        }
+    }
+
     fn on_event(
         &self,
         event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         // Format the event
         let mut visitor = LogVisitor::new();
@@ -117,13 +135,74 @@ where
         let target = event.metadata().target();
         let message = visitor.message;
 
-        let formatted = format!("[{:5}] {}: {}", level, target, message);
+        // Get current timestamp
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
+
+        // Extract node name from current span context
+        let node_name = ctx.event_scope(event).and_then(|scope| {
+            // Walk up the span stack looking for a "node" span with stored name
+            scope.from_root().find_map(|span| {
+                if span.name() == "node" {
+                    span.extensions()
+                        .get::<NodeNameExtension>()
+                        .map(|ext| ext.name.clone())
+                } else {
+                    None
+                }
+            })
+        });
+
+        // Format with compact, aligned structure
+        let formatted = if let Some(name) = node_name {
+            format!(
+                "{} {:>5} [{:<8}] {}: {}",
+                timestamp,
+                level,
+                name,
+                target,
+                message
+            )
+        } else {
+            format!(
+                "{} {:>5} {:10} {}: {}",
+                timestamp,
+                level,
+                "",  // Empty space where node name would be
+                target,
+                message
+            )
+        };
 
         // Add to buffer
         let mut lines = self.buffer.lock().unwrap();
         lines.push_back(formatted);
         if lines.len() > MAX_LOGS {
             lines.pop_front();
+        }
+    }
+}
+
+/// Extension to store node name in span
+#[derive(Clone)]
+struct NodeNameExtension {
+    name: String,
+}
+
+#[derive(Default)]
+struct NameFieldVisitor {
+    name: Option<String>,
+}
+
+impl tracing::field::Visit for NameFieldVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "name" {
+            self.name = Some(format!("{:?}", value));
+        }
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "name" {
+            self.name = Some(value.to_string());
         }
     }
 }

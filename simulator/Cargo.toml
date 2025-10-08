@@ -11,6 +11,7 @@ anyhow = "*"
 uninit = "*"
 tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter", "std"] }
+chrono = "*"
 clap = { version = "*", features = ["derive"] }
 futures = "*"
 netns-rs = "*"

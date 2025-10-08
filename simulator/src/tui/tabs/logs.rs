@@ -18,6 +18,7 @@ use super::TabRenderer;
 pub struct LogsTabState<'a> {
     pub log_buffer: &'a Arc<Mutex<VecDeque<String>>>,
     pub log_scroll: &'a mut usize,
+    pub log_horizontal_scroll: &'a mut usize,
     pub log_auto_scroll: bool,
     pub log_filter: &'a LogFilter,
     pub log_input_mode: bool,
@@ -39,6 +40,7 @@ impl TabRenderer for LogsTab {
         LogsTabState {
             log_buffer: &tui_state.log_buffer,
             log_scroll: &mut tui_state.log_scroll,
+            log_horizontal_scroll: &mut tui_state.log_horizontal_scroll,
             log_auto_scroll: tui_state.log_auto_scroll,
             log_filter: &tui_state.log_filter,
             log_input_mode: tui_state.log_input_mode,
@@ -50,10 +52,12 @@ impl TabRenderer for LogsTab {
         // Help text doesn't mutate log_scroll, so we can use a dummy reference
         // This is a bit awkward but necessary since help_text doesn't need mutation
         static mut DUMMY_SCROLL: usize = 0;
+        static mut DUMMY_H_SCROLL: usize = 0;
         #[allow(static_mut_refs)]
         LogsTabState {
             log_buffer: &tui_state.log_buffer,
             log_scroll: unsafe { &mut DUMMY_SCROLL },
+            log_horizontal_scroll: unsafe { &mut DUMMY_H_SCROLL },
             log_auto_scroll: tui_state.log_auto_scroll,
             log_filter: &tui_state.log_filter,
             log_input_mode: tui_state.log_input_mode,
@@ -90,38 +94,47 @@ impl TabRenderer for LogsTab {
             *state.log_scroll = log_count - 1;
         }
 
-        // Convert logs to ListItems with color-coded levels
+        // Convert logs to ListItems with color-coded levels and horizontal scrolling
         let log_items: Vec<ListItem> = filtered_logs
             .iter()
             .map(|line| {
+                // Apply horizontal scroll offset
+                let scrolled_line = if *state.log_horizontal_scroll > 0 && line.len() > *state.log_horizontal_scroll {
+                    &line[*state.log_horizontal_scroll..]
+                } else if *state.log_horizontal_scroll > 0 {
+                    "" // Line is too short, show empty
+                } else {
+                    line.as_str()
+                };
+
                 // Try to detect log level and colorize accordingly
                 let styled_line = if line.contains("ERROR") {
                     Line::from(Span::styled(
-                        (*line).clone(),
+                        scrolled_line.to_string(),
                         Style::default().fg(Color::Red),
                     ))
                 } else if line.contains("WARN") {
                     Line::from(Span::styled(
-                        (*line).clone(),
+                        scrolled_line.to_string(),
                         Style::default().fg(Color::Yellow),
                     ))
                 } else if line.contains("INFO") {
                     Line::from(Span::styled(
-                        (*line).clone(),
+                        scrolled_line.to_string(),
                         Style::default().fg(Color::Green),
                     ))
                 } else if line.contains("DEBUG") {
                     Line::from(Span::styled(
-                        (*line).clone(),
+                        scrolled_line.to_string(),
                         Style::default().fg(Color::Cyan),
                     ))
                 } else if line.contains("TRACE") {
                     Line::from(Span::styled(
-                        (*line).clone(),
+                        scrolled_line.to_string(),
                         Style::default().fg(Color::Gray),
                     ))
                 } else {
-                    Line::from((*line).clone())
+                    Line::from(scrolled_line.to_string())
                 };
 
                 ListItem::new(styled_line)
@@ -130,14 +143,19 @@ impl TabRenderer for LogsTab {
 
         let auto_scroll_indicator = if state.log_auto_scroll { "🔄 " } else { "" };
         let filter_text = state.log_filter.as_str();
+        let h_scroll_indicator = if *state.log_horizontal_scroll > 0 {
+            format!(" ←→{} ", state.log_horizontal_scroll)
+        } else {
+            String::new()
+        };
         let input_indicator = if state.log_input_mode {
             format!(" [INPUT: {}█]", state.log_input_buffer)
         } else {
             String::new()
         };
         let title = format!(
-            "{}Logs ({} lines, filter: {}){}",
-            auto_scroll_indicator, log_count, filter_text, input_indicator
+            "{}Logs ({} lines, filter: {}){}{}",
+            auto_scroll_indicator, log_count, filter_text, h_scroll_indicator, input_indicator
         );
         let logs_list = List::new(log_items)
             .block(Block::default().borders(Borders::ALL).title(title))
@@ -179,6 +197,8 @@ impl TabRenderer for LogsTab {
                 super::text_span(" custom filter  │  "),
                 super::key_span("↑/↓"),
                 super::text_span(" scroll  │  "),
+                super::key_span("←/→"),
+                super::text_span(" h-scroll  │  "),
                 super::key_span("End"),
                 Span::styled(auto_scroll_text, Style::default().fg(Color::Gray)),
                 super::key_span("Tab"),

@@ -28,6 +28,8 @@ mod tests {
             ip: Ipv4Addr::new(127, 0, 0, 1),
             server_params: ServerParameters { port: 0 }, // Use port 0 for OS assignment
         };
+        // Note: create() function needs updating to accept node_name parameter
+        // For now this test will fail - will be fixed when updating ServerBuilder
         let _server = create(args).await?;
         Ok(())
     }

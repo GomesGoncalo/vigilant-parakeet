@@ -47,12 +47,21 @@ async fn main() -> Result<()> {
     } else {
         if args.pretty {
             tracing_subscriber::registry()
-                .with(fmt::layer().with_thread_ids(true).pretty())
+                .with(
+                    fmt::layer()
+                        .with_thread_ids(true)
+                        .with_span_events(fmt::format::FmtSpan::ACTIVE)
+                        .pretty(),
+                )
                 .with(EnvFilter::from_default_env())
                 .init();
         } else {
             tracing_subscriber::registry()
-                .with(fmt::layer().with_thread_ids(true))
+                .with(
+                    fmt::layer()
+                        .with_thread_ids(true)
+                        .with_span_events(fmt::format::FmtSpan::ACTIVE),
+                )
                 .with(EnvFilter::from_default_env())
                 .init();
         }
@@ -63,18 +72,27 @@ async fn main() -> Result<()> {
     {
         if args.pretty {
             tracing_subscriber::registry()
-                .with(fmt::layer().with_thread_ids(true).pretty())
+                .with(
+                    fmt::layer()
+                        .with_thread_ids(true)
+                        .with_span_events(fmt::format::FmtSpan::ACTIVE)
+                        .pretty(),
+                )
                 .with(EnvFilter::from_default_env())
                 .init();
         } else {
             tracing_subscriber::registry()
-                .with(fmt::layer().with_thread_ids(true))
+                .with(
+                    fmt::layer()
+                        .with_thread_ids(true)
+                        .with_span_events(fmt::format::FmtSpan::ACTIVE),
+                )
                 .with(EnvFilter::from_default_env())
                 .init();
         }
     }
 
-    let simulator = std::sync::Arc::new(Simulator::new(&args, |_name, config| {
+    let simulator = std::sync::Arc::new(Simulator::new(&args, |name, config| {
         let Some(config) = config.get("config_path") else {
             bail!("no config for node");
         };
@@ -90,8 +108,8 @@ async fn main() -> Result<()> {
         let node_type = NodeType::from_str(&settings.get_string("node_type")?, true)
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        // Create node with all its interfaces
-        let result = create_node_from_settings(node_type, &settings)?;
+        // Create node with all its interfaces, passing node name for tracing instrumentation
+        let result = create_node_from_settings(node_type, &settings, name.to_string())?;
 
         // Return complete NodeInterfaces (no more dummy tuns needed!)
         Ok((result.device, result.interfaces, result.node))

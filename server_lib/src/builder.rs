@@ -8,12 +8,17 @@ use std::sync::Arc;
 pub struct ServerBuilder {
     ip: Ipv4Addr,
     port: u16,
+    node_name: Option<String>,
 }
 
 impl ServerBuilder {
     /// Create a new ServerBuilder with the specified IP address
     pub fn new(ip: Ipv4Addr) -> Self {
-        Self { ip, port: 8080 }
+        Self {
+            ip,
+            port: 8080,
+            node_name: None,
+        }
     }
 
     /// Create a ServerBuilder from ServerArgs
@@ -21,6 +26,7 @@ impl ServerBuilder {
         Self {
             ip: args.ip,
             port: args.server_params.port,
+            node_name: None,
         }
     }
 
@@ -30,9 +36,16 @@ impl ServerBuilder {
         self
     }
 
+    /// Set the node name for tracing/logging identification
+    pub fn with_node_name(mut self, name: impl Into<String>) -> Self {
+        self.node_name = Some(name.into());
+        self
+    }
+
     /// Build the Server instance
     pub fn build(self) -> Result<Arc<Server>> {
-        let server = Arc::new(Server::new(self.ip, self.port));
+        let node_name = self.node_name.unwrap_or_else(|| "unknown".to_string());
+        let server = Arc::new(Server::new(self.ip, self.port, node_name));
         Ok(server)
     }
 }

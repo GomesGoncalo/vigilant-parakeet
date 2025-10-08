@@ -23,6 +23,7 @@ use crate::simulator::SimNode;
 pub fn create_node_from_settings(
     node_type: node_lib::args::NodeType,
     settings: &Config,
+    node_name: String,
 ) -> Result<NodeCreationResult> {
     // Handle Server nodes separately - they receive UDP traffic from RSUs via infrastructure
     // Server nodes have TWO interfaces:
@@ -57,7 +58,7 @@ pub fn create_node_from_settings(
             .with_mtu(1500) // Standard MTU for infrastructure connectivity
             .build_tap()?;
 
-        let server = Arc::new(Server::new(cloud_ip, port));
+        let server = Arc::new(Server::new(cloud_ip, port, node_name));
 
         // Start the server immediately in the namespace context using block_in_place
         // This ensures the socket binds within the correct network namespace
@@ -160,6 +161,7 @@ pub fn create_node_from_settings(
             obu_args,
             virtual_tun.clone(),
             dev.clone(),
+            node_name,
         )?);
 
         let interfaces = NodeInterfaces::obu(vanet_tun, virtual_tun);
@@ -192,6 +194,7 @@ pub fn create_node_from_settings(
             rsu_args,
             virtual_tun.clone(),
             dev.clone(),
+            node_name,
         )?);
 
         let interfaces = NodeInterfaces::rsu(vanet_tun, virtual_tun, cloud_tun);
@@ -216,7 +219,11 @@ mod tests {
             .add_source(config::File::from_str(toml, FileFormat::Toml))
             .build()?;
 
-        let result = create_node_from_settings(node_lib::args::NodeType::Obu, &settings)?;
+        let result = create_node_from_settings(
+            node_lib::args::NodeType::Obu,
+            &settings,
+            "test_obu".to_string(),
+        )?;
 
         // Verify OBU has correct interfaces
         assert!(result.interfaces.vanet().is_some());
@@ -239,7 +246,11 @@ mod tests {
             .add_source(config::File::from_str(toml, FileFormat::Toml))
             .build()?;
 
-        let result = create_node_from_settings(node_lib::args::NodeType::Rsu, &settings)?;
+        let result = create_node_from_settings(
+            node_lib::args::NodeType::Rsu,
+            &settings,
+            "test_rsu".to_string(),
+        )?;
 
         // Verify RSU has correct interfaces
         assert!(result.interfaces.vanet().is_some());

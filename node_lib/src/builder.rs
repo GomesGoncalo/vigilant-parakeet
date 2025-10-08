@@ -22,6 +22,7 @@ pub struct NodeBuilder {
     pub hello_history: u32,
     pub cached_candidates: u32,
     pub enable_encryption: bool,
+    pub node_name: Option<String>,
     // For testing with injected dependencies
     #[cfg_attr(not(test), allow(dead_code))]
     pub tun: Option<Arc<Tun>>,
@@ -40,6 +41,7 @@ impl NodeBuilder {
             hello_history: 10,
             cached_candidates: 3,
             enable_encryption: false,
+            node_name: None,
             tun: None,
             device: None,
         }
@@ -78,6 +80,12 @@ impl NodeBuilder {
     /// Enable or disable encryption (default: false)
     pub fn with_encryption(mut self, enabled: bool) -> Self {
         self.enable_encryption = enabled;
+        self
+    }
+
+    /// Set the node name for tracing/logging identification
+    pub fn with_node_name(mut self, name: impl Into<String>) -> Self {
+        self.node_name = Some(name.into());
         self
     }
 

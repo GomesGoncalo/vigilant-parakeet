@@ -23,6 +23,7 @@ use routing::Routing;
 use session::Session;
 use std::sync::{Arc, RwLock};
 use tokio::time::Instant;
+use tracing::Instrument;
 
 // Re-export type aliases for cleaner code
 use node_lib::{Shared, SharedDevice, SharedTun};
@@ -33,10 +34,19 @@ pub struct Obu {
     tun: SharedTun,
     device: SharedDevice,
     session: Arc<Session>,
+    node_name: String,
 }
 
 impl Obu {
-    pub fn new(args: ObuArgs, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
+    pub fn new(
+        args: ObuArgs,
+        tun: Arc<Tun>,
+        device: Arc<Device>,
+        node_name: String,
+    ) -> Result<Arc<Self>> {
+        // Create tracing span for this node's initialization
+        let _span = tracing::info_span!("node", name = %node_name).entered();
+
         let boot = Instant::now();
         let routing = Arc::new(RwLock::new(Routing::new(&args, &boot)?));
         let obu = Arc::new(Self {
@@ -45,6 +55,7 @@ impl Obu {
             tun: tun.clone(),
             device,
             session: Session::new(tun).into(),
+            node_name,
         });
 
         tracing::info!(
@@ -92,50 +103,55 @@ impl Obu {
         let device = obu.device.clone();
         let tun = obu.tun.clone();
         let routing_handle = obu.routing.clone();
-        tokio::task::spawn(async move {
-            loop {
-                let obu_c = obu.clone();
-                let messages = node::wire_traffic(&device, |pkt, size| {
-                    let obu = obu_c.clone();
-                    async move {
-                        let data = &pkt[..size];
-                        let mut all_responses = Vec::new();
-                        let mut offset = 0;
+        let node_name = obu.node_name.clone();
+        
+        // Create span for this node - will be attached to the async task
+        let span = tracing::info_span!("node", name = %node_name);
+        tokio::task::spawn(
+            async move {
+                loop {
+                    let obu_c = obu.clone();
+                    let messages = node::wire_traffic(&device, |pkt, size| {
+                        let obu = obu_c.clone();
+                        async move {
+                            let data = &pkt[..size];
+                            let mut all_responses = Vec::new();
+                            let mut offset = 0;
 
-                        while offset < data.len() {
-                            match Message::try_from(&data[offset..]) {
-                                Ok(msg) => {
-                                    let response = obu.handle_msg(&msg).await;
+                            while offset < data.len() {
+                                match Message::try_from(&data[offset..]) {
+                                    Ok(msg) => {
+                                        let response = obu.handle_msg(&msg).await;
 
-                                    if let Ok(Some(responses)) = response {
-                                        all_responses.extend(responses);
+                                        if let Ok(Some(responses)) = response {
+                                            all_responses.extend(responses);
+                                        }
+                                        // Use flat serialization for better performance
+                                        let msg_bytes: Vec<u8> = (&msg).into();
+                                        let msg_size: usize = msg_bytes.len();
+                                        offset += msg_size;
                                     }
-                                    // Use flat serialization for better performance
-                                    let msg_bytes: Vec<u8> = (&msg).into();
-                                    let msg_size: usize = msg_bytes.len();
-                                    offset += msg_size;
-                                }
-                                Err(e) => {
-                                    tracing::trace!(
-                                        offset = offset,
-                                        remaining = data.len() - offset,
-                                        total_size = data.len(),
-                                        error = %e,
-                                        "Failed to parse message, stopping batch processing"
-                                    );
-                                    break;
+                                    Err(e) => {
+                                        tracing::trace!(
+                                            offset = offset,
+                                            remaining = data.len() - offset,
+                                            total_size = data.len(),
+                                            error = %e,
+                                            "Failed to parse message, stopping batch processing"
+                                        );
+                                        break;
+                                    }
                                 }
                             }
-                        }
 
-                        if all_responses.is_empty() {
-                            Ok(None)
-                        } else {
-                            Ok(Some(all_responses))
+                            if all_responses.is_empty() {
+                                Ok(None)
+                            } else {
+                                Ok(Some(all_responses))
+                            }
                         }
-                    }
-                })
-                .await;
+                    })
+                    .await;
                 if let Ok(Some(messages)) = messages {
                     // Use batched message handling for improved throughput (2-3x faster)
                     let _ = node::handle_messages_batched(
@@ -146,8 +162,10 @@ impl Obu {
                     )
                     .await;
                 }
+                }
             }
-        });
+            .instrument(span)
+        );
         Ok(())
     }
 
@@ -158,67 +176,73 @@ impl Obu {
         let tun = self.tun.clone();
         let routing_handle = routing.clone();
         let enable_encryption = self.args.obu_params.enable_encryption;
-        tokio::task::spawn(async move {
-            loop {
-                let devicec = device.clone();
-                let routing_for_closure = routing_handle.clone();
-                let routing_for_handle = routing_handle.clone();
-                let messages = session
-                    .process(|x, size| async move {
-                        let y: &[u8] = &x[..size];
-                        let Some(upstream) = routing_for_closure
-                            .read()
-                            .expect("routing table read lock poisoned in heartbeat task")
-                            .get_route_to(None)
-                        else {
-                            return Ok(None);
-                        };
+        let node_name = self.node_name.clone();
+        
+        let span = tracing::info_span!("node", name = %node_name);
+        tokio::task::spawn(
+            async move {
+                loop {
+                    let devicec = device.clone();
+                    let routing_for_closure = routing_handle.clone();
+                    let routing_for_handle = routing_handle.clone();
+                    let messages = session
+                        .process(|x, size| async move {
+                            let y: &[u8] = &x[..size];
+                            let Some(upstream) = routing_for_closure
+                                .read()
+                                .expect("routing table read lock poisoned in heartbeat task")
+                                .get_route_to(None)
+                            else {
+                                return Ok(None);
+                            };
 
-                        let payload_data = if enable_encryption {
-                            match node_lib::crypto::encrypt_payload(y) {
-                                Ok(encrypted_data) => encrypted_data,
-                                Err(e) => {
-                                    tracing::error!(
-                                        size = y.len(),
-                                        error = %e,
-                                        "Failed to encrypt upstream frame"
-                                    );
-                                    return Ok(None);
+                            let payload_data = if enable_encryption {
+                                match node_lib::crypto::encrypt_payload(y) {
+                                    Ok(encrypted_data) => encrypted_data,
+                                    Err(e) => {
+                                        tracing::error!(
+                                            size = y.len(),
+                                            error = %e,
+                                            "Failed to encrypt upstream frame"
+                                        );
+                                        return Ok(None);
+                                    }
                                 }
-                            }
-                        } else {
-                            y.to_vec()
-                        };
+                            } else {
+                                y.to_vec()
+                            };
 
-                        // Use zero-copy serialization (12.4x faster than traditional)
-                        // This is the critical path for ALL client data traffic
-                        let origin = devicec.mac_address();
-                        let mut wire = Vec::with_capacity(24 + payload_data.len());
-                        let tu = ToUpstream::new(origin, &payload_data);
-                        Message::serialize_upstream_forward_into(
-                            &tu,
-                            origin,
-                            upstream.mac,
-                            &mut wire,
-                        );
-                        let outgoing = vec![ReplyType::WireFlat(wire)];
-                        Ok(Some(outgoing))
-                    })
-                    .await;
+                            // Use zero-copy serialization (12.4x faster than traditional)
+                            // This is the critical path for ALL client data traffic
+                            let origin = devicec.mac_address();
+                            let mut wire = Vec::with_capacity(24 + payload_data.len());
+                            let tu = ToUpstream::new(origin, &payload_data);
+                            Message::serialize_upstream_forward_into(
+                                &tu,
+                                origin,
+                                upstream.mac,
+                                &mut wire,
+                            );
+                            let outgoing = vec![ReplyType::WireFlat(wire)];
+                            Ok(Some(outgoing))
+                        })
+                        .await;
 
-                if let Ok(Some(messages)) = messages {
-                    // Pass the routing handle so send failures from TAP-originated
-                    // upstream packets can promote the next candidate.
-                    let _ = node::handle_messages(
-                        messages,
-                        &tun,
-                        &device,
-                        Some(routing_for_handle.clone()),
-                    )
-                    .await;
+                    if let Ok(Some(messages)) = messages {
+                        // Pass the routing handle so send failures from TAP-originated
+                        // upstream packets can promote the next candidate.
+                        let _ = node::handle_messages(
+                            messages,
+                            &tun,
+                            &device,
+                            Some(routing_for_handle.clone()),
+                        )
+                        .await;
+                    }
                 }
             }
-        });
+            .instrument(span)
+        );
         Ok(())
     }
 

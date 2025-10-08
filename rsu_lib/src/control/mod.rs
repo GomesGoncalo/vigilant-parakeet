@@ -21,6 +21,7 @@ use std::{
     sync::{Arc, RwLock},
     time::Duration,
 };
+use tracing::Instrument;
 
 // Re-export type aliases for cleaner code
 use node_lib::{Shared, SharedDevice, SharedTun};
@@ -31,16 +32,26 @@ pub struct Rsu {
     tun: SharedTun,
     device: SharedDevice,
     cache: Arc<ClientCache>,
+    node_name: String,
 }
 
 impl Rsu {
-    pub fn new(args: RsuArgs, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
+    pub fn new(
+        args: RsuArgs,
+        tun: Arc<Tun>,
+        device: Arc<Device>,
+        node_name: String,
+    ) -> Result<Arc<Self>> {
+        // Create tracing span for this node's initialization
+        let _span = tracing::info_span!("node", name = %node_name).entered();
+
         let rsu = Arc::new(Self {
             routing: Arc::new(RwLock::new(Routing::new(&args)?)),
             args,
             tun,
             device,
             cache: ClientCache::default().into(),
+            node_name,
         });
 
         tracing::info!(
@@ -79,63 +90,68 @@ impl Rsu {
     fn wire_traffic_task(rsu: Arc<Self>) -> Result<()> {
         let device = rsu.device.clone();
         let tun = rsu.tun.clone();
+        let node_name = rsu.node_name.clone();
 
-        tokio::task::spawn(async move {
-            loop {
-                let rsu = rsu.clone();
-                let messages = node::wire_traffic(&device, |pkt, size| {
-                    async move {
-                        let data = &pkt[..size];
-                        let mut all_responses = Vec::new();
-                        let mut offset = 0;
+        let span = tracing::info_span!("node", name = %node_name);
+        tokio::task::spawn(
+            async move {
+                loop {
+                    let rsu = rsu.clone();
+                    let messages = node::wire_traffic(&device, |pkt, size| {
+                        async move {
+                            let data = &pkt[..size];
+                            let mut all_responses = Vec::new();
+                            let mut offset = 0;
 
-                        while offset < data.len() {
-                            match Message::try_from(&data[offset..]) {
-                                Ok(msg) => {
-                                    let response = rsu.handle_msg(&msg).await;
+                            while offset < data.len() {
+                                match Message::try_from(&data[offset..]) {
+                                    Ok(msg) => {
+                                        let response = rsu.handle_msg(&msg).await;
 
-                                    if let Ok(Some(responses)) = response {
-                                        all_responses.extend(responses);
+                                        if let Ok(Some(responses)) = response {
+                                            all_responses.extend(responses);
+                                        }
+                                        // Use flat serialization for better performance
+                                        let msg_bytes: Vec<u8> = (&msg).into();
+                                        let msg_size: usize = msg_bytes.len();
+                                        offset += msg_size;
                                     }
-                                    // Use flat serialization for better performance
-                                    let msg_bytes: Vec<u8> = (&msg).into();
-                                    let msg_size: usize = msg_bytes.len();
-                                    offset += msg_size;
-                                }
-                                Err(e) => {
-                                    tracing::trace!(
-                                        offset = offset,
-                                        remaining = data.len() - offset,
-                                        total_size = data.len(),
-                                        error = %e,
-                                        "Failed to parse message, stopping batch processing"
-                                    );
-                                    break;
+                                    Err(e) => {
+                                        tracing::trace!(
+                                            offset = offset,
+                                            remaining = data.len() - offset,
+                                            total_size = data.len(),
+                                            error = %e,
+                                            "Failed to parse message, stopping batch processing"
+                                        );
+                                        break;
+                                    }
                                 }
                             }
-                        }
 
-                        if all_responses.is_empty() {
-                            Ok(None)
-                        } else {
-                            Ok(Some(all_responses))
+                            if all_responses.is_empty() {
+                                Ok(None)
+                            } else {
+                                Ok(Some(all_responses))
+                            }
                         }
-                    }
-                })
-                .await;
+                    })
+                    .await;
 
-                match messages {
-                    Ok(Some(messages)) => {
-                        // Use batched message handling for improved throughput (2-3x faster)
-                        let _ = node::handle_messages_batched(messages, &tun, &device).await;
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        tracing::error!(error = %e, "Wire traffic processing error");
+                    match messages {
+                        Ok(Some(messages)) => {
+                            // Use batched message handling for improved throughput (2-3x faster)
+                            let _ = node::handle_messages_batched(messages, &tun, &device).await;
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::error!(error = %e, "Wire traffic processing error");
+                        }
                     }
                 }
             }
-        });
+            .instrument(span)
+        );
         Ok(())
     }
 
@@ -269,9 +285,12 @@ impl Rsu {
         let periodicity = Duration::from_millis(periodicity.into());
         let routing = self.routing.clone();
         let device = self.device.clone();
+        let node_name = self.node_name.clone();
 
-        tokio::task::spawn(async move {
-            loop {
+        let span = tracing::info_span!("node", name = %node_name);
+        tokio::task::spawn(
+            async move {
+                loop {
                 let msg: Vec<u8> = {
                     let mut routing = routing
                         .write()
@@ -293,8 +312,10 @@ impl Rsu {
                     }
                 }
                 let _ = tokio_timerfd::sleep(periodicity).await;
+                }
             }
-        });
+            .instrument(span)
+        );
         Ok(())
     }
 
@@ -304,8 +325,12 @@ impl Rsu {
         let cache = self.cache.clone();
         let routing = self.routing.clone();
         let enable_encryption = self.args.rsu_params.enable_encryption;
-        tokio::task::spawn(async move {
-            loop {
+        let node_name = self.node_name.clone();
+        
+        let span = tracing::info_span!("node", name = %node_name);
+        tokio::task::spawn(
+            async move {
+                loop {
                 let devicec = device.clone();
                 let cache = cache.clone();
                 let routing = routing.clone();
@@ -480,8 +505,10 @@ impl Rsu {
                 if let Ok(Some(messages)) = messages {
                     let _ = node::handle_messages(messages, &tun, &device, None).await;
                 }
+                }
             }
-        });
+            .instrument(span)
+        );
         Ok(())
     }
 }
@@ -870,6 +897,7 @@ mod rsu_tests {
             tun: tun.clone(),
             device: dev.clone(),
             cache: cache.clone(),
+            node_name: "test_rsu".to_string(),
         });
 
         // Build an upstream message whose payload is invalid ciphertext so decrypt fails

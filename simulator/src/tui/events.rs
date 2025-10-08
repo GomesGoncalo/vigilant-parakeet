@@ -159,6 +159,20 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
             }
         }
 
+        // Navigation: Left (horizontal scroll left)
+        KeyCode::Left => {
+            if state.active_tab == Tab::Logs {
+                state.log_horizontal_scroll = state.log_horizontal_scroll.saturating_sub(5);
+            }
+        }
+
+        // Navigation: Right (horizontal scroll right)
+        KeyCode::Right => {
+            if state.active_tab == Tab::Logs {
+                state.log_horizontal_scroll = state.log_horizontal_scroll.saturating_add(5);
+            }
+        }
+
         // Navigation: Page Up
         KeyCode::PageUp => {
             if state.active_tab == Tab::Logs {
@@ -184,6 +198,7 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
         KeyCode::Home => {
             if state.active_tab == Tab::Logs {
                 state.log_scroll = 0;
+                state.log_horizontal_scroll = 0;
                 state.log_auto_scroll = false;
             } else if state.active_tab == Tab::Topology {
                 state.selected_topology_index = 0;
