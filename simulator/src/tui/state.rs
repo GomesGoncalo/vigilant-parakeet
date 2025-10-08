@@ -7,27 +7,17 @@ use std::{
     time::Instant,
 };
 
-use super::logging::LogFilter;
+use super::{logging::LogFilter, tabs::Tab};
 
 /// TUI update frequency in Hz
 pub(crate) const TUI_UPDATES_PER_SECOND: usize = 4;
 
 /// Target history duration in seconds
-const HISTORY_DURATION_SECONDS: usize = 75;
+const HISTORY_DURATION_SECONDS: usize = 30;
 
 /// Maximum number of history points to keep for sparkline/chart series
 /// Calculated to hold approximately HISTORY_DURATION_SECONDS of data at TUI_UPDATES_PER_SECOND
 pub const MAX_HISTORY: usize = TUI_UPDATES_PER_SECOND * HISTORY_DURATION_SECONDS;
-
-/// Top-level tabs in the TUI
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tab {
-    Metrics,
-    Channels,
-    Upstreams,
-    Logs,
-    Topology,
-}
 
 /// Channel sorting mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,9 +204,6 @@ impl TuiState {
 
         // Calculate deltas for rate-based metrics
         let packets_sent_delta = summary.packets_sent.saturating_sub(self.prev_packets_sent);
-        let _packets_dropped_delta = summary
-            .packets_dropped
-            .saturating_sub(self.prev_packets_dropped);
         let time_delta = elapsed - self.prev_timestamp;
 
         let current_throughput = if time_delta > 0.0 {

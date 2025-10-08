@@ -1,7 +1,10 @@
 //! Event handling for the TUI
 
-use crate::tui::logging::LogFilter;
-use crate::tui::state::{DisplayChannelStats, Tab, TuiState};
+use crate::tui::{
+    logging::LogFilter,
+    state::{DisplayChannelStats, TuiState},
+    tabs::Tab,
+};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;

@@ -1,5 +1,5 @@
 // Topology tab rendering - network tree visualization
-use crate::tui::state::TuiState;
+use crate::{metrics::SimulatorMetrics, tui::state::TuiState};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -7,10 +7,74 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Arc,
+};
+
+use super::TabRenderer;
+
+/// State data for the Topology tab
+pub struct TopologyTabState<'a> {
+    pub nodes: &'a HashMap<String, (String, String, crate::simulator::SimNode)>,
+    pub metrics: &'a Arc<SimulatorMetrics>,
+    pub selected_index: &'a mut usize,
+    pub item_count: &'a mut usize,
+}
+
+/// Topology tab renderer
+#[derive(Default)]
+pub struct TopologyTab;
+
+impl TabRenderer for TopologyTab {
+    type State<'a> = TopologyTabState<'a>;
+
+    fn display_name() -> &'static str {
+        "🌳 Topology"
+    }
+
+    fn extract_state<'a>(tui_state: &'a mut TuiState) -> Self::State<'a> {
+        TopologyTabState {
+            nodes: &tui_state.nodes,
+            metrics: &tui_state.metrics,
+            selected_index: &mut tui_state.selected_topology_index,
+            item_count: &mut tui_state.topology_item_count,
+        }
+    }
+
+    fn extract_help_state<'a>(tui_state: &'a TuiState) -> Self::State<'a> {
+        // Help text doesn't mutate these fields
+        static mut DUMMY_INDEX: usize = 0;
+        static mut DUMMY_COUNT: usize = 0;
+        #[allow(static_mut_refs)]
+        TopologyTabState {
+            nodes: &tui_state.nodes,
+            metrics: &tui_state.metrics,
+            selected_index: unsafe { &mut DUMMY_INDEX },
+            item_count: unsafe { &mut DUMMY_COUNT },
+        }
+    }
+
+    fn render(f: &mut Frame, area: Rect, mut state: Self::State<'_>) {
+        render_topology_tab(f, area, &mut state);
+    }
+
+    fn help_text(_state: Self::State<'_>) -> Vec<Span<'static>> {
+        vec![
+            super::key_span("Q/Esc/Ctrl+C"),
+            super::text_span(" quit  │  "),
+            super::key_span("P"),
+            super::text_span(" pause  │  "),
+            super::key_span("↑/↓/PgUp/PgDn"),
+            super::text_span(" navigate  │  "),
+            super::key_span("Tab/1/2/3/4/5"),
+            super::text_span(" switch tabs"),
+        ]
+    }
+}
 
 /// Render the topology tab showing the network tree structure
-pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TuiState) {
+pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabState) {
     // Map mac -> node name for quick parent lookup
     let mut name_by_mac: HashMap<String, String> = HashMap::new();
     for (name, (mac, _ntype, _snode)) in state.nodes.iter() {
@@ -143,8 +207,8 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TuiState) {
         }
     }
 
-    // Update TuiState with flattened count
-    state.topology_item_count = lines.len();
+    // Update topology state with flattened count
+    *state.item_count = lines.len();
 
     // Build List items and render with selection
     let items: Vec<ListItem> = lines
@@ -153,8 +217,8 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TuiState) {
         .collect();
 
     let mut list_state = ListState::default();
-    if state.topology_item_count > 0 && state.selected_topology_index < state.topology_item_count {
-        list_state.select(Some(state.selected_topology_index));
+    if *state.item_count > 0 && *state.selected_index < *state.item_count {
+        list_state.select(Some(*state.selected_index));
     } else {
         list_state.select(None);
     }
@@ -189,7 +253,7 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TuiState) {
 fn render_node_details(
     f: &mut Frame,
     area: Rect,
-    state: &TuiState,
+    state: &TopologyTabState,
     node_name: &str,
     name_by_mac: &HashMap<String, String>,
 ) {
@@ -353,7 +417,7 @@ fn render_node_details(
 
 /// Context for tree collection to reduce function arguments
 struct TreeContext<'a> {
-    state: &'a TuiState,
+    state: &'a TopologyTabState<'a>,
     children: &'a BTreeMap<String, Vec<String>>,
     name_by_mac: &'a HashMap<String, String>,
     visited: &'a mut HashSet<String>,
@@ -433,7 +497,7 @@ fn collect_node(
 /// Compute hop distance from `name` to the nearest RSU by following cached_upstream_route
 fn compute_hops(
     name: &str,
-    state: &TuiState,
+    state: &TopologyTabState,
     name_by_mac: &HashMap<String, String>,
 ) -> Option<u32> {
     let mut visited: HashSet<String> = HashSet::new();
