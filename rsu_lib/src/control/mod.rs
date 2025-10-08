@@ -21,6 +21,7 @@ use std::{
     sync::{Arc, RwLock},
     time::Duration,
 };
+use tracing::Instrument;
 
 // Re-export type aliases for cleaner code
 use node_lib::{Shared, SharedDevice, SharedTun};
@@ -31,16 +32,26 @@ pub struct Rsu {
     tun: SharedTun,
     device: SharedDevice,
     cache: Arc<ClientCache>,
+    node_name: String,
 }
 
 impl Rsu {
-    pub fn new(args: RsuArgs, tun: Arc<Tun>, device: Arc<Device>) -> Result<Arc<Self>> {
+    pub fn new(
+        args: RsuArgs,
+        tun: Arc<Tun>,
+        device: Arc<Device>,
+        node_name: String,
+    ) -> Result<Arc<Self>> {
+        // Create tracing span for this node's initialization
+        let _span = tracing::info_span!("node", name = %node_name).entered();
+
         let rsu = Arc::new(Self {
             routing: Arc::new(RwLock::new(Routing::new(&args)?)),
             args,
             tun,
             device,
             cache: ClientCache::default().into(),
+            node_name,
         });
 
         tracing::info!(
@@ -79,63 +90,68 @@ impl Rsu {
     fn wire_traffic_task(rsu: Arc<Self>) -> Result<()> {
         let device = rsu.device.clone();
         let tun = rsu.tun.clone();
+        let node_name = rsu.node_name.clone();
 
-        tokio::task::spawn(async move {
-            loop {
-                let rsu = rsu.clone();
-                let messages = node::wire_traffic(&device, |pkt, size| {
-                    async move {
-                        let data = &pkt[..size];
-                        let mut all_responses = Vec::new();
-                        let mut offset = 0;
+        let span = tracing::info_span!("node", name = %node_name);
+        tokio::task::spawn(
+            async move {
+                loop {
+                    let rsu = rsu.clone();
+                    let messages = node::wire_traffic(&device, |pkt, size| {
+                        async move {
+                            let data = &pkt[..size];
+                            let mut all_responses = Vec::new();
+                            let mut offset = 0;
 
-                        while offset < data.len() {
-                            match Message::try_from(&data[offset..]) {
-                                Ok(msg) => {
-                                    let response = rsu.handle_msg(&msg).await;
+                            while offset < data.len() {
+                                match Message::try_from(&data[offset..]) {
+                                    Ok(msg) => {
+                                        let response = rsu.handle_msg(&msg).await;
 
-                                    if let Ok(Some(responses)) = response {
-                                        all_responses.extend(responses);
+                                        if let Ok(Some(responses)) = response {
+                                            all_responses.extend(responses);
+                                        }
+                                        // Use flat serialization for better performance
+                                        let msg_bytes: Vec<u8> = (&msg).into();
+                                        let msg_size: usize = msg_bytes.len();
+                                        offset += msg_size;
                                     }
-                                    // Use flat serialization for better performance
-                                    let msg_bytes: Vec<u8> = (&msg).into();
-                                    let msg_size: usize = msg_bytes.len();
-                                    offset += msg_size;
-                                }
-                                Err(e) => {
-                                    tracing::trace!(
-                                        offset = offset,
-                                        remaining = data.len() - offset,
-                                        total_size = data.len(),
-                                        error = %e,
-                                        "Failed to parse message, stopping batch processing"
-                                    );
-                                    break;
+                                    Err(e) => {
+                                        tracing::trace!(
+                                            offset = offset,
+                                            remaining = data.len() - offset,
+                                            total_size = data.len(),
+                                            error = %e,
+                                            "Failed to parse message, stopping batch processing"
+                                        );
+                                        break;
+                                    }
                                 }
                             }
-                        }
 
-                        if all_responses.is_empty() {
-                            Ok(None)
-                        } else {
-                            Ok(Some(all_responses))
+                            if all_responses.is_empty() {
+                                Ok(None)
+                            } else {
+                                Ok(Some(all_responses))
+                            }
                         }
-                    }
-                })
-                .await;
+                    })
+                    .await;
 
-                match messages {
-                    Ok(Some(messages)) => {
-                        // Use batched message handling for improved throughput (2-3x faster)
-                        let _ = node::handle_messages_batched(messages, &tun, &device).await;
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        tracing::error!(error = %e, "Wire traffic processing error");
+                    match messages {
+                        Ok(Some(messages)) => {
+                            // Use batched message handling for improved throughput (2-3x faster)
+                            let _ = node::handle_messages_batched(messages, &tun, &device).await;
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::error!(error = %e, "Wire traffic processing error");
+                        }
                     }
                 }
             }
-        });
+            .instrument(span),
+        );
         Ok(())
     }
 
@@ -269,32 +285,37 @@ impl Rsu {
         let periodicity = Duration::from_millis(periodicity.into());
         let routing = self.routing.clone();
         let device = self.device.clone();
+        let node_name = self.node_name.clone();
 
-        tokio::task::spawn(async move {
-            loop {
-                let msg: Vec<u8> = {
-                    let mut routing = routing
-                        .write()
-                        .expect("routing table write lock poisoned in heartbeat task");
-                    let msg = routing.send_heartbeat(device.mac_address());
-                    (&msg).into()
-                };
-                let vec = [IoSlice::new(&msg)];
-                match device.send_vectored(&vec).await {
-                    Ok(n) => {
-                        tracing::trace!(bytes_sent = n, "Heartbeat sent");
+        let span = tracing::info_span!("node", name = %node_name);
+        tokio::task::spawn(
+            async move {
+                loop {
+                    let msg: Vec<u8> = {
+                        let mut routing = routing
+                            .write()
+                            .expect("routing table write lock poisoned in heartbeat task");
+                        let msg = routing.send_heartbeat(device.mac_address());
+                        (&msg).into()
+                    };
+                    let vec = [IoSlice::new(&msg)];
+                    match device.send_vectored(&vec).await {
+                        Ok(n) => {
+                            tracing::trace!(bytes_sent = n, "Heartbeat sent");
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                size = msg.len(),
+                                "Failed to send heartbeat"
+                            );
+                        }
                     }
-                    Err(e) => {
-                        tracing::error!(
-                            error = %e,
-                            size = msg.len(),
-                            "Failed to send heartbeat"
-                        );
-                    }
+                    let _ = tokio_timerfd::sleep(periodicity).await;
                 }
-                let _ = tokio_timerfd::sleep(periodicity).await;
             }
-        });
+            .instrument(span),
+        );
         Ok(())
     }
 
@@ -304,89 +325,78 @@ impl Rsu {
         let cache = self.cache.clone();
         let routing = self.routing.clone();
         let enable_encryption = self.args.rsu_params.enable_encryption;
-        tokio::task::spawn(async move {
-            loop {
-                let devicec = device.clone();
-                let cache = cache.clone();
-                let routing = routing.clone();
-                let messages = node::tap_traffic(&tun, |pkt, size| async move {
-                    let data: &[u8] = &pkt[..size];
-                    let to: [u8; 6] = data[0..6].try_into()?;
-                    let to: MacAddress = to.into();
-                    let target = cache.get(to);
-                    let from: [u8; 6] = data[6..12].try_into()?;
-                    let from: MacAddress = from.into();
-                    let source_mac = devicec.mac_address().bytes();
-                    cache.store_mac(from, devicec.mac_address());
+        let node_name = self.node_name.clone();
 
-                    let routing = routing
-                        .read()
-                        .expect("routing table read lock poisoned during tap traffic processing");
-                    let is_multicast = to.bytes()[0] & 0x1 != 0;
+        let span = tracing::info_span!("node", name = %node_name);
+        tokio::task::spawn(
+            async move {
+                loop {
+                    let devicec = device.clone();
+                    let cache = cache.clone();
+                    let routing = routing.clone();
+                    let messages = node::tap_traffic(&tun, |pkt, size| async move {
+                        let data: &[u8] = &pkt[..size];
+                        let to: [u8; 6] = data[0..6].try_into()?;
+                        let to: MacAddress = to.into();
+                        let target = cache.get(to);
+                        let from: [u8; 6] = data[6..12].try_into()?;
+                        let from: MacAddress = from.into();
+                        let source_mac = devicec.mac_address().bytes();
+                        cache.store_mac(from, devicec.mac_address());
 
-                    let outgoing = if is_multicast {
-                        // For multicast from RSU's TUN interface, encrypt individually for each recipient
-                        routing
-                            .iter_next_hops()
-                            .filter(|x| x != &&devicec.mac_address())
-                            .filter_map(|x| {
-                                let dest = routing.get_route_to(Some(*x))?;
-                                Some((x, dest))
-                            })
-                            .map(|(x, y)| (x, y.mac))
-                            .unique_by(|(x, _)| *x)
-                            .filter_map(|(_x, next_hop)| {
-                                // Encrypt the entire frame individually for each recipient when encryption is enabled
-                                let downstream_data = if enable_encryption {
-                                    match node_lib::crypto::encrypt_payload(data) {
-                                        Ok(encrypted_data) => encrypted_data,
-                                        Err(_) => return None, // Skip this recipient on encryption failure
-                                    }
-                                } else {
-                                    data.to_vec()
-                                };
+                        let routing = routing.read().expect(
+                            "routing table read lock poisoned during tap traffic processing",
+                        );
+                        let is_multicast = to.bytes()[0] & 0x1 != 0;
 
-                                // Use zero-copy serialization (16.5x faster than traditional)
-                                let mut wire = Vec::with_capacity(30 + downstream_data.len());
-                                Message::serialize_downstream_into(
-                                    &source_mac,
-                                    to, // Use original broadcast destination, not target OBU MAC
-                                    &downstream_data,
-                                    devicec.mac_address(),
-                                    next_hop,
-                                    &mut wire,
-                                );
-                                Some(ReplyType::WireFlat(wire))
-                            })
-                            .collect_vec()
-                    } else if let Some(target) = target {
-                        // Encrypt entire frame for unicast traffic if encryption is enabled
-                        let downstream_data = if enable_encryption {
-                            match node_lib::crypto::encrypt_payload(data) {
-                                Ok(encrypted_data) => encrypted_data,
-                                Err(_) => return Ok(None),
-                            }
-                        } else {
-                            data.to_vec()
-                        };
+                        let outgoing = if is_multicast {
+                            // For multicast from RSU's TUN interface, encrypt individually for each recipient
+                            routing
+                                .iter_next_hops()
+                                .filter(|x| x != &&devicec.mac_address())
+                                .filter_map(|x| {
+                                    let dest = routing.get_route_to(Some(*x))?;
+                                    Some((x, dest))
+                                })
+                                .map(|(x, y)| (x, y.mac))
+                                .unique_by(|(x, _)| *x)
+                                .filter_map(|(_x, next_hop)| {
+                                    // Encrypt the entire frame individually for each recipient when encryption is enabled
+                                    let downstream_data = if enable_encryption {
+                                        match node_lib::crypto::encrypt_payload(data) {
+                                            Ok(encrypted_data) => encrypted_data,
+                                            Err(_) => return None, // Skip this recipient on encryption failure
+                                        }
+                                    } else {
+                                        data.to_vec()
+                                    };
 
-                        // Unicast traffic with known target
-                        if let Some(hop) = routing.get_route_to(Some(target)) {
-                            // Use zero-copy serialization (16.5x faster than traditional)
-                            let mut wire = Vec::with_capacity(30 + downstream_data.len());
-                            Message::serialize_downstream_into(
-                                &source_mac,
-                                target,
-                                &downstream_data,
-                                devicec.mac_address(),
-                                hop.mac,
-                                &mut wire,
-                            );
-                            vec![ReplyType::WireFlat(wire)]
-                        } else {
-                            // Fallback: no unicast route yet.
-                            // First try: send directly to the cached node for this client if known.
-                            if let Some(next_hop_mac) = cache.get(target) {
+                                    // Use zero-copy serialization (16.5x faster than traditional)
+                                    let mut wire = Vec::with_capacity(30 + downstream_data.len());
+                                    Message::serialize_downstream_into(
+                                        &source_mac,
+                                        to, // Use original broadcast destination, not target OBU MAC
+                                        &downstream_data,
+                                        devicec.mac_address(),
+                                        next_hop,
+                                        &mut wire,
+                                    );
+                                    Some(ReplyType::WireFlat(wire))
+                                })
+                                .collect_vec()
+                        } else if let Some(target) = target {
+                            // Encrypt entire frame for unicast traffic if encryption is enabled
+                            let downstream_data = if enable_encryption {
+                                match node_lib::crypto::encrypt_payload(data) {
+                                    Ok(encrypted_data) => encrypted_data,
+                                    Err(_) => return Ok(None),
+                                }
+                            } else {
+                                data.to_vec()
+                            };
+
+                            // Unicast traffic with known target
+                            if let Some(hop) = routing.get_route_to(Some(target)) {
                                 // Use zero-copy serialization (16.5x faster than traditional)
                                 let mut wire = Vec::with_capacity(30 + downstream_data.len());
                                 Message::serialize_downstream_into(
@@ -394,94 +404,111 @@ impl Rsu {
                                     target,
                                     &downstream_data,
                                     devicec.mac_address(),
-                                    next_hop_mac,
+                                    hop.mac,
                                     &mut wire,
                                 );
                                 vec![ReplyType::WireFlat(wire)]
                             } else {
-                                // Second try: fan out toward all known next hops.
-                                routing
-                                    .iter_next_hops()
-                                    .filter(|x| x != &&devicec.mac_address())
-                                    .filter_map(|x| {
-                                        let dest = routing.get_route_to(Some(*x))?;
-                                        Some((x, dest))
-                                    })
-                                    .map(|(x, y)| (x, y.mac))
-                                    .unique_by(|(x, _)| *x)
-                                    .filter_map(|(_x, next_hop)| {
-                                        // Encrypt the entire frame individually for each recipient when encryption is enabled
-                                        let downstream_data = if enable_encryption {
-                                            match node_lib::crypto::encrypt_payload(data) {
-                                                Ok(encrypted_data) => encrypted_data,
-                                                Err(_) => return None, // Skip this recipient on encryption failure
-                                            }
-                                        } else {
-                                            data.to_vec()
-                                        };
-
-                                        // Use zero-copy serialization (16.5x faster than traditional)
-                                        let mut wire =
-                                            Vec::with_capacity(30 + downstream_data.len());
-                                        Message::serialize_downstream_into(
-                                            &source_mac,
-                                            target,
-                                            &downstream_data,
-                                            devicec.mac_address(),
-                                            next_hop,
-                                            &mut wire,
-                                        );
-                                        Some(ReplyType::WireFlat(wire))
-                                    })
-                                    .collect_vec()
-                            }
-                        }
-                    } else {
-                        // No client-cache mapping for destination yet: fan out using the original
-                        // destination MAC from the TUN frame, not the next-hop address.
-                        routing
-                            .iter_next_hops()
-                            .filter(|x| x != &&devicec.mac_address())
-                            .filter_map(|x| {
-                                let dest = routing.get_route_to(Some(*x))?;
-                                Some((x, dest))
-                            })
-                            .map(|(x, y)| (x, y.mac))
-                            .unique_by(|(x, _)| *x)
-                            .filter_map(|(_x, next_hop)| {
-                                // Encrypt the entire frame individually for each recipient when encryption is enabled
-                                let downstream_data = if enable_encryption {
-                                    match node_lib::crypto::encrypt_payload(data) {
-                                        Ok(encrypted_data) => encrypted_data,
-                                        Err(_) => return None, // Skip this recipient on encryption failure
-                                    }
+                                // Fallback: no unicast route yet.
+                                // First try: send directly to the cached node for this client if known.
+                                if let Some(next_hop_mac) = cache.get(target) {
+                                    // Use zero-copy serialization (16.5x faster than traditional)
+                                    let mut wire = Vec::with_capacity(30 + downstream_data.len());
+                                    Message::serialize_downstream_into(
+                                        &source_mac,
+                                        target,
+                                        &downstream_data,
+                                        devicec.mac_address(),
+                                        next_hop_mac,
+                                        &mut wire,
+                                    );
+                                    vec![ReplyType::WireFlat(wire)]
                                 } else {
-                                    data.to_vec()
-                                };
+                                    // Second try: fan out toward all known next hops.
+                                    routing
+                                        .iter_next_hops()
+                                        .filter(|x| x != &&devicec.mac_address())
+                                        .filter_map(|x| {
+                                            let dest = routing.get_route_to(Some(*x))?;
+                                            Some((x, dest))
+                                        })
+                                        .map(|(x, y)| (x, y.mac))
+                                        .unique_by(|(x, _)| *x)
+                                        .filter_map(|(_x, next_hop)| {
+                                            // Encrypt the entire frame individually for each recipient when encryption is enabled
+                                            let downstream_data = if enable_encryption {
+                                                match node_lib::crypto::encrypt_payload(data) {
+                                                    Ok(encrypted_data) => encrypted_data,
+                                                    Err(_) => return None, // Skip this recipient on encryption failure
+                                                }
+                                            } else {
+                                                data.to_vec()
+                                            };
 
-                                // Use zero-copy serialization (16.5x faster than traditional)
-                                let mut wire = Vec::with_capacity(30 + downstream_data.len());
-                                Message::serialize_downstream_into(
-                                    &source_mac,
-                                    to,
-                                    &downstream_data,
-                                    devicec.mac_address(),
-                                    next_hop,
-                                    &mut wire,
-                                );
-                                Some(ReplyType::WireFlat(wire))
-                            })
-                            .collect_vec()
-                    };
-                    Ok(Some(outgoing))
-                })
-                .await;
+                                            // Use zero-copy serialization (16.5x faster than traditional)
+                                            let mut wire =
+                                                Vec::with_capacity(30 + downstream_data.len());
+                                            Message::serialize_downstream_into(
+                                                &source_mac,
+                                                target,
+                                                &downstream_data,
+                                                devicec.mac_address(),
+                                                next_hop,
+                                                &mut wire,
+                                            );
+                                            Some(ReplyType::WireFlat(wire))
+                                        })
+                                        .collect_vec()
+                                }
+                            }
+                        } else {
+                            // No client-cache mapping for destination yet: fan out using the original
+                            // destination MAC from the TUN frame, not the next-hop address.
+                            routing
+                                .iter_next_hops()
+                                .filter(|x| x != &&devicec.mac_address())
+                                .filter_map(|x| {
+                                    let dest = routing.get_route_to(Some(*x))?;
+                                    Some((x, dest))
+                                })
+                                .map(|(x, y)| (x, y.mac))
+                                .unique_by(|(x, _)| *x)
+                                .filter_map(|(_x, next_hop)| {
+                                    // Encrypt the entire frame individually for each recipient when encryption is enabled
+                                    let downstream_data = if enable_encryption {
+                                        match node_lib::crypto::encrypt_payload(data) {
+                                            Ok(encrypted_data) => encrypted_data,
+                                            Err(_) => return None, // Skip this recipient on encryption failure
+                                        }
+                                    } else {
+                                        data.to_vec()
+                                    };
 
-                if let Ok(Some(messages)) = messages {
-                    let _ = node::handle_messages(messages, &tun, &device, None).await;
+                                    // Use zero-copy serialization (16.5x faster than traditional)
+                                    let mut wire = Vec::with_capacity(30 + downstream_data.len());
+                                    Message::serialize_downstream_into(
+                                        &source_mac,
+                                        to,
+                                        &downstream_data,
+                                        devicec.mac_address(),
+                                        next_hop,
+                                        &mut wire,
+                                    );
+                                    Some(ReplyType::WireFlat(wire))
+                                })
+                                .collect_vec()
+                        };
+                        Ok(Some(outgoing))
+                    })
+                    .await;
+
+                    if let Ok(Some(messages)) = messages {
+                        let _ = node::handle_messages(messages, &tun, &device, None).await;
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
         Ok(())
     }
 }
@@ -870,6 +897,7 @@ mod rsu_tests {
             tun: tun.clone(),
             device: dev.clone(),
             cache: cache.clone(),
+            node_name: "test_rsu".to_string(),
         });
 
         // Build an upstream message whose payload is invalid ciphertext so decrypt fails

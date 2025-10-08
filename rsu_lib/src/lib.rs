@@ -34,17 +34,19 @@ pub fn create_with_vdev(
     args: RsuArgs,
     tun: Arc<Tun>,
     node_device: Arc<Device>,
+    node_name: String,
 ) -> Result<Arc<dyn Node>> {
     #[cfg(any(test, feature = "test_helpers"))]
     {
         Ok(RsuBuilder::from_args(args)
             .with_tun(tun)
             .with_device(node_device)
+            .with_node_name(node_name)
             .build()?)
     }
     #[cfg(not(any(test, feature = "test_helpers")))]
     {
-        Ok(Rsu::new(args, tun, node_device)?)
+        Ok(Rsu::new(args, tun, node_device, node_name)?)
     }
 }
 

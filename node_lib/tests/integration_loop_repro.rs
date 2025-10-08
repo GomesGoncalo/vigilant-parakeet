@@ -77,7 +77,13 @@ async fn hub_reproduce_loop_case_one() {
 
     // Build and start OBU
     let args_obu = mk_obu_args();
-    let _obu = Obu::new(args_obu, Arc::new(tun_obu), Arc::new(dev_obu)).expect("Obu::new failed");
+    let _obu = Obu::new(
+        args_obu,
+        Arc::new(tun_obu),
+        Arc::new(dev_obu),
+        "test_obu".to_string(),
+    )
+    .expect("Obu::new failed");
 
     // Allow tasks to start
     tokio::time::advance(Duration::from_millis(10)).await;
@@ -143,7 +149,13 @@ async fn hub_reproduce_loop_case_two() {
     let dev_obu = mk_device_from_fd(mac_obu, node_fds[1]);
     let (tun_obu, _peer) = mk_shim_pair();
     let args_obu = mk_obu_args();
-    let _obu = Obu::new(args_obu, Arc::new(tun_obu), Arc::new(dev_obu)).expect("Obu::new failed");
+    let _obu = Obu::new(
+        args_obu,
+        Arc::new(tun_obu),
+        Arc::new(dev_obu),
+        "test_obu2".to_string(),
+    )
+    .expect("Obu::new failed");
 
     tokio::time::advance(Duration::from_millis(10)).await;
 

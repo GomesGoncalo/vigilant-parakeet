@@ -58,8 +58,20 @@ async fn test_latency_measurement_with_mocked_time() {
     let args_obu = mk_obu_args();
 
     // Construct nodes
-    let rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).expect("Rsu::new failed");
-    let obu = Obu::new(args_obu, Arc::new(tun_obu), Arc::new(dev_obu)).expect("Obu::new failed");
+    let rsu = Rsu::new(
+        args_rsu,
+        Arc::new(tun_rsu),
+        Arc::new(dev_rsu),
+        "test_rsu".to_string(),
+    )
+    .expect("Rsu::new failed");
+    let obu = Obu::new(
+        args_obu,
+        Arc::new(tun_obu),
+        Arc::new(dev_obu),
+        "test_obu".to_string(),
+    )
+    .expect("Obu::new failed");
 
     // Wait for the RSU to measure latency from heartbeat replies
     // This tests the core latency measurement infrastructure with mocked time

@@ -3,6 +3,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use tracing::Instrument;
 
 /// ServerNode represents a simple UDP server that receives traffic from RSU nodes.
 /// Unlike OBU/RSU nodes which use the custom routing protocol, the Server node
@@ -15,21 +16,29 @@ pub struct Server {
     port: u16,
     /// UDP socket for receiving traffic
     socket: Arc<Mutex<Option<Arc<UdpSocket>>>>,
+    /// Node name for tracing/logging identification
+    node_name: String,
 }
 
 impl Server {
     /// Create a new Server that will listen on the specified IP and port
     /// Note: The server does not start listening until start() is called
-    pub fn new(ip: Ipv4Addr, port: u16) -> Self {
+    pub fn new(ip: Ipv4Addr, port: u16, node_name: String) -> Self {
         Self {
             ip,
             port,
             socket: Arc::new(Mutex::new(None)),
+            node_name,
         }
     }
 
     pub async fn start(&self) -> Result<()> {
         let bind_addr = format!("{}:{}", self.ip, self.port);
+        let node_name = self.node_name.clone();
+
+        // Create span for this node's init
+        let _span = tracing::info_span!("node", name = %node_name).entered();
+
         tracing::info!(
             ip = %self.ip,
             port = self.port,
@@ -47,28 +56,34 @@ impl Server {
 
         // Spawn a task to receive and log incoming traffic
         let socket_clone = socket.clone();
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 65536];
-            loop {
-                match socket_clone.recv_from(&mut buf).await {
-                    Ok((len, src_addr)) => {
-                        tracing::debug!(
-                            src = %src_addr,
-                            len = len,
-                            "Server received UDP packet"
-                        );
-                        // Log first few bytes for debugging
-                        if len > 0 {
-                            let preview = &buf[..len.min(64)];
-                            tracing::trace!("Packet preview: {:02x?}", preview);
+        let node_name_for_task = node_name.clone();
+
+        let span = tracing::info_span!("node", name = %node_name_for_task);
+        tokio::spawn(
+            async move {
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    match socket_clone.recv_from(&mut buf).await {
+                        Ok((len, src_addr)) => {
+                            tracing::debug!(
+                                src = %src_addr,
+                                len = len,
+                                "Server received UDP packet"
+                            );
+                            // Log first few bytes for debugging
+                            if len > 0 {
+                                let preview = &buf[..len.min(64)];
+                                tracing::trace!("Packet preview: {:02x?}", preview);
+                            }
                         }
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Error receiving UDP packet");
+                        Err(e) => {
+                            tracing::error!(error = %e, "Error receiving UDP packet");
+                        }
                     }
                 }
             }
-        });
+            .instrument(span),
+        );
 
         Ok(())
     }
@@ -91,14 +106,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_server_creation() {
-        let server = Server::new(Ipv4Addr::new(127, 0, 0, 1), 9999);
+        let server = Server::new(Ipv4Addr::new(127, 0, 0, 1), 9999, "test_server".to_string());
         assert_eq!(server.ip(), Ipv4Addr::new(127, 0, 0, 1));
         assert_eq!(server.port(), 9999);
     }
 
     #[tokio::test]
     async fn test_server_start_and_receive() -> Result<()> {
-        let server = Server::new(Ipv4Addr::new(127, 0, 0, 1), 0); // Use port 0 for OS assignment
+        let server = Server::new(Ipv4Addr::new(127, 0, 0, 1), 0, "test_server".to_string()); // Use port 0 for OS assignment
         server.start().await?;
 
         // Get the actual bound port

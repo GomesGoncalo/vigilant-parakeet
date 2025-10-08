@@ -32,8 +32,18 @@ async fn rsu_and_obu_topology_discovery() -> anyhow::Result<()> {
     let args_obu = mk_obu_args();
 
     // Construct nodes (they spawn background tasks)
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_a), Arc::new(dev_a))?;
-    let obu = Obu::new(args_obu, Arc::new(tun_b), Arc::new(dev_b))?;
+    let _rsu = Rsu::new(
+        args_rsu,
+        Arc::new(tun_a),
+        Arc::new(dev_a),
+        "test_rsu".to_string(),
+    )?;
+    let obu = Obu::new(
+        args_obu,
+        Arc::new(tun_b),
+        Arc::new(dev_b),
+        "test_obu".to_string(),
+    )?;
 
     // Instead of polling, await for the OBU to discover an upstream with timeout.
     // RSU sends heartbeats every 100ms, allow up to 5 seconds.

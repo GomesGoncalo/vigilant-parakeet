@@ -105,9 +105,27 @@ async fn test_payload_encryption_prevents_inspection() {
     let args_obu2 = mk_obu_args_encrypted();
 
     // Create nodes
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();
-    let _obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1)).unwrap();
-    let obu2 = Obu::new(args_obu2, Arc::new(tun_obu2), Arc::new(dev_obu2)).unwrap();
+    let _rsu = Rsu::new(
+        args_rsu,
+        Arc::new(tun_rsu),
+        Arc::new(dev_rsu),
+        "test_rsu".to_string(),
+    )
+    .unwrap();
+    let _obu1 = Obu::new(
+        args_obu1,
+        Arc::new(tun_obu1),
+        Arc::new(dev_obu1),
+        "test_obu".to_string(),
+    )
+    .unwrap();
+    let obu2 = Obu::new(
+        args_obu2,
+        Arc::new(tun_obu2),
+        Arc::new(dev_obu2),
+        "test_obu".to_string(),
+    )
+    .unwrap();
 
     // Wait for topology discovery
     tokio::time::advance(Duration::from_millis(500)).await;
@@ -224,8 +242,20 @@ async fn test_encryption_disabled_allows_inspection() {
     let args_rsu = mk_rsu_args(100);
     let args_obu1 = mk_obu_args();
 
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();
-    let obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1)).unwrap();
+    let _rsu = Rsu::new(
+        args_rsu,
+        Arc::new(tun_rsu),
+        Arc::new(dev_rsu),
+        "test_rsu".to_string(),
+    )
+    .unwrap();
+    let obu1 = Obu::new(
+        args_obu1,
+        Arc::new(tun_obu1),
+        Arc::new(dev_obu1),
+        "test_obu".to_string(),
+    )
+    .unwrap();
 
     // Wait for topology discovery
     tokio::time::advance(Duration::from_millis(200)).await;
@@ -324,9 +354,27 @@ async fn test_ping_encryption_prevents_inspection_but_rsu_receives_correctly() {
     let args_obu2 = mk_obu_args_encrypted();
 
     // Create nodes
-    let _rsu = Rsu::new(args_rsu, Arc::new(tun_rsu), Arc::new(dev_rsu)).unwrap();
-    let _obu1 = Obu::new(args_obu1, Arc::new(tun_obu1), Arc::new(dev_obu1)).unwrap();
-    let obu2 = Obu::new(args_obu2, Arc::new(tun_obu2), Arc::new(dev_obu2)).unwrap();
+    let _rsu = Rsu::new(
+        args_rsu,
+        Arc::new(tun_rsu),
+        Arc::new(dev_rsu),
+        "test_rsu".to_string(),
+    )
+    .unwrap();
+    let _obu1 = Obu::new(
+        args_obu1,
+        Arc::new(tun_obu1),
+        Arc::new(dev_obu1),
+        "test_obu".to_string(),
+    )
+    .unwrap();
+    let obu2 = Obu::new(
+        args_obu2,
+        Arc::new(tun_obu2),
+        Arc::new(dev_obu2),
+        "test_obu".to_string(),
+    )
+    .unwrap();
 
     // Wait for topology discovery
     tokio::time::advance(Duration::from_millis(500)).await;
