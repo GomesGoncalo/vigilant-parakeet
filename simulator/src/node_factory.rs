@@ -52,10 +52,13 @@ pub fn create_node_from_settings(
             .with_mtu(1436) // Match OBU/RSU MTU
             .build_tap()?;
 
-        // Create cloud interface for infrastructure connection (RSU forwarding)
+        // Create cloud interface for infrastructure connection (RSU forwarding).
+        // Use a /24 netmask so the kernel generates a subnet route, enabling ARP
+        // resolution between nodes that share the 172.x.x.x cloud network.
         let cloud_tun = InterfaceBuilder::new("cloud")
             .with_ip(cloud_ip)
             .with_mtu(1500) // Standard MTU for infrastructure connectivity
+            .with_netmask(std::net::Ipv4Addr::new(255, 255, 255, 0))
             .build_tap()?;
 
         let server = Arc::new(Server::new(cloud_ip, port, node_name));
@@ -140,6 +143,7 @@ pub fn create_node_from_settings(
             let cloud_tun = InterfaceBuilder::new("cloud")
                 .with_ip(external_ip)
                 .with_mtu(1500) // Standard MTU for infrastructure connectivity
+                .with_netmask(std::net::Ipv4Addr::new(255, 255, 255, 0))
                 .build_tap()?;
 
             Some(cloud_tun)
@@ -180,11 +184,23 @@ pub fn create_node_from_settings(
             anyhow::anyhow!("RSU node requires external_tap_ip configuration for cloud interface")
         })?;
 
+        // Optional server connectivity — read from the RSU config file.
+        let server_ip = settings
+            .get_string("server_ip")
+            .ok()
+            .and_then(|s| Ipv4Addr::from_str(&s).ok());
+        let server_port = settings
+            .get_int("server_port")
+            .ok()
+            .and_then(|p| u16::try_from(p).ok())
+            .unwrap_or(8080);
+
         let rsu_args = rsu_lib::RsuArgs {
             bind: vanet_tun.name().to_string(),
             tap_name: Some("virtual".to_string()),
             ip: Some(ip),
             mtu,
+            cloud_ip: cloud_ip_opt,
             rsu_params: rsu_lib::RsuParameters {
                 hello_history,
                 hello_periodicity: settings
@@ -195,6 +211,8 @@ pub fn create_node_from_settings(
                     .ok_or_else(|| anyhow::anyhow!("hello_periodicity is required"))?,
                 cached_candidates,
                 enable_encryption,
+                server_ip,
+                server_port,
             },
         };
 

@@ -9,6 +9,7 @@ tokio = { version = "*", features = ["full", "net"] }
 anyhow = "*"
 tracing = "*"
 clap = { version = "*", features = ["derive"] }
+mac_address = "*"
 
 [dev-dependencies]
 tokio = { version = "*", features = ["full", "test-util"] }

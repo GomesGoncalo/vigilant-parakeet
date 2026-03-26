@@ -19,11 +19,14 @@ mod node_tests {
             tap_name: None,
             ip: None,
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: rsu_lib::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 1000,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_ip: None,
+                server_port: 8080,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(Routing::new(&args)?));
@@ -65,11 +68,14 @@ mod node_tests {
             tap_name: None,
             ip: None,
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: rsu_lib::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 1000,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_ip: None,
+                server_port: 8080,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(Routing::new(&args)?));

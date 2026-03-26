@@ -16,11 +16,14 @@ mod create_smoke {
             tap_name: None,
             ip: None,
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: rsu_lib::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 1000,
                 cached_candidates: 1,
                 enable_encryption: false,
+                server_ip: None,
+                server_port: 8080,
             },
         };
         let node = rsu_lib::create_with_vdev(args, tun, dev)?;

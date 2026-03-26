@@ -8,7 +8,6 @@ use common::channel_parameters::ChannelParameters;
 use common::tun::Tun;
 use mac_address::MacAddress;
 use node_lib::PACKET_BUFFER_SIZE;
-use rand::RngExt;
 use std::{
     sync::{Arc, RwLock},
     time::Duration,
@@ -164,10 +163,11 @@ impl Channel {
                         // Apply base latency + random jitter
                         let mut latency = params.latency;
                         if !params.jitter.is_zero() {
-                            let mut rng = rand::rng();
                             // Generate random jitter in range [-jitter, +jitter]
                             let jitter_ms = params.jitter.as_millis() as i64;
-                            let random_jitter = rng.random_range(-jitter_ms..=jitter_ms);
+                            let random_normalized = rand::random::<f64>(); // [0.0, 1.0)
+                            let random_jitter =
+                                ((random_normalized * 2.0 - 1.0) * jitter_ms as f64) as i64;
                             if random_jitter >= 0 {
                                 latency += Duration::from_millis(random_jitter as u64);
                             } else {
@@ -234,12 +234,19 @@ impl Channel {
         Ok(())
     }
 
-    /// Check if packet should be sent based on MAC filter and loss rate
+    /// Check if packet should be sent based on MAC filter and loss rate.
+    ///
+    /// When `self.mac` is all-zeros (`[0u8; 6]`) MAC filtering is disabled —
+    /// this is used for point-to-point cloud links where every frame must pass
+    /// through regardless of destination MAC (e.g. ARP, IP unicast).
     fn should_send(&self, buf: &[u8]) -> Result<(), ChannelError> {
-        let bcast = vec![255; 6];
-        let unicast = self.mac.bytes();
-        if buf[0..6] != bcast && buf[0..6] != unicast {
-            return Err(ChannelError::Filtered);
+        let zero_mac = MacAddress::new([0u8; 6]);
+        if self.mac != zero_mac {
+            let bcast = [255u8; 6];
+            let unicast = self.mac.bytes();
+            if buf[0..6] != bcast && buf[0..6] != unicast {
+                return Err(ChannelError::Filtered);
+            }
         }
 
         let loss = self
@@ -247,11 +254,8 @@ impl Channel {
             .read()
             .expect("channel parameters lock poisoned")
             .loss;
-        if loss > 0.0 {
-            let mut rng = rand::rng();
-            if rng.random::<f64>() < loss {
-                return Err(ChannelError::Dropped);
-            }
+        if loss > 0.0 && rand::random::<f64>() < loss {
+            return Err(ChannelError::Dropped);
         }
 
         Ok(())
@@ -349,6 +353,28 @@ mod tests {
         let res = ch.send(packet, 7).await;
         // Should fail due to 100% packet loss
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn channel_zero_mac_allows_any_destination() {
+        let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+        let tun = Arc::new(tun_a);
+        let params = ChannelParameters::from(HashMap::new());
+        // All-zeros MAC = no filtering
+        let mac = MacAddress::new([0u8; 6]);
+
+        let ch = Channel::new(
+            params,
+            mac,
+            tun.clone(),
+            &"from".to_string(),
+            &"to".to_string(),
+        );
+
+        // A unicast packet addressed to a completely different MAC should pass through.
+        let mut packet = [0u8; PACKET_BUFFER_SIZE];
+        packet[0..6].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01]);
+        assert!(ch.send(packet, 7).await.is_ok());
     }
 
     #[tokio::test]

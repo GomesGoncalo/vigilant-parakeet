@@ -23,11 +23,14 @@ pub fn mk_test_rsu_args_with_periodicity(hello_periodicity: u32) -> RsuArgs {
         tap_name: None,
         ip: None,
         mtu: 1500,
+        cloud_ip: None,
         rsu_params: RsuParameters {
             hello_history: 2,
             hello_periodicity,
             cached_candidates: 3,
             enable_encryption: false,
+            server_ip: None,
+            server_port: 8080,
         },
     }
 }
@@ -39,11 +42,14 @@ pub fn mk_test_rsu_args_with_history(hello_history: u32, hello_periodicity: u32)
         tap_name: None,
         ip: None,
         mtu: 1500,
+        cloud_ip: None,
         rsu_params: RsuParameters {
             hello_history,
             hello_periodicity,
             cached_candidates: 3,
             enable_encryption: false,
+            server_ip: None,
+            server_port: 8080,
         },
     }
 }
@@ -55,11 +61,14 @@ pub fn mk_test_rsu_args_encrypted(hello_periodicity: u32) -> RsuArgs {
         tap_name: None,
         ip: None,
         mtu: 1500,
+        cloud_ip: None,
         rsu_params: RsuParameters {
             hello_history: 2,
             hello_periodicity,
             cached_candidates: 3,
             enable_encryption: true,
+            server_ip: None,
+            server_port: 8080,
         },
     }
 }
@@ -77,11 +86,14 @@ pub fn mk_rsu_args_encrypted(hello_periodicity: u32) -> RsuArgs {
         tap_name: None,
         ip: None,
         mtu: 1500,
+        cloud_ip: None,
         rsu_params: RsuParameters {
             hello_history: 10,
             hello_periodicity,
             cached_candidates: 3,
             enable_encryption: true,
+            server_ip: None,
+            server_port: 8080,
         },
     }
 }

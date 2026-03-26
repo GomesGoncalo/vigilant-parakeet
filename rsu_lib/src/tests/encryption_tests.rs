@@ -20,6 +20,7 @@ mod encryption_tests {
             tap_name: None,
             ip: None,
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: rsu_lib::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 5000,
@@ -53,6 +54,7 @@ mod encryption_tests {
             tap_name: None,
             ip: None,
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: rsu_lib::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 1000,
@@ -109,6 +111,7 @@ mod encryption_tests {
             tap_name: None,
             ip: None,
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: rsu_lib::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 1000,

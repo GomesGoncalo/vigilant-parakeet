@@ -4,6 +4,9 @@ pub use args::{ServerArgs, ServerParameters};
 pub mod builder;
 pub use builder::ServerBuilder;
 
+pub mod registry;
+pub use registry::RegistrationMessage;
+
 mod server;
 pub use server::Server;
 

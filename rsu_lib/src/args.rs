@@ -18,6 +18,14 @@ pub struct RsuParameters {
     /// Enable payload encryption between OBUs and upstream RSUs
     #[arg(long, default_value_t = false)]
     pub enable_encryption: bool,
+
+    /// IP address of the server's cloud interface (enables periodic RSU registration)
+    #[arg(long)]
+    pub server_ip: Option<Ipv4Addr>,
+
+    /// UDP port of the server's cloud listener
+    #[arg(long, default_value_t = 8080)]
+    pub server_port: u16,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -38,6 +46,10 @@ pub struct RsuArgs {
     /// MTU
     #[arg(short, long, default_value_t = 1436)]
     pub mtu: i32,
+
+    /// IP address of this RSU's cloud interface (used to bind the registration socket)
+    #[arg(long)]
+    pub cloud_ip: Option<Ipv4Addr>,
 
     /// RSU Parameters
     #[command(flatten)]

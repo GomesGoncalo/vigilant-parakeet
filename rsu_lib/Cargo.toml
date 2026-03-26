@@ -22,6 +22,7 @@ itertools = "*"
 serde = { version = "*", features = ["derive"]}
 common = { path = "../common/" }
 node_lib = { path = "../node_lib/" }
+server_lib = { path = "../server_lib/" }
 arc-swap = { version = "*" }
 tracing-subscriber = { version = "*", features = ["env-filter"] }
 aes-gcm = { version = "0.10", features = ["aes"] }

@@ -163,11 +163,14 @@ impl RsuBuilder {
             tap_name: self.inner.tap_name.clone(),
             ip: self.inner.ip,
             mtu: self.inner.mtu,
+            cloud_ip: None,
             rsu_params: RsuParameters {
                 hello_history: self.inner.hello_history,
                 hello_periodicity: self.hello_periodicity,
                 cached_candidates: self.inner.cached_candidates,
                 enable_encryption: self.inner.enable_encryption,
+                server_ip: None,
+                server_port: 8080,
             },
         }
     }
@@ -213,11 +216,14 @@ mod tests {
             tap_name: Some("tap0".to_string()),
             ip: Some("10.0.0.1".parse().unwrap()),
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: RsuParameters {
                 hello_history: 15,
                 hello_periodicity: 4000,
                 cached_candidates: 4,
                 enable_encryption: true,
+                server_ip: None,
+                server_port: 8080,
             },
         };
 
