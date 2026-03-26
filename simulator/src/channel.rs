@@ -8,7 +8,7 @@ use common::channel_parameters::ChannelParameters;
 use common::tun::Tun;
 use mac_address::MacAddress;
 use node_lib::PACKET_BUFFER_SIZE;
-use rand::Rng;
+use rand::RngExt;
 use std::{
     sync::{Arc, RwLock},
     time::Duration,
