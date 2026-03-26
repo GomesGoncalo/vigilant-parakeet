@@ -1,4 +1,4 @@
-use node_lib::test_helpers::hub::{DownstreamFromIdxExpectation, UpstreamExpectation};
+use node_lib::test_helpers::hub::UpstreamExpectation;
 use obu_lib::Obu;
 use rsu_lib::Rsu;
 
@@ -19,7 +19,7 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
 
     // Create 3 shim TUN pairs and keep the peer for OBU2
     let mut pairs = mk_shim_pairs(3);
-    let (tun_rsu, _peer0) = pairs.remove(0);
+    let (_tun_rsu, _peer0) = pairs.remove(0);
     let (tun_obu1, _peer1) = pairs.remove(0);
     let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
@@ -59,14 +59,9 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
     let args_obu1 = mk_obu_args();
     let args_obu2 = mk_obu_args();
 
-    // Construct nodes
-    let _rsu = Rsu::new(
-        args_rsu,
-        Arc::new(tun_rsu),
-        Arc::new(dev_rsu),
-        "test_rsu".to_string(),
-    )
-    .expect("Rsu::new failed");
+    // Construct nodes (RSU no longer takes a TUN device)
+    let _rsu =
+        Rsu::new(args_rsu, Arc::new(dev_rsu), "test_rsu".to_string()).expect("Rsu::new failed");
     let _obu1 = Obu::new(
         args_obu1,
         Arc::new(tun_obu1),
@@ -123,21 +118,20 @@ async fn rsu_and_two_obus_choose_two_hop_when_direct_has_higher_latency() {
         .expect("Hub did not observe expected upstream packet within timeout");
 }
 
-/// End-to-end: OBU2 "pings" RSU two hops away. We inject a request frame into
-/// OBU2's TUN (dest=RSU MAC, src=OBU2 MAC, payload=bytes) and expect it to reach
-/// RSU's TUN. Then we inject a reply from RSU's TUN (dest=OBU2 MAC, src=RSU MAC)
-/// and expect OBU2's TUN to receive the reply payload. This verifies both
-/// directions succeed across the two-hop route selection.
+/// Integration test: verify OBU2 establishes a two-hop route via OBU1 to the RSU,
+/// and can send upstream data that reaches the RSU's VANET device.
+/// Note: RSU no longer has a TAP device; data is forwarded to the server via cloud.
+/// This test verifies routing/heartbeat discovery still works correctly.
 #[tokio::test]
-async fn two_hop_ping_roundtrip_obu2_to_rsu() {
+async fn two_hop_route_discovery_and_upstream() {
     node_lib::init_test_tracing();
 
     // Use mocked time for deterministic test execution - MUST be before node creation
     tokio::time::pause();
 
-    // Create shim TUN pairs and keep peers for RSU and OBU2
+    // Create shim TUN pairs (RSU doesn't need one, but OBUs do)
     let mut pairs = mk_shim_pairs(3);
-    let (tun_rsu, tun_rsu_peer) = pairs.remove(0);
+    let (_tun_rsu_unused, _tun_rsu_peer) = pairs.remove(0);
     let (tun_obu1, _tun_obu1_peer) = pairs.remove(0);
     let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
@@ -155,13 +149,14 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     // Hub delays: prefer RSU<->OBU1 and OBU1<->OBU2 (2ms) over direct RSU<->OBU2 (50ms).
     let delays: Vec<Vec<u64>> = vec![vec![0, 2, 50], vec![2, 0, 2], vec![50, 2, 0]];
 
-    // Create a future-based expectation instead of atomic flag
-    let (downstream_expectation, downstream_future) = DownstreamFromIdxExpectation::new(0);
+    // Create a future-based expectation for upstream from OBU2
+    let (upstream_expectation, upstream_future) =
+        UpstreamExpectation::new(2, mac_obu2, mac_obu1, None);
 
     mk_hub_with_checks_mocked_time(
         hub_fds.to_vec(),
         delays,
-        vec![Arc::new(downstream_expectation)],
+        vec![Arc::new(upstream_expectation)],
     );
 
     // Wrap node ends as Devices using shared helper
@@ -173,14 +168,9 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     let args_rsu = mk_rsu_args(50);
     let args_obu = mk_obu_args();
 
-    // Construct nodes
-    let _rsu = Rsu::new(
-        args_rsu,
-        Arc::new(tun_rsu),
-        Arc::new(dev_rsu),
-        "test_rsu2".to_string(),
-    )
-    .expect("Rsu::new failed");
+    // Construct nodes (RSU no longer takes a TUN device)
+    let _rsu =
+        Rsu::new(args_rsu, Arc::new(dev_rsu), "test_rsu2".to_string()).expect("Rsu::new failed");
     let _obu1 = Obu::new(
         args_obu.clone(),
         Arc::new(tun_obu1),
@@ -196,7 +186,7 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
     )
     .expect("Obu::new failed");
 
-    // Wait for OBU2 to cache upstream via OBU1 (two-hop path preferred) using await/timeout
+    // Wait for OBU2 to cache upstream via OBU1 (two-hop path preferred)
     let result = await_condition_with_time_advance(
         Duration::from_millis(10),
         || {
@@ -223,60 +213,15 @@ async fn two_hop_ping_roundtrip_obu2_to_rsu() {
         "OBU2 should pick OBU1 as upstream"
     );
 
-    // Prime RSU's client cache with a mapping for RSU's own MAC -> RSU node MAC
-    // by sending any frame from RSU's TUN (process_tap_traffic stores `from` -> device.mac).
-    let mut prime = Vec::new();
-    prime.extend_from_slice(&[255u8; 6]); // dest broadcast
-    prime.extend_from_slice(&mac_rsu.bytes()); // from = RSU
-    prime.extend_from_slice(b"prime");
-    tun_rsu_peer
-        .send_all(&prime)
-        .await
-        .expect("tun_rsu_peer.send_all failed");
-    // Give a moment for RSU to process and store mapping
-    tokio::time::advance(Duration::from_millis(10)).await;
-
-    // Compose a "ping" request frame from OBU2 destined to RSU
-    let payload_req = b"ping-req";
-    let mut req = Vec::new();
-    req.extend_from_slice(&mac_rsu.bytes()); // to
-    req.extend_from_slice(&mac_obu2.bytes()); // from
-    req.extend_from_slice(payload_req); // body
-
-    // Send request into OBU2's TUN (session will forward upstream over two hops)
+    // Send upstream data from OBU2 via its TUN
+    let payload = b"test payload";
     tun_obu2_peer
-        .send_all(&req)
+        .send_all(payload)
         .await
         .expect("tun_obu2_peer.send_all failed");
 
-    // Expect RSU's TUN to receive the full upstream request frame (to+from+payload)
-    let got_req_at_rsu =
-        node_lib::test_helpers::util::poll_tun_recv_expected_mocked(&tun_rsu_peer, &req, 100, 100)
-            .await;
-    assert!(got_req_at_rsu, "RSU did not receive ping request on TUN");
-
-    // Give RSU additional time to ensure it has a route to OBU2
-    tokio::time::advance(Duration::from_millis(150)).await;
-
-    // Now craft and send a reply from RSU back to OBU2 via RSU's TUN
-    let payload_rep = b"ping-rep";
-    let mut rep = Vec::new();
-    rep.extend_from_slice(&mac_obu2.bytes()); // to
-    rep.extend_from_slice(&mac_rsu.bytes()); // from
-    rep.extend_from_slice(payload_rep);
-    tun_rsu_peer
-        .send_all(&rep)
+    // Wait for the hub to observe the expected upstream packet
+    let _ = await_with_timeout(upstream_future, Duration::from_secs(2))
         .await
-        .expect("tun_rsu_peer.send_all failed");
-
-    // Wait for hub to observe a Downstream packet from RSU using future-based expectation
-    let _ = await_with_timeout(downstream_future, Duration::from_millis(500))
-        .await
-        .expect("Hub did not observe downstream from RSU within timeout");
-
-    // Expect OBU2's TUN to receive the full downstream reply frame (to+from+payload)
-    let got_rep_at_obu2 =
-        node_lib::test_helpers::util::poll_tun_recv_expected_mocked(&tun_obu2_peer, &rep, 100, 150)
-            .await;
-    assert!(got_rep_at_obu2, "OBU2 did not receive ping reply on TUN");
+        .expect("Hub did not observe expected upstream packet within timeout");
 }

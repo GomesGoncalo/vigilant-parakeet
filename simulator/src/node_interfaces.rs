@@ -75,20 +75,15 @@ impl NodeInterfaces {
     ///
     /// RSUs have:
     /// - VANET interface for wireless communication
-    /// - Virtual interface for decapsulated data traffic
     /// - Cloud interface for forwarding to servers
-    pub fn rsu(
-        vanet: Arc<Tun>,
-        virtual_tap: Arc<Tun>,
-        cloud: Arc<Tun>,
-        virtual_ip: Option<Ipv4Addr>,
-        cloud_ip: Option<Ipv4Addr>,
-    ) -> Self {
+    ///
+    /// RSUs do NOT have a virtual TAP — the server owns the TAP device.
+    pub fn rsu(vanet: Arc<Tun>, cloud: Arc<Tun>, cloud_ip: Option<Ipv4Addr>) -> Self {
         Self {
             vanet: Some(vanet),
-            virtual_tap: Some(virtual_tap),
+            virtual_tap: None,
             cloud: Some(cloud),
-            virtual_ip,
+            virtual_ip: None,
             cloud_ip,
         }
     }
@@ -158,9 +153,6 @@ impl NodeInterfaces {
             "Rsu" => {
                 if self.vanet.is_none() {
                     anyhow::bail!("RSU node missing required VANET interface");
-                }
-                if self.virtual_tap.is_none() {
-                    anyhow::bail!("RSU node missing required virtual interface");
                 }
                 if self.cloud.is_none() {
                     anyhow::bail!("RSU node missing required cloud interface");
@@ -251,13 +243,11 @@ mod tests {
         {
             let (tun1, _) = node_lib::test_helpers::util::mk_shim_pair();
             let (tun2, _) = node_lib::test_helpers::util::mk_shim_pair();
-            let (tun3, _) = node_lib::test_helpers::util::mk_shim_pair();
 
-            let interfaces =
-                NodeInterfaces::rsu(Arc::new(tun1), Arc::new(tun2), Arc::new(tun3), None, None);
+            let interfaces = NodeInterfaces::rsu(Arc::new(tun1), Arc::new(tun2), None);
 
             assert!(interfaces.vanet().is_some());
-            assert!(interfaces.virtual_tap().is_some());
+            assert!(interfaces.virtual_tap().is_none());
             assert!(interfaces.cloud().is_some());
             assert!(interfaces.validate("Rsu").is_ok());
         }

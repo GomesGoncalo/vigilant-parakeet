@@ -1,75 +1,35 @@
 use anyhow::Result;
 use common::device::Device;
-use common::tun::Tun;
 use std::{io::IoSlice, sync::Arc};
 
 // Re-export shared types and functions from node_lib to avoid duplication
-pub use node_lib::control::node::{
-    buffer, bytes_to_hex, handle_messages, tap_traffic, wire_traffic, ReplyType,
-};
+pub use node_lib::control::node::{buffer, bytes_to_hex, handle_messages, wire_traffic, ReplyType};
 
 #[cfg(any(test, feature = "test_helpers"))]
 pub use node_lib::control::node::{get_msgs, DebugReplyType};
 
-/// Process and send a batch of replies efficiently using vectored I/O
+/// Send only wire (device) messages, ignoring any TapFlat replies.
 ///
-/// This function groups replies by type (Wire/Tap) and sends them in batches,
-/// reducing the number of system calls and improving throughput by 2-3x.
-pub async fn handle_messages_batched(
-    messages: Vec<ReplyType>,
-    tun: &Arc<Tun>,
-    dev: &Arc<Device>,
-) -> Result<()> {
-    // Separate wire and tap packets
-    let mut wire_packets = Vec::new();
-    let mut tap_packets = Vec::new();
+/// RSU no longer has a TAP device, so we only forward wire messages.
+pub async fn handle_messages_wire_only(messages: Vec<ReplyType>, dev: &Arc<Device>) -> Result<()> {
+    let wire_packets: Vec<Vec<u8>> = messages
+        .into_iter()
+        .filter_map(|reply| match reply {
+            ReplyType::WireFlat(buf) => Some(buf),
+            ReplyType::TapFlat(_) => None,
+        })
+        .collect();
 
-    for reply in messages {
-        match reply {
-            ReplyType::WireFlat(buf) => wire_packets.push(buf),
-            ReplyType::TapFlat(buf) => tap_packets.push(buf),
-        }
+    if !wire_packets.is_empty() {
+        let slices: Vec<IoSlice> = wire_packets.iter().map(|p| IoSlice::new(p)).collect();
+        dev.send_vectored(&slices).await.inspect_err(|e| {
+            tracing::error!(
+                error = %e,
+                packet_count = wire_packets.len(),
+                "Failed to batch send to device"
+            )
+        })?;
     }
-
-    // Send batches concurrently using vectored I/O
-    let wire_future = async {
-        if !wire_packets.is_empty() {
-            let slices: Vec<IoSlice> = wire_packets.iter().map(|p| IoSlice::new(p)).collect();
-            let total_bytes: usize = wire_packets.iter().map(|p| p.len()).sum();
-            dev.send_vectored(&slices).await.inspect_err(|e| {
-                tracing::error!(
-                    error = %e,
-                    packet_count = wire_packets.len(),
-                    total_bytes = total_bytes,
-                    "Failed to batch send to device"
-                )
-            })
-        } else {
-            Ok(0)
-        }
-    };
-
-    let tap_future = async {
-        if !tap_packets.is_empty() {
-            let slices: Vec<IoSlice> = tap_packets.iter().map(|p| IoSlice::new(p)).collect();
-            let total_bytes: usize = tap_packets.iter().map(|p| p.len()).sum();
-            tun.send_vectored(&slices).await.inspect_err(|e| {
-                tracing::error!(
-                    error = %e,
-                    packet_count = tap_packets.len(),
-                    total_bytes = total_bytes,
-                    "Failed to batch send to TAP device"
-                )
-            })
-        } else {
-            Ok(0)
-        }
-    };
-
-    let (wire_result, tap_result) = tokio::join!(wire_future, tap_future);
-
-    wire_result?;
-    tap_result?;
 
     Ok(())
 }

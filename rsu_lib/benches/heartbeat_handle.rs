@@ -7,15 +7,12 @@ use rsu_lib::control::routing::Routing;
 fn bench_handle_heartbeat(_c: &mut Criterion) {
     let args = RsuArgs {
         bind: String::default(),
-        tap_name: None,
-        ip: None,
         mtu: 1500,
         cloud_ip: None,
         rsu_params: RsuParameters {
             hello_history: 16,
             hello_periodicity: 5000,
             cached_candidates: 4,
-            enable_encryption: false,
             server_ip: None,
             server_port: 8080,
         },

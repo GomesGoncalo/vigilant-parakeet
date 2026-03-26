@@ -6,15 +6,12 @@ use rsu_lib::control::routing::Routing;
 fn bench_routing_scale(c: &mut Criterion) {
     let args = RsuArgs {
         bind: String::default(),
-        tap_name: None,
-        ip: None,
         mtu: 1500,
         cloud_ip: None,
         rsu_params: RsuParameters {
             hello_history: 256,
             hello_periodicity: 5000,
             cached_candidates: 64,
-            enable_encryption: false,
             server_ip: None,
             server_port: 8080,
         },

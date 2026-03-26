@@ -10,6 +10,11 @@ anyhow = "*"
 tracing = "*"
 clap = { version = "*", features = ["derive"] }
 mac_address = "*"
+node_lib = { path = "../node_lib" }
+common = { path = "../common" }
 
 [dev-dependencies]
 tokio = { version = "*", features = ["full", "test-util"] }
+
+[features]
+test_helpers = ["node_lib/test_helpers", "common/test_helpers"]

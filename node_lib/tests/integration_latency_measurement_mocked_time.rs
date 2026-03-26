@@ -29,7 +29,7 @@ async fn test_latency_measurement_with_mocked_time() {
 
     // Create simple 2-node topology: RSU and OBU
     let mut pairs = mk_shim_pairs(2);
-    let (tun_rsu, _peer_rsu) = pairs.remove(0);
+    let (_tun_rsu, _peer_rsu) = pairs.remove(0);
     let (tun_obu, _peer_obu) = pairs.remove(0);
 
     // Create 2 node<->hub links as socketpairs
@@ -57,14 +57,9 @@ async fn test_latency_measurement_with_mocked_time() {
     let args_rsu = mk_rsu_args(50);
     let args_obu = mk_obu_args();
 
-    // Construct nodes
-    let rsu = Rsu::new(
-        args_rsu,
-        Arc::new(tun_rsu),
-        Arc::new(dev_rsu),
-        "test_rsu".to_string(),
-    )
-    .expect("Rsu::new failed");
+    // Construct nodes (RSU no longer takes a TUN device)
+    let rsu =
+        Rsu::new(args_rsu, Arc::new(dev_rsu), "test_rsu".to_string()).expect("Rsu::new failed");
     let obu = Obu::new(
         args_obu,
         Arc::new(tun_obu),

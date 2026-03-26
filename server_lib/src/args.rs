@@ -6,6 +6,10 @@ pub struct ServerParameters {
     /// UDP port to listen on
     #[arg(long, default_value_t = 8080)]
     pub port: u16,
+
+    /// Enable encryption for OBU traffic (AES-256-GCM)
+    #[arg(long, default_value_t = false)]
+    pub enable_encryption: bool,
 }
 
 #[derive(Parser, Debug, Clone)]

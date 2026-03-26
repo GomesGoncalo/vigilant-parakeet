@@ -17,7 +17,7 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Resul
 
     // Create shim TUN pairs and keep the peer for OBU2
     let mut pairs = mk_shim_pairs(3);
-    let (tun_rsu, _peer0) = pairs.remove(0);
+    let (_tun_rsu, _peer0) = pairs.remove(0);
     let (tun_obu1, _peer1) = pairs.remove(0);
     let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
@@ -56,13 +56,8 @@ async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Resul
     let args_obu1 = mk_obu_args();
     let args_obu2 = mk_obu_args();
 
-    // Construct nodes
-    let _rsu = Rsu::new(
-        args_rsu,
-        Arc::new(tun_rsu),
-        Arc::new(dev_rsu),
-        "test_rsu".to_string(),
-    )?;
+    // Construct nodes (RSU no longer takes a TUN device)
+    let _rsu = Rsu::new(args_rsu, Arc::new(dev_rsu), "test_rsu".to_string())?;
     let _obu1 = Obu::new(
         args_obu1,
         Arc::new(tun_obu1),

@@ -15,10 +15,6 @@ pub struct RsuParameters {
     #[arg(long, default_value_t = 3)]
     pub cached_candidates: u32,
 
-    /// Enable payload encryption between OBUs and upstream RSUs
-    #[arg(long, default_value_t = false)]
-    pub enable_encryption: bool,
-
     /// IP address of the server's cloud interface (enables periodic RSU registration)
     #[arg(long)]
     pub server_ip: Option<Ipv4Addr>,
@@ -34,14 +30,6 @@ pub struct RsuArgs {
     /// Interface to bind to
     #[arg(short, long)]
     pub bind: String,
-
-    /// Virtual device name
-    #[arg(short, long)]
-    pub tap_name: Option<String>,
-
-    /// IP
-    #[arg(short, long)]
-    pub ip: Option<Ipv4Addr>,
 
     /// MTU
     #[arg(short, long, default_value_t = 1436)]

@@ -1,21 +1,28 @@
+use crate::cloud_protocol::{CloudMessage, DownstreamForward, UpstreamForward};
 use crate::registry::RegistrationMessage;
 use anyhow::Result;
+use common::tun::Tun;
 use mac_address::MacAddress;
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock};
 use tracing::Instrument;
 
+/// Shared reference to a Tun device.
+pub type SharedTun = Arc<Tun>;
+
 /// ServerNode receives traffic from RSU nodes over UDP via the cloud interface.
 ///
-/// Unlike OBU/RSU nodes which use the custom VANET routing protocol, the Server
-/// communicates with RSUs via standard UDP sockets over dedicated cloud interfaces
-/// (simulating an internet connection between RSUs and infrastructure).
+/// The Server owns the TAP device and handles all encryption/decryption of OBU
+/// traffic. RSUs are transparent relays: they forward upstream data from OBUs
+/// to the Server (as `UpstreamForward`), and the Server sends downstream data
+/// back through the appropriate RSU (as `DownstreamForward`).
 ///
-/// The server maintains a registry of which OBUs are associated with each RSU,
-/// updated as RSUs send periodic `RegistrationMessage` packets.
+/// The server maintains:
+/// - A registry of RSU MAC → associated OBU MACs (from `RegistrationMessage`)
+/// - An OBU routing table: OBU MAC → RSU socket address (learned from upstream traffic)
 #[derive(Clone)]
 pub struct Server {
     /// IP address for the UDP server (cloud interface IP).
@@ -26,6 +33,12 @@ pub struct Server {
     socket: Arc<Mutex<Option<Arc<UdpSocket>>>>,
     /// Registry: RSU VANET MAC → list of associated OBU MACs.
     registry: Arc<RwLock<HashMap<MacAddress, Vec<MacAddress>>>>,
+    /// OBU routing table: OBU MAC → RSU socket address (for downstream delivery).
+    obu_routes: Arc<RwLock<HashMap<MacAddress, SocketAddr>>>,
+    /// Optional TAP device for decapsulated traffic.
+    tun: Option<SharedTun>,
+    /// Whether encryption is enabled for OBU traffic.
+    enable_encryption: bool,
     /// Node name for tracing/logging identification.
     node_name: String,
 }
@@ -39,8 +52,23 @@ impl Server {
             port,
             socket: Arc::new(Mutex::new(None)),
             registry: Arc::new(RwLock::new(HashMap::new())),
+            obu_routes: Arc::new(RwLock::new(HashMap::new())),
+            tun: None,
+            enable_encryption: false,
             node_name,
         }
+    }
+
+    /// Set the TAP device for decapsulated traffic.
+    pub fn with_tun(mut self, tun: SharedTun) -> Self {
+        self.tun = Some(tun);
+        self
+    }
+
+    /// Enable or disable encryption for OBU traffic.
+    pub fn with_encryption(mut self, enable: bool) -> Self {
+        self.enable_encryption = enable;
+        self
     }
 
     pub async fn start(&self) -> Result<()> {
@@ -64,46 +92,259 @@ impl Server {
             *sock_lock = Some(socket.clone());
         }
 
-        let socket_clone = socket.clone();
+        // Spawn cloud recv task (handles registration + upstream forwarding)
+        let socket_for_recv = socket.clone();
         let registry = self.registry.clone();
-        let node_name_for_task = node_name.clone();
+        let obu_routes = self.obu_routes.clone();
+        let tun_for_recv = self.tun.clone();
+        let enable_encryption = self.enable_encryption;
+        let name_for_recv = node_name.clone();
 
-        let span = tracing::info_span!("node", name = %node_name_for_task);
+        let recv_span = tracing::info_span!("node", name = %name_for_recv);
         tokio::spawn(
             async move {
-                let mut buf = vec![0u8; 65536];
-                loop {
-                    match socket_clone.recv_from(&mut buf).await {
-                        Ok((len, src_addr)) => {
-                            if let Some(msg) = RegistrationMessage::try_from_bytes(&buf[..len]) {
-                                registry
-                                    .write()
-                                    .await
-                                    .insert(msg.rsu_mac, msg.obu_macs.clone());
-                                tracing::info!(
-                                    rsu = %msg.rsu_mac,
-                                    obu_count = msg.obu_macs.len(),
-                                    from = %src_addr,
-                                    "RSU registration received"
-                                );
-                            } else {
-                                tracing::debug!(
-                                    src = %src_addr,
-                                    len = len,
-                                    "Received unrecognised UDP packet"
-                                );
-                            }
+                Self::cloud_recv_loop(
+                    socket_for_recv,
+                    registry,
+                    obu_routes,
+                    tun_for_recv,
+                    enable_encryption,
+                )
+                .await;
+            }
+            .instrument(recv_span),
+        );
+
+        // Spawn TAP read task if a TUN device is available
+        if let Some(tun) = &self.tun {
+            let tun_for_tap = tun.clone();
+            let socket_for_tap = socket.clone();
+            let obu_routes_for_tap = self.obu_routes.clone();
+            let enable_enc = self.enable_encryption;
+            let name_for_tap = node_name.clone();
+
+            let tap_span = tracing::info_span!("node", name = %name_for_tap);
+            tokio::spawn(
+                async move {
+                    Self::tap_read_loop(
+                        tun_for_tap,
+                        socket_for_tap,
+                        obu_routes_for_tap,
+                        enable_enc,
+                    )
+                    .await;
+                }
+                .instrument(tap_span),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Main cloud receive loop: handles Registration, UpstreamForward messages.
+    async fn cloud_recv_loop(
+        socket: Arc<UdpSocket>,
+        registry: Arc<RwLock<HashMap<MacAddress, Vec<MacAddress>>>>,
+        obu_routes: Arc<RwLock<HashMap<MacAddress, SocketAddr>>>,
+        tun: Option<SharedTun>,
+        enable_encryption: bool,
+    ) {
+        let mut buf = vec![0u8; 65536];
+        loop {
+            match socket.recv_from(&mut buf).await {
+                Ok((len, src_addr)) => {
+                    let data = &buf[..len];
+                    match CloudMessage::try_from_bytes(data) {
+                        Some(CloudMessage::Registration(msg)) => {
+                            Self::handle_registration(&registry, &msg, src_addr).await;
                         }
-                        Err(e) => {
-                            tracing::error!(error = %e, "Error receiving UDP packet");
+                        Some(CloudMessage::UpstreamForward(fwd)) => {
+                            // Learn OBU→RSU route from upstream traffic
+                            obu_routes
+                                .write()
+                                .await
+                                .insert(fwd.obu_source_mac, src_addr);
+
+                            Self::handle_upstream(&fwd, tun.as_ref(), enable_encryption).await;
+                        }
+                        Some(CloudMessage::DownstreamForward(_)) => {
+                            tracing::warn!(
+                                src = %src_addr,
+                                "Received unexpected DownstreamForward on server"
+                            );
+                        }
+                        None => {
+                            tracing::debug!(
+                                src = %src_addr,
+                                len = len,
+                                "Received unrecognised UDP packet"
+                            );
                         }
                     }
                 }
+                Err(e) => {
+                    tracing::error!(error = %e, "Error receiving UDP packet");
+                }
             }
-            .instrument(span),
-        );
+        }
+    }
 
-        Ok(())
+    async fn handle_registration(
+        registry: &Arc<RwLock<HashMap<MacAddress, Vec<MacAddress>>>>,
+        msg: &RegistrationMessage,
+        src_addr: SocketAddr,
+    ) {
+        registry
+            .write()
+            .await
+            .insert(msg.rsu_mac, msg.obu_macs.clone());
+        tracing::info!(
+            rsu = %msg.rsu_mac,
+            obu_count = msg.obu_macs.len(),
+            from = %src_addr,
+            "RSU registration received"
+        );
+    }
+
+    /// Handle upstream data from an OBU via RSU.
+    ///
+    /// The payload inside `UpstreamForward` is the raw `ToUpstream` data:
+    /// `[origin_mac 6B][encrypted_data...]`
+    ///
+    /// We decrypt the data portion and write the original TAP frame to the TAP device.
+    async fn handle_upstream(
+        fwd: &UpstreamForward,
+        tun: Option<&SharedTun>,
+        enable_encryption: bool,
+    ) {
+        let tun = match tun {
+            Some(t) => t,
+            None => {
+                tracing::debug!(
+                    obu = %fwd.obu_source_mac,
+                    "Upstream received but no TAP device configured"
+                );
+                return;
+            }
+        };
+
+        // The payload is [origin_mac 6B][data...]
+        if fwd.payload.len() < 6 {
+            tracing::warn!(
+                len = fwd.payload.len(),
+                "Upstream payload too short (need at least 6 bytes for origin MAC)"
+            );
+            return;
+        }
+
+        let data = &fwd.payload[6..];
+        let tap_data = if enable_encryption {
+            match node_lib::crypto::decrypt_payload(data) {
+                Ok(plaintext) => plaintext,
+                Err(e) => {
+                    tracing::error!(
+                        obu = %fwd.obu_source_mac,
+                        error = %e,
+                        "Failed to decrypt upstream payload"
+                    );
+                    return;
+                }
+            }
+        } else {
+            data.to_vec()
+        };
+
+        if let Err(e) = tun.send_all(&tap_data).await {
+            tracing::error!(error = %e, "Failed to write decrypted data to TAP");
+        }
+    }
+
+    /// Read frames from TAP, encrypt, and send downstream to the appropriate RSU.
+    async fn tap_read_loop(
+        tun: SharedTun,
+        socket: Arc<UdpSocket>,
+        obu_routes: Arc<RwLock<HashMap<MacAddress, SocketAddr>>>,
+        enable_encryption: bool,
+    ) {
+        let mut buf = vec![0u8; 65536];
+        loop {
+            let n = match tun.recv(&mut buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::error!(error = %e, "Error reading from TAP device");
+                    continue;
+                }
+            };
+
+            if n < 6 {
+                continue; // Need at least destination MAC
+            }
+
+            let frame = &buf[..n];
+            // Ethernet frame: first 6 bytes = destination MAC
+            let dest_mac_bytes: [u8; 6] = frame[..6].try_into().unwrap();
+            let dest_mac = MacAddress::new(dest_mac_bytes);
+
+            // Encrypt the frame data for the OBU
+            let payload_data = if enable_encryption {
+                match node_lib::crypto::encrypt_payload(frame) {
+                    Ok(encrypted) => encrypted,
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to encrypt downstream payload");
+                        continue;
+                    }
+                }
+            } else {
+                frame.to_vec()
+            };
+
+            let is_broadcast = dest_mac_bytes == [0xFF; 6];
+
+            if is_broadcast {
+                // Send to all known OBU routes
+                let routes = obu_routes.read().await;
+                for (&obu_mac, &rsu_addr) in routes.iter() {
+                    let fwd = DownstreamForward::new(
+                        obu_mac,
+                        MacAddress::new([0; 6]), // server origin
+                        payload_data.clone(),
+                    );
+                    if let Err(e) = socket.send_to(&fwd.to_bytes(), rsu_addr).await {
+                        tracing::error!(
+                            obu = %obu_mac,
+                            error = %e,
+                            "Failed to send broadcast downstream to RSU"
+                        );
+                    }
+                }
+            } else {
+                // Unicast: find the RSU that has this OBU
+                let rsu_addr = {
+                    let routes = obu_routes.read().await;
+                    routes.get(&dest_mac).copied()
+                };
+
+                if let Some(addr) = rsu_addr {
+                    let fwd = DownstreamForward::new(
+                        dest_mac,
+                        MacAddress::new([0; 6]), // server origin
+                        payload_data,
+                    );
+                    if let Err(e) = socket.send_to(&fwd.to_bytes(), addr).await {
+                        tracing::error!(
+                            obu = %dest_mac,
+                            error = %e,
+                            "Failed to send downstream to RSU"
+                        );
+                    }
+                } else {
+                    tracing::debug!(
+                        dest = %dest_mac,
+                        "No route to OBU for downstream delivery"
+                    );
+                }
+            }
+        }
     }
 
     /// Return a snapshot of the current RSU → OBU registry.
@@ -120,6 +361,11 @@ impl Server {
             .get(&rsu_mac)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Return the current OBU → RSU address routing table.
+    pub async fn get_obu_routes(&self) -> HashMap<MacAddress, SocketAddr> {
+        self.obu_routes.read().await.clone()
     }
 
     /// Get the IP address of this server.
@@ -144,6 +390,7 @@ mod tests {
         assert_eq!(server.ip(), Ipv4Addr::new(127, 0, 0, 1));
         assert_eq!(server.port(), 9999);
         assert!(server.get_registry().await.is_empty());
+        assert!(server.get_obu_routes().await.is_empty());
     }
 
     #[tokio::test]
@@ -169,6 +416,36 @@ mod tests {
 
         let obus = server.get_obus_for_rsu(rsu_mac).await;
         assert_eq!(obus, vec![obu_mac]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_server_receives_upstream_and_learns_route() -> Result<()> {
+        let server = Server::new(Ipv4Addr::new(127, 0, 0, 1), 0, "test_server".to_string());
+        server.start().await?;
+
+        let actual_port = {
+            let sock_lock = server.socket.lock().await;
+            sock_lock.as_ref().unwrap().local_addr()?.port()
+        };
+
+        let rsu_mac: MacAddress = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF].into();
+        let obu_mac: MacAddress = [1u8; 6].into();
+        // Payload: [origin_mac 6B][data...]
+        let mut payload = obu_mac.bytes().to_vec();
+        payload.extend_from_slice(b"test_data");
+        let fwd = UpstreamForward::new(rsu_mac, obu_mac, payload);
+
+        let client = UdpSocket::bind("127.0.0.1:0").await?;
+        client
+            .send_to(&fwd.to_bytes(), format!("127.0.0.1:{}", actual_port))
+            .await?;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let routes = server.get_obu_routes().await;
+        assert!(routes.contains_key(&obu_mac));
 
         Ok(())
     }
