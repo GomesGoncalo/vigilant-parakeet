@@ -96,8 +96,7 @@ async fn test_latency_measurement_with_mocked_time() {
                         "RSU route to OBU"
                     );
 
-                    if rsu_route.latency.is_some() {
-                        let latency = rsu_route.latency.unwrap();
+                    if let Some(latency) = rsu_route.latency {
                         tracing::info!(
                             measured_latency = ?latency,
                             "SUCCESS: RSU measured latency with mocked time"
