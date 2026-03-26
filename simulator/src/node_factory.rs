@@ -49,7 +49,7 @@ pub fn create_node_from_settings(
         // Create virtual TAP interface for distributed network communication with OBUs
         let virtual_tun = InterfaceBuilder::new("virtual")
             .with_ip(virtual_ip)
-            .with_mtu(1436) // Match OBU/RSU MTU
+            .with_mtu(1400) // Match OBU MTU (accounts for encryption + cloud protocol overhead)
             .build_tap()?;
 
         // Create cloud interface for infrastructure connection (RSU forwarding).
@@ -114,7 +114,10 @@ pub fn create_node_from_settings(
         .unwrap_or(3u32);
 
     // Common values used for both Obu and Rsu args
-    let mtu: i32 = 1436;
+    // MTU accounts for full overhead: encryption (28B) + cloud protocol (15B) +
+    // Ethernet header (14B) + UDP/IP headers (28B) must fit in cloud MTU 1500.
+    // Max = 1500 - 28 - 15 - 14 - 28 = 1415; use 1400 for safety margin.
+    let mtu: i32 = 1400;
     let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
 
     // Create VANET interface (the wireless medium where control/data messages flow)

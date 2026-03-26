@@ -32,7 +32,7 @@ pub struct RsuArgs {
     pub bind: String,
 
     /// MTU
-    #[arg(short, long, default_value_t = 1436)]
+    #[arg(short, long, default_value_t = 1400)]
     pub mtu: i32,
 
     /// IP address of this RSU's cloud interface (used to bind the registration socket)

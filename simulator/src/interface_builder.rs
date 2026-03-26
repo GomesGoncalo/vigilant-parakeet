@@ -22,7 +22,7 @@ use std::sync::Arc;
 /// // Create a TAP interface with IP and MTU
 /// let virtual_tap = InterfaceBuilder::new("virtual")
 ///     .with_ip("10.0.0.1".parse()?)
-///     .with_mtu(1436)
+///     .with_mtu(1400)
 ///     .build_tap()?;
 /// # Ok(())
 /// # }
@@ -150,7 +150,7 @@ mod tests {
         let ip: Ipv4Addr = "10.0.0.1".parse().unwrap();
         let result = InterfaceBuilder::new("test_configured")
             .with_ip(ip)
-            .with_mtu(1436)
+            .with_mtu(1400)
             .build_tap();
         assert!(result.is_ok());
     }

@@ -39,7 +39,7 @@ impl RsuBuilder {
         }
     }
 
-    /// Set the MTU (default: 1436)
+    /// Set the MTU (default: 1400)
     pub fn with_mtu(mut self, mtu: i32) -> Self {
         self.inner = self.inner.with_mtu(mtu);
         self
@@ -126,7 +126,7 @@ mod tests {
         let builder = RsuBuilder::new("eth0", 5000);
         assert_eq!(builder.inner.bind, "eth0");
         assert_eq!(builder.hello_periodicity, 5000);
-        assert_eq!(builder.inner.mtu, 1436);
+        assert_eq!(builder.inner.mtu, 1400);
         assert_eq!(builder.inner.hello_history, 10);
         assert_eq!(builder.inner.cached_candidates, 3);
     }
