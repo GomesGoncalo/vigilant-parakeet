@@ -13,6 +13,15 @@ use tracing::Instrument;
 /// Shared reference to a Tun device.
 pub type SharedTun = Arc<Tun>;
 
+/// Routing entry for an OBU, keyed by virtual TAP MAC.
+#[derive(Debug, Clone, Copy)]
+struct ObuRoute {
+    /// OBU's VANET MAC (used in DownstreamForward.obu_dest_mac for RSU routing).
+    vanet_mac: MacAddress,
+    /// Socket address of the RSU that forwards to this OBU.
+    rsu_addr: SocketAddr,
+}
+
 /// ServerNode receives traffic from RSU nodes over UDP via the cloud interface.
 ///
 /// The Server owns the TAP device and handles all encryption/decryption of OBU
@@ -22,7 +31,8 @@ pub type SharedTun = Arc<Tun>;
 ///
 /// The server maintains:
 /// - A registry of RSU MAC → associated OBU MACs (from `RegistrationMessage`)
-/// - An OBU routing table: OBU MAC → RSU socket address (learned from upstream traffic)
+/// - An OBU routing table: virtual TAP MAC → (VANET MAC, RSU addr)
+///   learned from upstream traffic
 #[derive(Clone)]
 pub struct Server {
     /// IP address for the UDP server (cloud interface IP).
@@ -33,8 +43,10 @@ pub struct Server {
     socket: Arc<Mutex<Option<Arc<UdpSocket>>>>,
     /// Registry: RSU VANET MAC → list of associated OBU MACs.
     registry: Arc<RwLock<HashMap<MacAddress, Vec<MacAddress>>>>,
-    /// OBU routing table: OBU MAC → RSU socket address (for downstream delivery).
-    obu_routes: Arc<RwLock<HashMap<MacAddress, SocketAddr>>>,
+    /// OBU routing table: virtual TAP MAC → (VANET MAC, RSU addr).
+    /// Keyed by virtual TAP MAC so that we can look up downstream destinations
+    /// using the dest MAC from Ethernet frames read off the server's TAP.
+    obu_routes: Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
     /// Optional TAP device for decapsulated traffic.
     tun: Option<SharedTun>,
     /// Whether encryption is enabled for OBU traffic.
@@ -145,7 +157,7 @@ impl Server {
     async fn cloud_recv_loop(
         socket: Arc<UdpSocket>,
         registry: Arc<RwLock<HashMap<MacAddress, Vec<MacAddress>>>>,
-        obu_routes: Arc<RwLock<HashMap<MacAddress, SocketAddr>>>,
+        obu_routes: Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
         tun: Option<SharedTun>,
         enable_encryption: bool,
     ) {
@@ -159,13 +171,14 @@ impl Server {
                             Self::handle_registration(&registry, &msg, src_addr).await;
                         }
                         Some(CloudMessage::UpstreamForward(fwd)) => {
-                            // Learn OBU→RSU route from upstream traffic
-                            obu_routes
-                                .write()
-                                .await
-                                .insert(fwd.obu_source_mac, src_addr);
-
-                            Self::handle_upstream(&fwd, tun.as_ref(), enable_encryption).await;
+                            Self::handle_upstream(
+                                &fwd,
+                                src_addr,
+                                &obu_routes,
+                                tun.as_ref(),
+                                enable_encryption,
+                            )
+                            .await;
                         }
                         Some(CloudMessage::DownstreamForward(_)) => {
                             tracing::warn!(
@@ -208,38 +221,26 @@ impl Server {
 
     /// Handle upstream data from an OBU via RSU.
     ///
-    /// The payload inside `UpstreamForward` is the raw `ToUpstream` data:
-    /// `[origin_mac 6B][encrypted_data...]`
+    /// The payload inside `UpstreamForward` is the raw encrypted/unencrypted TAP
+    /// frame data (as produced by `ToUpstream.data()` on the RSU side).
+    /// There is NO origin-MAC prefix — the OBU source VANET MAC is carried
+    /// separately in `fwd.obu_source_mac`.
     ///
-    /// We decrypt the data portion and write the original TAP frame to the TAP device.
+    /// After decryption (if enabled), the result is the original Ethernet frame
+    /// that was read from the OBU's virtual TAP. We extract the source MAC from
+    /// that frame to learn the OBU's virtual TAP MAC, then write it to the
+    /// server's TAP device.
     async fn handle_upstream(
         fwd: &UpstreamForward,
+        src_addr: SocketAddr,
+        obu_routes: &Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
         tun: Option<&SharedTun>,
         enable_encryption: bool,
     ) {
-        let tun = match tun {
-            Some(t) => t,
-            None => {
-                tracing::debug!(
-                    obu = %fwd.obu_source_mac,
-                    "Upstream received but no TAP device configured"
-                );
-                return;
-            }
-        };
-
-        // The payload is [origin_mac 6B][data...]
-        if fwd.payload.len() < 6 {
-            tracing::warn!(
-                len = fwd.payload.len(),
-                "Upstream payload too short (need at least 6 bytes for origin MAC)"
-            );
-            return;
-        }
-
-        let data = &fwd.payload[6..];
-        let tap_data = if enable_encryption {
-            match node_lib::crypto::decrypt_payload(data) {
+        // Decrypt the payload if encryption is enabled.
+        // The payload is the raw TAP frame (or its encrypted form).
+        let tap_frame = if enable_encryption {
+            match node_lib::crypto::decrypt_payload(&fwd.payload) {
                 Ok(plaintext) => plaintext,
                 Err(e) => {
                     tracing::error!(
@@ -251,10 +252,41 @@ impl Server {
                 }
             }
         } else {
-            data.to_vec()
+            fwd.payload.clone()
         };
 
-        if let Err(e) = tun.send_all(&tap_data).await {
+        // Learn the OBU's virtual TAP MAC from the Ethernet frame source
+        // (bytes 6..12 of an Ethernet frame = source MAC).
+        if tap_frame.len() >= 12 {
+            let src_mac_bytes: [u8; 6] = tap_frame[6..12].try_into().unwrap();
+            let virtual_tap_mac = MacAddress::new(src_mac_bytes);
+
+            obu_routes.write().await.insert(
+                virtual_tap_mac,
+                ObuRoute {
+                    vanet_mac: fwd.obu_source_mac,
+                    rsu_addr: src_addr,
+                },
+            );
+
+            tracing::trace!(
+                virtual_tap_mac = %virtual_tap_mac,
+                vanet_mac = %fwd.obu_source_mac,
+                rsu = %src_addr,
+                "Learned OBU route from upstream traffic"
+            );
+        }
+
+        // Write the decrypted frame to the server's TAP device
+        let Some(tun) = tun else {
+            tracing::debug!(
+                obu = %fwd.obu_source_mac,
+                "Upstream received but no TAP device configured"
+            );
+            return;
+        };
+
+        if let Err(e) = tun.send_all(&tap_frame).await {
             tracing::error!(error = %e, "Failed to write decrypted data to TAP");
         }
     }
@@ -263,7 +295,7 @@ impl Server {
     async fn tap_read_loop(
         tun: SharedTun,
         socket: Arc<UdpSocket>,
-        obu_routes: Arc<RwLock<HashMap<MacAddress, SocketAddr>>>,
+        obu_routes: Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
         enable_encryption: bool,
     ) {
         let mut buf = vec![0u8; 65536];
@@ -276,8 +308,8 @@ impl Server {
                 }
             };
 
-            if n < 6 {
-                continue; // Need at least destination MAC
+            if n < 14 {
+                continue; // Need at least an Ethernet header
             }
 
             let frame = &buf[..n];
@@ -299,38 +331,40 @@ impl Server {
             };
 
             let is_broadcast = dest_mac_bytes == [0xFF; 6];
+            // Also check for IPv6 multicast (33:33:xx:xx:xx:xx) and IPv4 multicast
+            let is_multicast = dest_mac_bytes[0] & 0x01 != 0;
 
-            if is_broadcast {
+            if is_broadcast || is_multicast {
                 // Send to all known OBU routes
                 let routes = obu_routes.read().await;
-                for (&obu_mac, &rsu_addr) in routes.iter() {
+                for (&_tap_mac, route) in routes.iter() {
                     let fwd = DownstreamForward::new(
-                        obu_mac,
+                        route.vanet_mac,
                         MacAddress::new([0; 6]), // server origin
                         payload_data.clone(),
                     );
-                    if let Err(e) = socket.send_to(&fwd.to_bytes(), rsu_addr).await {
+                    if let Err(e) = socket.send_to(&fwd.to_bytes(), route.rsu_addr).await {
                         tracing::error!(
-                            obu = %obu_mac,
+                            obu = %route.vanet_mac,
                             error = %e,
                             "Failed to send broadcast downstream to RSU"
                         );
                     }
                 }
             } else {
-                // Unicast: find the RSU that has this OBU
-                let rsu_addr = {
+                // Unicast: find the RSU for this OBU via its virtual TAP MAC
+                let route = {
                     let routes = obu_routes.read().await;
                     routes.get(&dest_mac).copied()
                 };
 
-                if let Some(addr) = rsu_addr {
+                if let Some(route) = route {
                     let fwd = DownstreamForward::new(
-                        dest_mac,
+                        route.vanet_mac,         // VANET MAC for RSU routing lookup
                         MacAddress::new([0; 6]), // server origin
                         payload_data,
                     );
-                    if let Err(e) = socket.send_to(&fwd.to_bytes(), addr).await {
+                    if let Err(e) = socket.send_to(&fwd.to_bytes(), route.rsu_addr).await {
                         tracing::error!(
                             obu = %dest_mac,
                             error = %e,
@@ -363,9 +397,9 @@ impl Server {
             .unwrap_or_default()
     }
 
-    /// Return the current OBU → RSU address routing table.
-    pub async fn get_obu_routes(&self) -> HashMap<MacAddress, SocketAddr> {
-        self.obu_routes.read().await.clone()
+    /// Return the number of OBU routes currently known.
+    pub async fn obu_route_count(&self) -> usize {
+        self.obu_routes.read().await.len()
     }
 
     /// Get the IP address of this server.
@@ -390,7 +424,7 @@ mod tests {
         assert_eq!(server.ip(), Ipv4Addr::new(127, 0, 0, 1));
         assert_eq!(server.port(), 9999);
         assert!(server.get_registry().await.is_empty());
-        assert!(server.get_obu_routes().await.is_empty());
+        assert_eq!(server.obu_route_count().await, 0);
     }
 
     #[tokio::test]
@@ -431,11 +465,18 @@ mod tests {
         };
 
         let rsu_mac: MacAddress = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF].into();
-        let obu_mac: MacAddress = [1u8; 6].into();
-        // Payload: [origin_mac 6B][data...]
-        let mut payload = obu_mac.bytes().to_vec();
-        payload.extend_from_slice(b"test_data");
-        let fwd = UpstreamForward::new(rsu_mac, obu_mac, payload);
+        let obu_vanet_mac: MacAddress = [1u8; 6].into();
+        // Simulate a TAP Ethernet frame: [dest_mac 6B][src_mac 6B][ethertype 2B][payload...]
+        // The src_mac here represents the OBU's virtual TAP MAC
+        let obu_tap_mac: [u8; 6] = [0x02, 0x42, 0xAC, 0x10, 0x00, 0x02];
+        let server_tap_mac: [u8; 6] = [0x02, 0x42, 0xAC, 0x10, 0x00, 0x64];
+        let mut fake_frame = Vec::new();
+        fake_frame.extend_from_slice(&server_tap_mac); // dest = server TAP
+        fake_frame.extend_from_slice(&obu_tap_mac); // src = OBU TAP
+        fake_frame.extend_from_slice(&[0x08, 0x00]); // ethertype IPv4
+        fake_frame.extend_from_slice(b"test_payload");
+
+        let fwd = UpstreamForward::new(rsu_mac, obu_vanet_mac, fake_frame);
 
         let client = UdpSocket::bind("127.0.0.1:0").await?;
         client
@@ -444,8 +485,8 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        let routes = server.get_obu_routes().await;
-        assert!(routes.contains_key(&obu_mac));
+        // The route should be keyed by virtual TAP MAC, not VANET MAC
+        assert_eq!(server.obu_route_count().await, 1);
 
         Ok(())
     }
