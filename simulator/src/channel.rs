@@ -254,10 +254,8 @@ impl Channel {
             .read()
             .expect("channel parameters lock poisoned")
             .loss;
-        if loss > 0.0 {
-            if rand::random::<f64>() < loss {
-                return Err(ChannelError::Dropped);
-            }
+        if loss > 0.0 && rand::random::<f64>() < loss {
+            return Err(ChannelError::Dropped);
         }
 
         Ok(())
