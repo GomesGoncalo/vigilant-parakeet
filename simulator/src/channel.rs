@@ -234,12 +234,19 @@ impl Channel {
         Ok(())
     }
 
-    /// Check if packet should be sent based on MAC filter and loss rate
+    /// Check if packet should be sent based on MAC filter and loss rate.
+    ///
+    /// When `self.mac` is all-zeros (`[0u8; 6]`) MAC filtering is disabled —
+    /// this is used for point-to-point cloud links where every frame must pass
+    /// through regardless of destination MAC (e.g. ARP, IP unicast).
     fn should_send(&self, buf: &[u8]) -> Result<(), ChannelError> {
-        let bcast = vec![255; 6];
-        let unicast = self.mac.bytes();
-        if buf[0..6] != bcast && buf[0..6] != unicast {
-            return Err(ChannelError::Filtered);
+        let zero_mac = MacAddress::new([0u8; 6]);
+        if self.mac != zero_mac {
+            let bcast = [255u8; 6];
+            let unicast = self.mac.bytes();
+            if buf[0..6] != bcast && buf[0..6] != unicast {
+                return Err(ChannelError::Filtered);
+            }
         }
 
         let loss = self
@@ -349,6 +356,28 @@ mod tests {
         let res = ch.send(packet, 7).await;
         // Should fail due to 100% packet loss
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn channel_zero_mac_allows_any_destination() {
+        let (tun_a, _peer) = node_lib::test_helpers::util::mk_shim_pair();
+        let tun = Arc::new(tun_a);
+        let params = ChannelParameters::from(HashMap::new());
+        // All-zeros MAC = no filtering
+        let mac = MacAddress::new([0u8; 6]);
+
+        let ch = Channel::new(
+            params,
+            mac,
+            tun.clone(),
+            &"from".to_string(),
+            &"to".to_string(),
+        );
+
+        // A unicast packet addressed to a completely different MAC should pass through.
+        let mut packet = [0u8; PACKET_BUFFER_SIZE];
+        packet[0..6].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01]);
+        assert!(ch.send(packet, 7).await.is_ok());
     }
 
     #[tokio::test]

@@ -9,11 +9,14 @@ mod tests {
             tap_name: None,
             ip: None,
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: RsuParameters {
                 hello_history: 1,
                 hello_periodicity: 1000,
                 cached_candidates: 1,
                 enable_encryption: false,
+                server_ip: None,
+                server_port: 8080,
             },
         };
         let _ = args;

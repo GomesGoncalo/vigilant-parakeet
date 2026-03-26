@@ -157,6 +157,72 @@ impl Simulator {
             }
         }
 
+        // Second pass: create bidirectional cloud channels for RSU ↔ Server connections.
+        //
+        // Cloud channels relay raw Ethernet frames (including ARP and IP/UDP) between
+        // the cloud TAP interfaces of each endpoint.  This simulates the internet link
+        // between RSUs and the infrastructure server.
+        //
+        // Keys use the "<nodename>:cloud" format to avoid collision with VANET channel
+        // keys.  MAC filtering is disabled on cloud channels (all-zeros sentinel MAC)
+        // because the link is point-to-point and must pass all traffic.
+        for (from_node, connections) in &topology_config.connections {
+            for (to_node, params) in connections {
+                let (Some(from_entry), Some(to_entry)) =
+                    (node_map.get(from_node), node_map.get(to_node))
+                else {
+                    continue;
+                };
+
+                let from_is_server = matches!(from_entry.2, SimNode::Server(_));
+                let to_is_server = matches!(to_entry.2, SimNode::Server(_));
+
+                // Only create cloud channels when at least one side is a Server node.
+                if !from_is_server && !to_is_server {
+                    continue;
+                }
+
+                let (Some(from_cloud), Some(to_cloud)) =
+                    (from_entry.1.cloud.as_ref(), to_entry.1.cloud.as_ref())
+                else {
+                    tracing::warn!(
+                        from = %from_node,
+                        to = %to_node,
+                        "Server topology connection found but cloud interface missing on one side"
+                    );
+                    continue;
+                };
+
+                let from_key = format!("{}:cloud", from_node);
+                let to_key = format!("{}:cloud", to_node);
+                let no_filter_mac = mac_address::MacAddress::new([0u8; 6]);
+
+                // from_node → to_node: reads from to_node's cloud TAP
+                channels.entry(from_key.clone()).or_default().insert(
+                    to_key.clone(),
+                    Channel::new(*params, no_filter_mac, to_cloud.clone(), &from_key, &to_key),
+                );
+
+                // to_node → from_node: reads from from_node's cloud TAP (ARP replies, etc.)
+                channels.entry(to_key.clone()).or_default().insert(
+                    from_key.clone(),
+                    Channel::new(
+                        *params,
+                        no_filter_mac,
+                        from_cloud.clone(),
+                        &to_key,
+                        &from_key,
+                    ),
+                );
+
+                tracing::info!(
+                    from = %from_node,
+                    to = %to_node,
+                    "Created bidirectional cloud channel"
+                );
+            }
+        }
+
         // Extract namespaces and mapping from manager
         let (namespaces, node_namespace_map) = ns_manager.into_parts();
 

@@ -31,6 +31,7 @@ pub struct InterfaceBuilder {
     name: String,
     ip: Option<Ipv4Addr>,
     mtu: Option<u16>,
+    netmask: Option<Ipv4Addr>,
 }
 
 impl InterfaceBuilder {
@@ -40,6 +41,7 @@ impl InterfaceBuilder {
             name: name.into(),
             ip: None,
             mtu: None,
+            netmask: None,
         }
     }
 
@@ -52,6 +54,16 @@ impl InterfaceBuilder {
     /// Set the MTU for this interface
     pub fn with_mtu(mut self, mtu: u16) -> Self {
         self.mtu = Some(mtu);
+        self
+    }
+
+    /// Set the subnet mask for this interface (e.g. `255.255.255.0` for /24).
+    ///
+    /// Setting a subnet mask is important for cloud interfaces so that the kernel
+    /// generates a connected route for the subnet, enabling ARP resolution between
+    /// nodes that are on the same logical network but in different namespaces.
+    pub fn with_netmask(mut self, netmask: Ipv4Addr) -> Self {
+        self.netmask = Some(netmask);
         self
     }
 
@@ -75,6 +87,10 @@ impl InterfaceBuilder {
 
             if let Some(mtu) = self.mtu {
                 builder = builder.mtu(mtu as i32);
+            }
+
+            if let Some(netmask) = self.netmask {
+                builder = builder.netmask(netmask);
             }
 
             let real_tun = builder.build()?.into_iter().next().ok_or_else(|| {
@@ -101,6 +117,7 @@ impl Clone for InterfaceBuilder {
             name: self.name.clone(),
             ip: self.ip,
             mtu: self.mtu,
+            netmask: self.netmask,
         }
     }
 }

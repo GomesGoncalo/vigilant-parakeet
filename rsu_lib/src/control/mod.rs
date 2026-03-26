@@ -18,9 +18,11 @@ use node_lib::messages::{control::Control, data::Data, message::Message, packet_
 use routing::Routing;
 use std::{
     io::IoSlice,
+    net::SocketAddr,
     sync::{Arc, RwLock},
     time::Duration,
 };
+use tokio::net::UdpSocket;
 use tracing::Instrument;
 
 // Re-export type aliases for cleaner code
@@ -32,6 +34,9 @@ pub struct Rsu {
     tun: SharedTun,
     device: SharedDevice,
     cache: Arc<ClientCache>,
+    /// Pre-connected UDP socket for sending registration messages to the server.
+    /// `None` when no server_ip is configured.
+    cloud_socket: Option<Arc<UdpSocket>>,
     node_name: String,
 }
 
@@ -45,12 +50,44 @@ impl Rsu {
         // Create tracing span for this node's initialization
         let _span = tracing::info_span!("node", name = %node_name).entered();
 
+        // If a server IP is configured, create and pre-connect a UDP socket inside the
+        // current namespace context (block_in_place keeps us on the same thread).
+        let cloud_socket = if let Some(server_ip) = args.rsu_params.server_ip {
+            let server_port = args.rsu_params.server_port;
+            let bind_addr = args
+                .cloud_ip
+                .map(|ip| format!("{}:0", ip))
+                .unwrap_or_else(|| "0.0.0.0:0".to_string());
+            let server_addr: SocketAddr = format!("{}:{}", server_ip, server_port)
+                .parse()
+                .map_err(|e| anyhow!("Invalid server address: {}", e))?;
+
+            let bind_addr_log = bind_addr.clone();
+            let socket = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async move {
+                    let sock = UdpSocket::bind(&bind_addr).await?;
+                    sock.connect(server_addr).await?;
+                    anyhow::Ok(sock)
+                })
+            })?;
+
+            tracing::info!(
+                server = %server_addr,
+                bind = %bind_addr_log,
+                "RSU cloud socket created for server registration"
+            );
+            Some(Arc::new(socket))
+        } else {
+            None
+        };
+
         let rsu = Arc::new(Self {
             routing: Arc::new(RwLock::new(Routing::new(&args)?)),
             args,
             tun,
             device,
             cache: ClientCache::default().into(),
+            cloud_socket,
             node_name,
         });
 
@@ -67,6 +104,7 @@ impl Rsu {
         rsu.hello_task()?;
         rsu.process_tap_traffic()?;
         Self::wire_traffic_task(rsu.clone())?;
+        rsu.registration_task()?;
         Ok(rsu)
     }
 
@@ -312,6 +350,51 @@ impl Rsu {
                         }
                     }
                     let _ = tokio_timerfd::sleep(periodicity).await;
+                }
+            }
+            .instrument(span),
+        );
+        Ok(())
+    }
+
+    /// Periodically send a `RegistrationMessage` to the configured server.
+    ///
+    /// Each message contains this RSU's VANET MAC and the list of OBU MACs
+    /// currently held in the client cache.  The task fires every
+    /// `hello_periodicity` ms (re-using the same interval as heartbeats).
+    ///
+    /// Does nothing if no `server_ip` was configured.
+    fn registration_task(&self) -> Result<()> {
+        let Some(socket) = self.cloud_socket.clone() else {
+            return Ok(());
+        };
+
+        let cache = self.cache.clone();
+        let rsu_mac = self.device.mac_address();
+        let periodicity = Duration::from_millis(u64::from(self.args.rsu_params.hello_periodicity));
+        let node_name = self.node_name.clone();
+
+        let span = tracing::info_span!("node", name = %node_name);
+        tokio::task::spawn(
+            async move {
+                loop {
+                    let obu_macs = cache.get_all_clients();
+                    let msg = server_lib::RegistrationMessage::new(rsu_mac, obu_macs.clone());
+                    let bytes = msg.to_bytes();
+
+                    match socket.send(&bytes).await {
+                        Ok(_) => {
+                            tracing::debug!(
+                                obu_count = obu_macs.len(),
+                                "Sent RSU registration to server"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to send registration to server");
+                        }
+                    }
+
+                    tokio_timerfd::sleep(periodicity).await.ok();
                 }
             }
             .instrument(span),
@@ -632,11 +715,14 @@ mod rsu_tests {
             tap_name: None,
             ip: None,
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: crate::args::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 5000,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_ip: None,
+                server_port: 8080,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -674,11 +760,14 @@ mod rsu_tests {
             tap_name: None,
             ip: None,
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: crate::args::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 5000,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_ip: None,
+                server_port: 8080,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -714,11 +803,14 @@ mod rsu_tests {
             tap_name: None,
             ip: None,
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: crate::args::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 5000,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_ip: None,
+                server_port: 8080,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -763,11 +855,14 @@ mod rsu_tests {
             tap_name: None,
             ip: None,
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: crate::args::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 5000,
                 cached_candidates: 3,
                 enable_encryption: false,
+                server_ip: None,
+                server_port: 8080,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(
@@ -857,11 +952,14 @@ mod rsu_tests {
             tap_name: None,
             ip: None,
             mtu: 1500,
+            cloud_ip: None,
             rsu_params: crate::args::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 5000,
                 cached_candidates: 3,
                 enable_encryption: true,
+                server_ip: None,
+                server_port: 8080,
             },
         };
 
@@ -898,6 +996,7 @@ mod rsu_tests {
             device: dev.clone(),
             cache: cache.clone(),
             node_name: "test_rsu".to_string(),
+            cloud_socket: None,
         });
 
         // Build an upstream message whose payload is invalid ciphertext so decrypt fails

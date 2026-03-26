@@ -27,6 +27,12 @@ impl ClientCache {
         let cache = self.cache.load();
         cache.get(&client).copied()
     }
+
+    /// Return all client (OBU) MAC addresses currently known to this RSU.
+    pub fn get_all_clients(&self) -> Vec<MacAddress> {
+        let cache = self.cache.load();
+        cache.keys().copied().collect()
+    }
 }
 
 #[cfg(test)]
