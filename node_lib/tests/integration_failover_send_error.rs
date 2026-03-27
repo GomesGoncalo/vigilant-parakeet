@@ -17,8 +17,18 @@ use std::time::Duration;
 ///
 /// Uses mocked time (`tokio::time::pause`) for deterministic behaviour under
 /// coverage tools (tarpaulin) that distort real-time tokio timers.
+///
+/// Under tarpaulin's ptrace instrumentation, the failover depends on
+/// timerfd-based heartbeats (real kernel timers) whose interaction with
+/// mocked time is non-deterministic on CI runners. The test is validated
+/// by the normal `cargo test` CI step (build-test) and skipped during
+/// tarpaulin coverage runs.
 #[tokio::test]
 async fn obu_promotes_on_primary_send_failure_via_hub_closure() -> anyhow::Result<()> {
+    if std::env::var("TARPAULIN").is_ok() {
+        eprintln!("Skipping failover test under tarpaulin (timerfd/ptrace incompatibility)");
+        return Ok(());
+    }
     node_lib::init_test_tracing();
     tokio::time::pause();
 

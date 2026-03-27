@@ -123,14 +123,10 @@ jobs:
         id: covrun
         env:
           RUSTFLAGS: "-C debuginfo=2 --cfg tokio_unstable"
+          TARPAULIN: "1"
         run: |
           set -euo pipefail
           mkdir -p ./target/tarpaulin
-          echo "::group::System info"
-          uname -r
-          cat /proc/sys/kernel/yama/ptrace_scope || true
-          cargo tarpaulin --version || true
-          echo "::endgroup::"
           # Single tarpaulin run over library crates with helpers enabled; ignore doctests and only run unit/integration tests
           cargo tarpaulin \
             -p common -p node_lib -p obu_lib -p rsu_lib \
@@ -139,14 +135,7 @@ jobs:
             --timeout 120 \
             --run-types Tests \
             --ignore-tests \
-            --output-dir ./target/tarpaulin \
-            -v 2>&1 | tee /tmp/tarpaulin.log || true
-
-          echo "::group::Tarpaulin exit and output check"
-          echo "--- Last 50 lines of tarpaulin output ---"
-          tail -50 /tmp/tarpaulin.log || true
-          ls -la ./target/tarpaulin/ || true
-          echo "::endgroup::"
+            --output-dir ./target/tarpaulin || true
 
           # Use generated lcov.info for percentage calc
           if [ ! -f ./target/tarpaulin/lcov.info ]; then echo "lcov.info not found"; exit 1; fi
