@@ -11,7 +11,8 @@ const FIXED_KEY: &[u8; 32] = b"vigilant_parakeet_fixed_key_256!";
 /// Returns encrypted data with nonce prepended (12 bytes nonce + ciphertext).
 ///
 /// Note: Encryption adds 28 bytes of overhead (12-byte nonce + 16-byte auth tag).
-/// MTU is set to 1436 bytes at the interface level to account for this overhead.
+/// MTU is set to 1400 bytes at the interface level to account for this overhead
+/// plus the cloud protocol (15B) and UDP/IP (28B) wrapping on the RSU→Server path.
 pub fn encrypt_payload(plaintext: &[u8]) -> Result<Vec<u8>, NodeError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(FIXED_KEY));
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);

@@ -16,15 +16,12 @@ mod node_tests {
 
         let args = rsu_lib::RsuArgs {
             bind: String::new(),
-            tap_name: None,
-            ip: None,
             mtu: 1500,
             cloud_ip: None,
             rsu_params: rsu_lib::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 1000,
                 cached_candidates: 3,
-                enable_encryption: false,
                 server_ip: None,
                 server_port: 8080,
             },
@@ -59,49 +56,23 @@ mod node_tests {
     }
 
     #[tokio::test]
-    async fn upstream_broadcast_taps_and_fans_out() -> Result<()> {
+    async fn upstream_broadcast_forwards_to_server() -> Result<()> {
         use rsu_lib::control::{handle_msg_for_test, routing::Routing, ClientCache};
-        use node_lib::messages::data::ToDownstream;
 
         let args = rsu_lib::RsuArgs {
             bind: String::new(),
-            tap_name: None,
-            ip: None,
             mtu: 1500,
             cloud_ip: None,
             rsu_params: rsu_lib::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 1000,
                 cached_candidates: 3,
-                enable_encryption: false,
                 server_ip: None,
                 server_port: 8080,
             },
         };
         let routing = std::sync::Arc::new(std::sync::RwLock::new(Routing::new(&args)?));
         let cache = std::sync::Arc::new(ClientCache::default());
-
-        // Seed routing with two next hops by sending a heartbeat and a reply
-        {
-            let mut w = routing.write().unwrap();
-            let _ = w.send_heartbeat([9u8; 6].into()); // id 0
-        }
-        // reply indicating two different targets reachable via different next hops
-        let hb0 = Heartbeat::new(std::time::Duration::from_millis(0), 0u32, [9u8; 6].into());
-        let t1: MacAddress = [10u8; 6].into();
-        let t2: MacAddress = [11u8; 6].into();
-        for (sender, nh) in [(t1, [50u8; 6].into()), (t2, [60u8; 6].into())] {
-            let hbr = HeartbeatReply::from_sender(&hb0, sender);
-            let reply = Message::new(
-                nh,
-                [255u8; 6].into(),
-                PacketType::Control(Control::HeartbeatReply(hbr)),
-            );
-            let _ = routing
-                .write()
-                .unwrap()
-                .handle_heartbeat_reply(&reply, [9u8; 6].into())?;
-        }
 
         // Build upstream broadcast payload: dest ff:ff.., source client
         let client: MacAddress = [1u8; 6].into();
@@ -115,9 +86,11 @@ mod node_tests {
         let out = handle_msg_for_test(routing.clone(), [9u8; 6].into(), cache.clone(), &msg)?;
         assert!(out.is_some());
         let v = out.unwrap();
-        // Should include at least one TapFlat (to RSU tap) and some WireFlat fanout
-        assert!(v.iter().any(|x| matches!(x, rsu_lib::control::node::ReplyType::TapFlat(_))));
-        assert!(v.iter().any(|x| matches!(x, rsu_lib::control::node::ReplyType::WireFlat(_))));
-        Ok()
+        // RSU forwards upstream data to server as WireFlat (UpstreamForward)
+        assert!(!v.is_empty());
+        assert!(v
+            .iter()
+            .any(|x| matches!(x, rsu_lib::control::node::ReplyType::WireFlat(_))));
+        Ok(())
     }
 }

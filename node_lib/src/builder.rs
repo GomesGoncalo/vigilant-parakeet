@@ -37,7 +37,7 @@ impl NodeBuilder {
             bind: bind.into(),
             tap_name: None,
             ip: None,
-            mtu: 1436,
+            mtu: 1400,
             hello_history: 10,
             cached_candidates: 3,
             enable_encryption: false,
@@ -59,7 +59,7 @@ impl NodeBuilder {
         self
     }
 
-    /// Set the MTU (default: 1436)
+    /// Set the MTU (default: 1400)
     pub fn with_mtu(mut self, mtu: i32) -> Self {
         self.mtu = mtu;
         self
@@ -185,7 +185,7 @@ mod tests {
     fn builder_defaults() {
         let builder = NodeBuilder::new("eth0");
         assert_eq!(builder.bind, "eth0");
-        assert_eq!(builder.mtu, 1436);
+        assert_eq!(builder.mtu, 1400);
         assert_eq!(builder.hello_history, 10);
         assert_eq!(builder.cached_candidates, 3);
         assert!(!builder.enable_encryption);

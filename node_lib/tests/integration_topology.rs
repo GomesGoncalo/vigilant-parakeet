@@ -16,8 +16,8 @@ async fn rsu_and_obu_topology_discovery() -> anyhow::Result<()> {
     node_lib::init_test_tracing();
     // Use paused time for deterministic test execution
     tokio::time::pause();
-    // Create shim tun pair using shared helper
-    let (tun_a, tun_b) = mk_shim_pair();
+    // Create shim tun pair for OBU (RSU no longer needs a TUN)
+    let (_tun_rsu_unused, tun_b) = mk_shim_pair();
 
     // Create a socketpair for bidirectional communication between devices
     let (node_fds, _hub_fds) = node_lib::test_helpers::util::mk_socketpairs(1)?;
@@ -32,12 +32,8 @@ async fn rsu_and_obu_topology_discovery() -> anyhow::Result<()> {
     let args_obu = mk_obu_args();
 
     // Construct nodes (they spawn background tasks)
-    let _rsu = Rsu::new(
-        args_rsu,
-        Arc::new(tun_a),
-        Arc::new(dev_a),
-        "test_rsu".to_string(),
-    )?;
+    // RSU no longer takes a TUN device
+    let _rsu = Rsu::new(args_rsu, Arc::new(dev_a), "test_rsu".to_string())?;
     let obu = Obu::new(
         args_obu,
         Arc::new(tun_b),

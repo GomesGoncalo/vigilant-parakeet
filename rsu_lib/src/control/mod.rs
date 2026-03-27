@@ -9,13 +9,13 @@ pub use node_lib::control::routing_utils;
 use crate::args::RsuArgs;
 use anyhow::{anyhow, Result};
 use client_cache::ClientCache;
-use common::tun::Tun;
-use common::{device::Device, network_interface::NetworkInterface};
-use itertools::Itertools;
+use common::device::Device;
+use common::network_interface::NetworkInterface;
 use mac_address::MacAddress;
 use node::ReplyType;
 use node_lib::messages::{control::Control, data::Data, message::Message, packet_type::PacketType};
 use routing::Routing;
+use server_lib::cloud_protocol::{CloudMessage, DownstreamForward, UpstreamForward};
 use std::{
     io::IoSlice,
     net::SocketAddr,
@@ -26,65 +26,65 @@ use tokio::net::UdpSocket;
 use tracing::Instrument;
 
 // Re-export type aliases for cleaner code
-use node_lib::{Shared, SharedDevice, SharedTun};
+use node_lib::{Shared, SharedDevice};
 
 pub struct Rsu {
     args: RsuArgs,
     routing: Shared<Routing>,
-    tun: SharedTun,
     device: SharedDevice,
     cache: Arc<ClientCache>,
-    /// Pre-connected UDP socket for sending registration messages to the server.
-    /// `None` when no server_ip is configured.
-    cloud_socket: Option<Arc<UdpSocket>>,
+    /// UDP socket for communicating with the server.
+    /// Always present; connected to the configured server address when `server_ip`
+    /// is set, or to a no-op loopback address when unconfigured (test scenarios).
+    cloud_socket: Arc<UdpSocket>,
     node_name: String,
 }
 
 impl Rsu {
-    pub fn new(
-        args: RsuArgs,
-        tun: Arc<Tun>,
-        device: Arc<Device>,
-        node_name: String,
-    ) -> Result<Arc<Self>> {
+    pub fn new(args: RsuArgs, device: Arc<Device>, node_name: String) -> Result<Arc<Self>> {
         // Create tracing span for this node's initialization
         let _span = tracing::info_span!("node", name = %node_name).entered();
 
-        // If a server IP is configured, create and pre-connect a UDP socket inside the
-        // current namespace context (block_in_place keeps us on the same thread).
-        let cloud_socket = if let Some(server_ip) = args.rsu_params.server_ip {
-            let server_port = args.rsu_params.server_port;
-            let bind_addr = args
-                .cloud_ip
-                .map(|ip| format!("{}:0", ip))
-                .unwrap_or_else(|| "0.0.0.0:0".to_string());
-            let server_addr: SocketAddr = format!("{}:{}", server_ip, server_port)
-                .parse()
-                .map_err(|e| anyhow!("Invalid server address: {}", e))?;
+        // Always create a cloud socket, connected to the configured server or a
+        // no-op loopback address when server_ip is not set (test scenarios).
+        // Use std::net::UdpSocket (synchronous) and convert to Tokio so this works
+        // in both current-thread and multi-thread runtimes.
+        let bind_addr = args
+            .cloud_ip
+            .map(|ip| format!("{}:0", ip))
+            .unwrap_or_else(|| "0.0.0.0:0".to_string());
+        let server_addr: SocketAddr = args
+            .rsu_params
+            .server_ip
+            .map(|ip| format!("{}:{}", ip, args.rsu_params.server_port))
+            .unwrap_or_else(|| "127.0.0.1:1".to_string())
+            .parse()
+            .map_err(|e| anyhow!("Invalid server address: {}", e))?;
 
-            let bind_addr_log = bind_addr.clone();
-            let socket = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    let sock = UdpSocket::bind(&bind_addr).await?;
-                    sock.connect(server_addr).await?;
-                    anyhow::Ok(sock)
-                })
-            })?;
+        let std_sock = std::net::UdpSocket::bind(&bind_addr)
+            .map_err(|e| anyhow!("Failed to bind cloud socket at {}: {}", bind_addr, e))?;
+        std_sock
+            .connect(server_addr)
+            .map_err(|e| anyhow!("Failed to connect cloud socket to {}: {}", server_addr, e))?;
+        std_sock
+            .set_nonblocking(true)
+            .map_err(|e| anyhow!("Failed to set cloud socket non-blocking: {}", e))?;
+        let socket = UdpSocket::from_std(std_sock)
+            .map_err(|e| anyhow!("Failed to register cloud socket with Tokio: {}", e))?;
 
+        if args.rsu_params.server_ip.is_some() {
             tracing::info!(
                 server = %server_addr,
-                bind = %bind_addr_log,
-                "RSU cloud socket created for server registration"
+                bind = %bind_addr,
+                "RSU cloud socket created for server communication"
             );
-            Some(Arc::new(socket))
-        } else {
-            None
-        };
+        }
+
+        let cloud_socket = Arc::new(socket);
 
         let rsu = Arc::new(Self {
             routing: Arc::new(RwLock::new(Routing::new(&args)?)),
             args,
-            tun,
             device,
             cache: ClientCache::default().into(),
             cloud_socket,
@@ -98,13 +98,12 @@ impl Rsu {
             hello_history = rsu.args.rsu_params.hello_history,
             hello_period_ms = rsu.args.rsu_params.hello_periodicity,
             cached_candidates = rsu.args.rsu_params.cached_candidates,
-            encryption = rsu.args.rsu_params.enable_encryption,
             "RSU initialized"
         );
         rsu.hello_task()?;
-        rsu.process_tap_traffic()?;
         Self::wire_traffic_task(rsu.clone())?;
         rsu.registration_task()?;
+        rsu.cloud_recv_task()?;
         Ok(rsu)
     }
 
@@ -127,7 +126,6 @@ impl Rsu {
 
     fn wire_traffic_task(rsu: Arc<Self>) -> Result<()> {
         let device = rsu.device.clone();
-        let tun = rsu.tun.clone();
         let node_name = rsu.node_name.clone();
 
         let span = tracing::info_span!("node", name = %node_name);
@@ -178,8 +176,8 @@ impl Rsu {
 
                     match messages {
                         Ok(Some(messages)) => {
-                            // Use batched message handling for improved throughput (2-3x faster)
-                            let _ = node::handle_messages_batched(messages, &tun, &device).await;
+                            // RSU only produces WireFlat replies now (no TAP)
+                            let _ = node::handle_messages_wire_only(messages, &device).await;
                         }
                         Ok(None) => {}
                         Err(e) => {
@@ -196,111 +194,32 @@ impl Rsu {
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
         match msg.get_packet_type() {
             PacketType::Data(Data::Upstream(buf)) => {
-                // Decrypt the entire frame if encryption is enabled
-                let decrypted_payload = if self.args.rsu_params.enable_encryption {
-                    match node_lib::crypto::decrypt_payload(buf.data()) {
-                        Ok(decrypted_data) => decrypted_data,
-                        Err(_) => return Ok(None),
-                    }
-                } else {
-                    buf.data().to_vec()
-                };
-
-                // Extract MAC addresses from decrypted data
-                let to: [u8; 6] = decrypted_payload
-                    .get(0..6)
-                    .ok_or_else(|| anyhow!("decrypted frame too short for destination MAC"))?
-                    .try_into()?;
-                let to: MacAddress = to.into();
-                let from: [u8; 6] = decrypted_payload
-                    .get(6..12)
-                    .ok_or_else(|| anyhow!("decrypted frame too short for source MAC"))?
-                    .try_into()?;
-                let from: MacAddress = from.into();
+                // RSU is now a forwarding relay: pass upstream data to the server
+                // opaquely (without decryption). The server handles all crypto.
                 let source: [u8; 6] = buf
                     .source()
                     .get(0..6)
                     .ok_or_else(|| anyhow!("message source too short"))?
                     .try_into()?;
                 let source: MacAddress = source.into();
-                self.cache.store_mac(from, source);
-                let bcast_or_mcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
-                let mut target = self.cache.get(to);
-                let mut messages = Vec::with_capacity(1);
 
-                if bcast_or_mcast || target.is_some_and(|x| x == self.device.mac_address()) {
-                    messages.push(ReplyType::TapFlat(decrypted_payload.clone()));
-                    target = None;
+                // Update client cache so we know which OBU is reachable via which neighbor
+                self.cache.store_mac(source, msg.from().unwrap_or(source));
+
+                if self.args.rsu_params.server_ip.is_some() {
+                    let fwd = UpstreamForward::new(
+                        self.device.mac_address(),
+                        source,
+                        buf.data().to_vec(),
+                    );
+                    if let Err(e) = self.cloud_socket.send(&fwd.to_bytes()).await {
+                        tracing::warn!(error = %e, "Failed to forward upstream to server");
+                    }
+                } else {
+                    tracing::trace!("No server configured, dropping upstream data");
                 }
 
-                let routing = self
-                    .routing
-                    .read()
-                    .expect("routing table read lock poisoned during wire traffic processing");
-                messages.extend(if bcast_or_mcast {
-                    routing
-                        .iter_next_hops()
-                        .filter(|x| x != &&source)
-                        .filter_map(|x| {
-                            let route = routing.get_route_to(Some(*x))?;
-                            Some((*x, route.mac))
-                        })
-                        .filter_map(|(_target, next_hop)| {
-                            // For broadcast traffic, encrypt the entire decrypted frame individually for each recipient
-                            let downstream_data = if self.args.rsu_params.enable_encryption {
-                                match node_lib::crypto::encrypt_payload(&decrypted_payload) {
-                                    Ok(encrypted_data) => encrypted_data,
-                                    Err(_) => return None, // Skip this recipient on encryption failure
-                                }
-                            } else {
-                                decrypted_payload.clone()
-                            };
-
-                            // For broadcast distribution, use the original destination (broadcast) not the target OBU
-                            // Use zero-copy serialization (16.5x faster than traditional)
-                            let mut wire = Vec::with_capacity(30 + downstream_data.len());
-                            Message::serialize_downstream_into(
-                                buf.source(),
-                                to, // Use original broadcast destination, not target OBU
-                                &downstream_data,
-                                self.device.mac_address(),
-                                next_hop,
-                                &mut wire,
-                            );
-                            Some(ReplyType::WireFlat(wire))
-                        })
-                        .collect_vec()
-                } else if let Some(target) = target {
-                    let Some(next_hop) = routing.get_route_to(Some(target)) else {
-                        return Ok(None);
-                    };
-
-                    // For unicast traffic, encrypt the entire decrypted frame for the specific recipient
-                    let downstream_data = if self.args.rsu_params.enable_encryption {
-                        match node_lib::crypto::encrypt_payload(&decrypted_payload) {
-                            Ok(encrypted_data) => encrypted_data,
-                            Err(_) => return Ok(None),
-                        }
-                    } else {
-                        decrypted_payload.clone()
-                    };
-
-                    // Use zero-copy serialization (16.5x faster than traditional)
-                    let mut wire = Vec::with_capacity(30 + downstream_data.len());
-                    Message::serialize_downstream_into(
-                        buf.source(),
-                        target,
-                        &downstream_data,
-                        self.device.mac_address(),
-                        next_hop.mac,
-                        &mut wire,
-                    );
-                    vec![ReplyType::WireFlat(wire)]
-                } else {
-                    vec![]
-                });
-
-                Ok(Some(messages))
+                Ok(None)
             }
             PacketType::Control(Control::HeartbeatReply(hbr)) => {
                 if hbr.source() == self.device.mac_address() {
@@ -365,9 +284,10 @@ impl Rsu {
     ///
     /// Does nothing if no `server_ip` was configured.
     fn registration_task(&self) -> Result<()> {
-        let Some(socket) = self.cloud_socket.clone() else {
+        if self.args.rsu_params.server_ip.is_none() {
             return Ok(());
-        };
+        }
+        let socket = self.cloud_socket.clone();
 
         let cache = self.cache.clone();
         let rsu_mac = self.device.mac_address();
@@ -402,197 +322,118 @@ impl Rsu {
         Ok(())
     }
 
-    fn process_tap_traffic(&self) -> Result<()> {
-        let tun = self.tun.clone();
+    /// Receive downstream data from the server and forward to OBUs via VANET.
+    ///
+    /// Listens on the connected cloud socket for `DownstreamForward` messages.
+    /// For each message, looks up the route to the destination OBU and constructs
+    /// a VANET Downstream message to deliver it.
+    ///
+    /// Does nothing if no `server_ip` was configured.
+    fn cloud_recv_task(&self) -> Result<()> {
+        if self.args.rsu_params.server_ip.is_none() {
+            return Ok(());
+        }
+        let socket = self.cloud_socket.clone();
+
         let device = self.device.clone();
-        let cache = self.cache.clone();
         let routing = self.routing.clone();
-        let enable_encryption = self.args.rsu_params.enable_encryption;
+        let cache = self.cache.clone();
         let node_name = self.node_name.clone();
 
         let span = tracing::info_span!("node", name = %node_name);
         tokio::task::spawn(
             async move {
+                let mut buf = vec![0u8; 65536];
                 loop {
-                    let devicec = device.clone();
-                    let cache = cache.clone();
-                    let routing = routing.clone();
-                    let messages = node::tap_traffic(&tun, |pkt, size| async move {
-                        let data: &[u8] = &pkt[..size];
-                        let to: [u8; 6] = data[0..6].try_into()?;
-                        let to: MacAddress = to.into();
-                        let target = cache.get(to);
-                        let from: [u8; 6] = data[6..12].try_into()?;
-                        let from: MacAddress = from.into();
-                        let source_mac = devicec.mac_address().bytes();
-                        cache.store_mac(from, devicec.mac_address());
-
-                        let routing = routing.read().expect(
-                            "routing table read lock poisoned during tap traffic processing",
-                        );
-                        let is_multicast = to.bytes()[0] & 0x1 != 0;
-
-                        let outgoing = if is_multicast {
-                            // For multicast from RSU's TUN interface, encrypt individually for each recipient
-                            routing
-                                .iter_next_hops()
-                                .filter(|x| x != &&devicec.mac_address())
-                                .filter_map(|x| {
-                                    let dest = routing.get_route_to(Some(*x))?;
-                                    Some((x, dest))
-                                })
-                                .map(|(x, y)| (x, y.mac))
-                                .unique_by(|(x, _)| *x)
-                                .filter_map(|(_x, next_hop)| {
-                                    // Encrypt the entire frame individually for each recipient when encryption is enabled
-                                    let downstream_data = if enable_encryption {
-                                        match node_lib::crypto::encrypt_payload(data) {
-                                            Ok(encrypted_data) => encrypted_data,
-                                            Err(_) => return None, // Skip this recipient on encryption failure
-                                        }
-                                    } else {
-                                        data.to_vec()
-                                    };
-
-                                    // Use zero-copy serialization (16.5x faster than traditional)
-                                    let mut wire = Vec::with_capacity(30 + downstream_data.len());
-                                    Message::serialize_downstream_into(
-                                        &source_mac,
-                                        to, // Use original broadcast destination, not target OBU MAC
-                                        &downstream_data,
-                                        devicec.mac_address(),
-                                        next_hop,
-                                        &mut wire,
-                                    );
-                                    Some(ReplyType::WireFlat(wire))
-                                })
-                                .collect_vec()
-                        } else if let Some(target) = target {
-                            // Encrypt entire frame for unicast traffic if encryption is enabled
-                            let downstream_data = if enable_encryption {
-                                match node_lib::crypto::encrypt_payload(data) {
-                                    Ok(encrypted_data) => encrypted_data,
-                                    Err(_) => return Ok(None),
+                    match socket.recv(&mut buf).await {
+                        Ok(len) => {
+                            let data = &buf[..len];
+                            match CloudMessage::try_from_bytes(data) {
+                                Some(CloudMessage::DownstreamForward(fwd)) => {
+                                    Self::handle_downstream_forward(
+                                        &fwd, &device, &routing, &cache,
+                                    )
+                                    .await;
                                 }
-                            } else {
-                                data.to_vec()
-                            };
-
-                            // Unicast traffic with known target
-                            if let Some(hop) = routing.get_route_to(Some(target)) {
-                                // Use zero-copy serialization (16.5x faster than traditional)
-                                let mut wire = Vec::with_capacity(30 + downstream_data.len());
-                                Message::serialize_downstream_into(
-                                    &source_mac,
-                                    target,
-                                    &downstream_data,
-                                    devicec.mac_address(),
-                                    hop.mac,
-                                    &mut wire,
-                                );
-                                vec![ReplyType::WireFlat(wire)]
-                            } else {
-                                // Fallback: no unicast route yet.
-                                // First try: send directly to the cached node for this client if known.
-                                if let Some(next_hop_mac) = cache.get(target) {
-                                    // Use zero-copy serialization (16.5x faster than traditional)
-                                    let mut wire = Vec::with_capacity(30 + downstream_data.len());
-                                    Message::serialize_downstream_into(
-                                        &source_mac,
-                                        target,
-                                        &downstream_data,
-                                        devicec.mac_address(),
-                                        next_hop_mac,
-                                        &mut wire,
+                                Some(_) => {
+                                    tracing::trace!(
+                                        "Received non-downstream cloud message, ignoring"
                                     );
-                                    vec![ReplyType::WireFlat(wire)]
-                                } else {
-                                    // Second try: fan out toward all known next hops.
-                                    routing
-                                        .iter_next_hops()
-                                        .filter(|x| x != &&devicec.mac_address())
-                                        .filter_map(|x| {
-                                            let dest = routing.get_route_to(Some(*x))?;
-                                            Some((x, dest))
-                                        })
-                                        .map(|(x, y)| (x, y.mac))
-                                        .unique_by(|(x, _)| *x)
-                                        .filter_map(|(_x, next_hop)| {
-                                            // Encrypt the entire frame individually for each recipient when encryption is enabled
-                                            let downstream_data = if enable_encryption {
-                                                match node_lib::crypto::encrypt_payload(data) {
-                                                    Ok(encrypted_data) => encrypted_data,
-                                                    Err(_) => return None, // Skip this recipient on encryption failure
-                                                }
-                                            } else {
-                                                data.to_vec()
-                                            };
-
-                                            // Use zero-copy serialization (16.5x faster than traditional)
-                                            let mut wire =
-                                                Vec::with_capacity(30 + downstream_data.len());
-                                            Message::serialize_downstream_into(
-                                                &source_mac,
-                                                target,
-                                                &downstream_data,
-                                                devicec.mac_address(),
-                                                next_hop,
-                                                &mut wire,
-                                            );
-                                            Some(ReplyType::WireFlat(wire))
-                                        })
-                                        .collect_vec()
+                                }
+                                None => {
+                                    tracing::debug!(
+                                        len = len,
+                                        "Received unrecognized data from server"
+                                    );
                                 }
                             }
-                        } else {
-                            // No client-cache mapping for destination yet: fan out using the original
-                            // destination MAC from the TUN frame, not the next-hop address.
-                            routing
-                                .iter_next_hops()
-                                .filter(|x| x != &&devicec.mac_address())
-                                .filter_map(|x| {
-                                    let dest = routing.get_route_to(Some(*x))?;
-                                    Some((x, dest))
-                                })
-                                .map(|(x, y)| (x, y.mac))
-                                .unique_by(|(x, _)| *x)
-                                .filter_map(|(_x, next_hop)| {
-                                    // Encrypt the entire frame individually for each recipient when encryption is enabled
-                                    let downstream_data = if enable_encryption {
-                                        match node_lib::crypto::encrypt_payload(data) {
-                                            Ok(encrypted_data) => encrypted_data,
-                                            Err(_) => return None, // Skip this recipient on encryption failure
-                                        }
-                                    } else {
-                                        data.to_vec()
-                                    };
-
-                                    // Use zero-copy serialization (16.5x faster than traditional)
-                                    let mut wire = Vec::with_capacity(30 + downstream_data.len());
-                                    Message::serialize_downstream_into(
-                                        &source_mac,
-                                        to,
-                                        &downstream_data,
-                                        devicec.mac_address(),
-                                        next_hop,
-                                        &mut wire,
-                                    );
-                                    Some(ReplyType::WireFlat(wire))
-                                })
-                                .collect_vec()
-                        };
-                        Ok(Some(outgoing))
-                    })
-                    .await;
-
-                    if let Ok(Some(messages)) = messages {
-                        let _ = node::handle_messages(messages, &tun, &device, None).await;
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Error receiving from cloud socket");
+                        }
                     }
                 }
             }
             .instrument(span),
         );
         Ok(())
+    }
+
+    /// Handle a DownstreamForward message from the server.
+    ///
+    /// Looks up the route to the destination OBU and sends a VANET Downstream
+    /// message via the device.
+    async fn handle_downstream_forward(
+        fwd: &DownstreamForward,
+        device: &Arc<Device>,
+        routing: &Shared<Routing>,
+        cache: &Arc<ClientCache>,
+    ) {
+        let dest_mac = fwd.obu_dest_mac;
+        let origin_mac = fwd.origin_mac;
+
+        // Try to find the next hop to the destination OBU
+        let next_hop = {
+            let routing = routing
+                .read()
+                .expect("routing table read lock poisoned during downstream forward");
+
+            // First try: direct route from routing table
+            if let Some(route) = routing.get_route_to(Some(dest_mac)) {
+                Some(route.mac)
+            } else {
+                // Second try: check client cache for the OBU's neighbor
+                cache.get(dest_mac)
+            }
+        };
+
+        let Some(next_hop) = next_hop else {
+            tracing::debug!(
+                dest = %dest_mac,
+                "No route to destination OBU for downstream forward"
+            );
+            return;
+        };
+
+        // Build VANET Downstream message and send via device
+        let mut wire = Vec::with_capacity(30 + fwd.payload.len());
+        Message::serialize_downstream_into(
+            &origin_mac.bytes(),
+            dest_mac,
+            &fwd.payload,
+            device.mac_address(),
+            next_hop,
+            &mut wire,
+        );
+
+        let slices = [IoSlice::new(&wire)];
+        if let Err(e) = device.send_vectored(&slices).await {
+            tracing::error!(
+                error = %e,
+                dest = %dest_mac,
+                "Failed to send downstream forward to VANET"
+            );
+        }
     }
 }
 
@@ -607,79 +448,20 @@ pub(crate) fn handle_msg_for_test(
 
     match msg.get_packet_type() {
         PacketType::Data(Data::Upstream(buf)) => {
-            let to: [u8; 6] = buf
-                .data()
-                .get(0..6)
-                .ok_or_else(|| anyhow::anyhow!("error"))?
-                .try_into()?;
-            let to: mac_address::MacAddress = to.into();
-            let from: [u8; 6] = buf
-                .data()
-                .get(6..12)
-                .ok_or_else(|| anyhow::anyhow!("error"))?
-                .try_into()?;
-            let from: mac_address::MacAddress = from.into();
+            // In the new architecture, the RSU forwards upstream data to the server.
+            // For testing without a real cloud socket, we just record the forwarding info.
             let source: [u8; 6] = buf
                 .source()
                 .get(0..6)
                 .ok_or_else(|| anyhow::anyhow!("error"))?
                 .try_into()?;
             let source: mac_address::MacAddress = source.into();
-            cache.store_mac(from, source);
-            let bcast_or_mcast = to == [255; 6].into() || to.bytes()[0] & 0x1 != 0;
-            let mut target = cache.get(to);
-            let mut messages = Vec::with_capacity(1);
-            if bcast_or_mcast || target.is_some_and(|x| x == device_mac) {
-                messages.push(ReplyType::TapFlat(buf.data().to_vec()));
-                target = None;
-            }
+            cache.store_mac(source, msg.from().unwrap_or(source));
 
-            let routing = routing
-                .read()
-                .expect("routing table read lock poisoned during data processing");
-            messages.extend(if bcast_or_mcast {
-                routing
-                    .iter_next_hops()
-                    .filter(|x| x != &&source)
-                    .filter_map(|x| {
-                        let route = routing.get_route_to(Some(*x))?;
-                        Some((*x, route.mac))
-                    })
-                    .map(|(target, next_hop)| {
-                        // Use zero-copy serialization (16.5x faster than traditional)
-                        let mut wire = Vec::with_capacity(30 + buf.data().len());
-                        node_lib::messages::message::Message::serialize_downstream_into(
-                            buf.source(),
-                            target,
-                            buf.data(),
-                            device_mac,
-                            next_hop,
-                            &mut wire,
-                        );
-                        ReplyType::WireFlat(wire)
-                    })
-                    .collect::<Vec<_>>()
-            } else if let Some(target) = target {
-                let Some(next_hop) = routing.get_route_to(Some(target)) else {
-                    return Ok(None);
-                };
-
-                // Use zero-copy serialization (16.5x faster than traditional)
-                let mut wire = Vec::with_capacity(30 + buf.data().len());
-                node_lib::messages::message::Message::serialize_downstream_into(
-                    buf.source(),
-                    target,
-                    buf.data(),
-                    device_mac,
-                    next_hop.mac,
-                    &mut wire,
-                );
-                vec![ReplyType::WireFlat(wire)]
-            } else {
-                vec![]
-            });
-
-            Ok(Some(messages))
+            // Return the raw upstream data as a WireFlat to indicate it would be forwarded
+            // to the server (simulates the UpstreamForward cloud message)
+            let fwd = UpstreamForward::new(device_mac, source, buf.data().to_vec());
+            Ok(Some(vec![ReplyType::WireFlat(fwd.to_bytes())]))
         }
         PacketType::Control(Control::HeartbeatReply(hbr)) => {
             if hbr.source() == device_mac {
@@ -709,18 +491,15 @@ mod rsu_tests {
     };
 
     #[test]
-    fn upstream_broadcast_generates_tap() {
+    fn upstream_broadcast_forwards_to_server() {
         let args = crate::args::RsuArgs {
             bind: String::new(),
-            tap_name: None,
-            ip: None,
             mtu: 1500,
             cloud_ip: None,
             rsu_params: crate::args::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 5000,
                 cached_candidates: 3,
-                enable_encryption: false,
                 server_ip: None,
                 server_port: 8080,
             },
@@ -749,23 +528,21 @@ mod rsu_tests {
             handle_msg_for_test(routing.clone(), [9u8; 6].into(), cache.clone(), &msg).expect("ok");
         assert!(res.is_some());
         let v = res.unwrap();
-        // should at least have Tap entry for broadcast
+        // Should have a WireFlat entry (the UpstreamForward to server)
         assert!(!v.is_empty());
+        assert!(matches!(&v[0], ReplyType::WireFlat(_)));
     }
 
     #[test]
     fn heartbeat_reply_for_other_source_returns_none() {
         let args = crate::args::RsuArgs {
             bind: String::new(),
-            tap_name: None,
-            ip: None,
             mtu: 1500,
             cloud_ip: None,
             rsu_params: crate::args::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 5000,
                 cached_candidates: 3,
-                enable_encryption: false,
                 server_ip: None,
                 server_port: 8080,
             },
@@ -797,18 +574,15 @@ mod rsu_tests {
     }
 
     #[test]
-    fn upstream_unicast_to_self_yields_tap_only() {
+    fn upstream_unicast_forwards_to_server() {
         let args = crate::args::RsuArgs {
             bind: String::new(),
-            tap_name: None,
-            ip: None,
             mtu: 1500,
             cloud_ip: None,
             rsu_params: crate::args::RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 5000,
                 cached_candidates: 3,
-                enable_encryption: false,
                 server_ip: None,
                 server_port: 8080,
             },
@@ -822,92 +596,6 @@ mod rsu_tests {
         let dest_client: MacAddress = [10u8; 6].into();
         let from_client: MacAddress = [1u8; 6].into();
 
-        // Pre-map the destination client to the RSU itself so the branch triggers Tap
-        cache.store_mac(dest_client, device_mac);
-
-        let mut inner = Vec::new();
-        inner.extend_from_slice(&dest_client.bytes());
-        inner.extend_from_slice(&from_client.bytes());
-        inner.extend_from_slice(&[0u8; 8]);
-        let tu = ToUpstream::new(from_client, &inner);
-        let msg = Message::new(
-            from_client,
-            dest_client,
-            PacketType::Data(Data::Upstream(tu)),
-        );
-
-        let res = handle_msg_for_test(routing, device_mac, cache, &msg).expect("ok");
-        assert!(res.is_some());
-        let msgs = res.unwrap();
-        // Expect exactly one TapFlat and no Wire messages
-        assert_eq!(msgs.len(), 1);
-        match &msgs[0] {
-            ReplyType::TapFlat(_) => {}
-            _ => panic!("expected TapFlat only"),
-        }
-    }
-
-    #[test]
-    fn upstream_unicast_forwards_via_route() {
-        // Setup RSU args and routing/cache
-        let args = crate::args::RsuArgs {
-            bind: String::new(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            cloud_ip: None,
-            rsu_params: crate::args::RsuParameters {
-                hello_history: 2,
-                hello_periodicity: 5000,
-                cached_candidates: 3,
-                enable_encryption: false,
-                server_ip: None,
-                server_port: 8080,
-            },
-        };
-        let routing = std::sync::Arc::new(std::sync::RwLock::new(
-            Routing::new(&args).expect("routing"),
-        ));
-        let cache = std::sync::Arc::new(ClientCache::default());
-
-        // Seed RSU routing with a sent heartbeat and a reply indicating a next hop for target_node
-        let target_node: MacAddress = [77u8; 6].into();
-        let next_hop: MacAddress = [88u8; 6].into();
-        // Send a heartbeat to create sent-entry with id 0
-        {
-            let mut w = routing.write().unwrap();
-            let _ = w.send_heartbeat([9u8; 6].into()); // id 0
-        }
-        // Now create and handle a HeartbeatReply in a separate mutable scope
-        {
-            let hb0 = node_lib::messages::control::heartbeat::Heartbeat::new(
-                std::time::Duration::from_millis(0),
-                0u32,
-                [9u8; 6].into(),
-            );
-            let hbr = node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(
-                &hb0,
-                target_node,
-            );
-            let reply = node_lib::messages::message::Message::new(
-                next_hop,
-                [255u8; 6].into(),
-                node_lib::messages::packet_type::PacketType::Control(
-                    node_lib::messages::control::Control::HeartbeatReply(hbr),
-                ),
-            );
-            let mut w = routing.write().unwrap();
-            let _ = w
-                .handle_heartbeat_reply(&reply, [9u8; 6].into())
-                .expect("hb reply ok");
-        }
-
-        // Cache a client-to-node mapping so unicast will target `target_node`
-        let dest_client: MacAddress = [10u8; 6].into();
-        cache.store_mac(dest_client, target_node);
-
-        // Build an upstream unicast payload destined to dest_client (not broadcast/multicast)
-        let from_client: MacAddress = [1u8; 6].into();
         let mut inner = Vec::new();
         inner.extend_from_slice(&dest_client.bytes());
         inner.extend_from_slice(&from_client.bytes());
@@ -920,104 +608,19 @@ mod rsu_tests {
         );
 
         let res =
-            handle_msg_for_test(routing.clone(), [9u8; 6].into(), cache.clone(), &msg).expect("ok");
+            handle_msg_for_test(routing.clone(), device_mac, cache.clone(), &msg).expect("ok");
         assert!(res.is_some());
         let msgs = res.unwrap();
-        // Expect exactly one WireFlat message (no Tap), forwarding toward next_hop
+        // Should produce a WireFlat (UpstreamForward to server)
         assert_eq!(msgs.len(), 1);
-        if let ReplyType::WireFlat(wire) = &msgs[0] {
-            // Deserialize to inspect destination MAC
-            let out = Message::try_from(&wire[..]).expect("parse out");
-            assert_eq!(out.to().unwrap(), next_hop);
-        } else {
-            panic!("expected WireFlat reply");
+        assert!(matches!(&msgs[0], ReplyType::WireFlat(_)));
+
+        // Verify it's a valid UpstreamForward
+        if let ReplyType::WireFlat(bytes) = &msgs[0] {
+            let parsed =
+                server_lib::UpstreamForward::try_from_bytes(bytes).expect("valid upstream forward");
+            assert_eq!(parsed.rsu_mac, device_mac);
+            assert_eq!(parsed.obu_source_mac, from_client);
         }
-    }
-
-    #[tokio::test]
-    async fn upstream_with_encryption_bad_cipher_returns_none() -> anyhow::Result<()> {
-        use crate::args::RsuArgs;
-        use crate::Rsu;
-        use mac_address::MacAddress;
-        use node_lib::messages::{
-            data::{Data, ToUpstream},
-            message::Message,
-            packet_type::PacketType,
-        };
-        use std::sync::Arc;
-
-        // Build args with encryption enabled
-        let args = RsuArgs {
-            bind: String::new(),
-            tap_name: None,
-            ip: None,
-            mtu: 1500,
-            cloud_ip: None,
-            rsu_params: crate::args::RsuParameters {
-                hello_history: 2,
-                hello_periodicity: 5000,
-                cached_candidates: 3,
-                enable_encryption: true,
-                server_ip: None,
-                server_port: 8080,
-            },
-        };
-
-        // Create shim tun and device using a test pipe (avoid privileged ops)
-        let (tun_a, _tun_b) = node_lib::test_helpers::util::mk_shim_pair();
-        let tun = Arc::new(tun_a);
-        // create a pipe and use the writer fd as the device send end
-        let mut fds = [0; 2];
-        unsafe { libc::pipe(fds.as_mut_ptr()) };
-        let reader_fd = fds[0];
-        let writer_fd = fds[1];
-        // set non-blocking for writer_fd
-        unsafe {
-            let flags = libc::fcntl(writer_fd, libc::F_GETFL);
-            if flags >= 0 {
-                let _ = libc::fcntl(writer_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-            }
-        }
-        let dev = std::sync::Arc::new(node_lib::test_helpers::util::mk_device_from_fd(
-            [0u8, 1, 2, 3, 4, 5].into(),
-            writer_fd,
-        ));
-
-        // Construct the RSU instance manually without spawning background tasks
-        use super::routing::Routing;
-        use super::ClientCache;
-        use std::sync::RwLock;
-        let routing = Arc::new(RwLock::new(Routing::new(&args)?));
-        let cache = Arc::new(ClientCache::default());
-        let rsu = Arc::new(Rsu {
-            args,
-            routing: routing.clone(),
-            tun: tun.clone(),
-            device: dev.clone(),
-            cache: cache.clone(),
-            node_name: "test_rsu".to_string(),
-            cloud_socket: None,
-        });
-
-        // Build an upstream message whose payload is invalid ciphertext so decrypt fails
-        let from_mac: MacAddress = [1u8; 6].into();
-        let dest_mac: MacAddress = [2u8; 6].into();
-        let mut inner = Vec::new();
-        inner.extend_from_slice(&dest_mac.bytes());
-        inner.extend_from_slice(&from_mac.bytes());
-        inner.extend_from_slice(b"not-a-valid-ciphertext");
-
-        let tu = ToUpstream::new(from_mac, &inner);
-        let msg = Message::new(from_mac, dest_mac, PacketType::Data(Data::Upstream(tu)));
-
-        let res = rsu.handle_msg(&msg).await?;
-        // decrypt should fail and the handler returns None
-        assert!(res.is_none());
-        // Close fds to keep OS state clean (don't block attempting to read)
-        unsafe {
-            libc::close(reader_fd);
-            libc::close(writer_fd);
-        }
-        Ok(())
     }
 }

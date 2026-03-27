@@ -1,5 +1,5 @@
 use crate::args::ServerArgs;
-use crate::server::Server;
+use crate::server::{Server, SharedTun};
 use anyhow::Result;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -9,6 +9,8 @@ pub struct ServerBuilder {
     ip: Ipv4Addr,
     port: u16,
     node_name: Option<String>,
+    tun: Option<SharedTun>,
+    enable_encryption: bool,
 }
 
 impl ServerBuilder {
@@ -18,6 +20,8 @@ impl ServerBuilder {
             ip,
             port: 8080,
             node_name: None,
+            tun: None,
+            enable_encryption: false,
         }
     }
 
@@ -27,6 +31,8 @@ impl ServerBuilder {
             ip: args.ip,
             port: args.server_params.port,
             node_name: None,
+            tun: None,
+            enable_encryption: args.server_params.enable_encryption,
         }
     }
 
@@ -42,10 +48,27 @@ impl ServerBuilder {
         self
     }
 
+    /// Set the TAP device for decapsulated OBU traffic
+    pub fn with_tun(mut self, tun: SharedTun) -> Self {
+        self.tun = Some(tun);
+        self
+    }
+
+    /// Enable or disable encryption
+    pub fn with_encryption(mut self, enable: bool) -> Self {
+        self.enable_encryption = enable;
+        self
+    }
+
     /// Build the Server instance
     pub fn build(self) -> Result<Arc<Server>> {
         let node_name = self.node_name.unwrap_or_else(|| "unknown".to_string());
-        let server = Arc::new(Server::new(self.ip, self.port, node_name));
+        let mut server = Server::new(self.ip, self.port, node_name);
+        if let Some(tun) = self.tun {
+            server = server.with_tun(tun);
+        }
+        server = server.with_encryption(self.enable_encryption);
+        let server = Arc::new(server);
         Ok(server)
     }
 }
@@ -78,7 +101,10 @@ mod tests {
     fn builder_from_args() {
         let args = ServerArgs {
             ip: Ipv4Addr::new(192, 168, 1, 1),
-            server_params: ServerParameters { port: 7777 },
+            server_params: ServerParameters {
+                port: 7777,
+                enable_encryption: true,
+            },
         };
         let server = ServerBuilder::from_args(args).build().unwrap();
         assert_eq!(server.ip(), Ipv4Addr::new(192, 168, 1, 1));

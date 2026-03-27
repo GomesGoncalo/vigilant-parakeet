@@ -231,15 +231,12 @@ mod tests {
     fn can_generate_heartbeat() {
         let args = RsuArgs {
             bind: String::default(),
-            tap_name: None,
-            ip: None,
             mtu: 1500,
             cloud_ip: None,
             rsu_params: RsuParameters {
                 hello_history: 1,
                 hello_periodicity: 1000, // RSU requires hello_periodicity
                 cached_candidates: 3,
-                enable_encryption: false,
                 server_ip: None,
                 server_port: 8080,
             },
@@ -279,15 +276,12 @@ mod tests {
     fn rsu_handle_heartbeat_reply_inserts_route() {
         let args = RsuArgs {
             bind: String::default(),
-            tap_name: None,
-            ip: None,
             mtu: 1500,
             cloud_ip: None,
             rsu_params: RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 1000, // RSU requires hello_periodicity
                 cached_candidates: 3,
-                enable_encryption: false,
                 server_ip: None,
                 server_port: 8080,
             },
@@ -333,15 +327,12 @@ mod more_tests {
     fn iter_next_hops_empty_and_get_route_none_when_empty() {
         let args = RsuArgs {
             bind: String::default(),
-            tap_name: None,
-            ip: None,
             mtu: 1500,
             cloud_ip: None,
             rsu_params: RsuParameters {
                 hello_history: 2,
                 hello_periodicity: 1000, // RSU requires hello_periodicity
                 cached_candidates: 3,
-                enable_encryption: false,
                 server_ip: None,
                 server_port: 8080,
             },

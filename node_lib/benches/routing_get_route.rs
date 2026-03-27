@@ -57,15 +57,12 @@ fn bench_obu_get_route(_c: &mut Criterion) {
 fn bench_rsu_get_route(_c: &mut Criterion) {
     let rsu_args = RsuArgs {
         bind: String::default(),
-        tap_name: None,
-        ip: None,
         mtu: 1500,
         cloud_ip: None,
         rsu_params: RsuParameters {
             hello_history: 8,
             hello_periodicity: 5000,
             cached_candidates: 3,
-            enable_encryption: false,
             server_ip: None,
             server_port: 8080,
         },

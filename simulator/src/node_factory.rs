@@ -49,7 +49,7 @@ pub fn create_node_from_settings(
         // Create virtual TAP interface for distributed network communication with OBUs
         let virtual_tun = InterfaceBuilder::new("virtual")
             .with_ip(virtual_ip)
-            .with_mtu(1436) // Match OBU/RSU MTU
+            .with_mtu(1400) // Match OBU MTU (accounts for encryption + cloud protocol overhead)
             .build_tap()?;
 
         // Create cloud interface for infrastructure connection (RSU forwarding).
@@ -61,7 +61,13 @@ pub fn create_node_from_settings(
             .with_netmask(std::net::Ipv4Addr::new(255, 255, 255, 0))
             .build_tap()?;
 
-        let server = Arc::new(Server::new(cloud_ip, port, node_name));
+        let enable_encryption = settings.get_bool("enable_encryption").unwrap_or(false);
+
+        let server = Arc::new(
+            Server::new(cloud_ip, port, node_name)
+                .with_tun(virtual_tun.clone())
+                .with_encryption(enable_encryption),
+        );
 
         // Start the server immediately in the namespace context using block_in_place
         // This ensures the socket binds within the correct network namespace
@@ -108,54 +114,29 @@ pub fn create_node_from_settings(
         .unwrap_or(3u32);
 
     // Common values used for both Obu and Rsu args
-    let ip = Ipv4Addr::from_str(&settings.get_string("ip")?)?;
-    let mtu: i32 = 1436;
+    // MTU accounts for full overhead: encryption (28B) + cloud protocol (15B) +
+    // Ethernet header (14B) + UDP/IP headers (28B) must fit in cloud MTU 1500.
+    // Max = 1500 - 28 - 15 - 14 - 28 = 1415; use 1400 for safety margin.
+    let mtu: i32 = 1400;
     let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
-    let enable_encryption = settings.get_bool("enable_encryption").unwrap_or(false);
 
     // Create VANET interface (the wireless medium where control/data messages flow)
     let vanet_tun = InterfaceBuilder::new("vanet").build_tap()?;
 
-    // Create virtual interface (for decapsulated data traffic)
-    let virtual_tun = InterfaceBuilder::new("virtual")
-        .with_ip(ip)
-        .with_mtu(mtu as u16)
-        .build_tap()?;
-
     // Create Device bound to VANET interface
     let dev = Arc::new(Device::new(vanet_tun.name())?);
 
-    // For RSU nodes, create cloud interface for server connectivity
-    // RSUs forward encapsulated traffic to servers via this interface
-    // Also capture the configured external/cloud IP so we can surface it in the UI
-    let mut cloud_ip_opt: Option<Ipv4Addr> = None;
-    let cloud_tun_opt = if node_type == node_lib::args::NodeType::Rsu {
-        // Check if external_tap_ip is configured
-        if let Ok(external_ip_str) = settings.get_string("external_tap_ip") {
-            let external_ip = Ipv4Addr::from_str(&external_ip_str)?;
-            cloud_ip_opt = Some(external_ip);
-
-            tracing::info!(
-                external_ip = %external_ip,
-                "Creating cloud interface for RSU server connectivity"
-            );
-
-            let cloud_tun = InterfaceBuilder::new("cloud")
-                .with_ip(external_ip)
-                .with_mtu(1500) // Standard MTU for infrastructure connectivity
-                .with_netmask(std::net::Ipv4Addr::new(255, 255, 255, 0))
-                .build_tap()?;
-
-            Some(cloud_tun)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
     // Create node instance and organize interfaces
     if node_type == node_lib::args::NodeType::Obu {
+        let ip = Ipv4Addr::from_str(&settings.get_string("ip")?)?;
+        let enable_encryption = settings.get_bool("enable_encryption").unwrap_or(false);
+
+        // Create virtual interface (for decapsulated data traffic) — OBU only
+        let virtual_tun = InterfaceBuilder::new("virtual")
+            .with_ip(ip)
+            .with_mtu(mtu as u16)
+            .build_tap()?;
+
         // Build ObuArgs
         let obu_args = obu_lib::ObuArgs {
             bind: vanet_tun.name().to_string(),
@@ -179,10 +160,25 @@ pub fn create_node_from_settings(
         let interfaces = NodeInterfaces::obu(vanet_tun, virtual_tun.clone(), Some(ip));
         Ok(NodeCreationResult::new(dev, interfaces, node))
     } else {
-        // RSU node
-        let cloud_tun = cloud_tun_opt.ok_or_else(|| {
+        // RSU node — no virtual TAP, no encryption config
+        // RSU forwards traffic between OBUs (VANET) and Server (cloud/UDP)
+
+        // Cloud interface for server connectivity
+        let external_ip_str = settings.get_string("external_tap_ip").map_err(|_| {
             anyhow::anyhow!("RSU node requires external_tap_ip configuration for cloud interface")
         })?;
+        let external_ip = Ipv4Addr::from_str(&external_ip_str)?;
+
+        tracing::info!(
+            external_ip = %external_ip,
+            "Creating cloud interface for RSU server connectivity"
+        );
+
+        let cloud_tun = InterfaceBuilder::new("cloud")
+            .with_ip(external_ip)
+            .with_mtu(1500)
+            .with_netmask(std::net::Ipv4Addr::new(255, 255, 255, 0))
+            .build_tap()?;
 
         // Optional server connectivity — read from the RSU config file.
         let server_ip = settings
@@ -197,10 +193,8 @@ pub fn create_node_from_settings(
 
         let rsu_args = rsu_lib::RsuArgs {
             bind: vanet_tun.name().to_string(),
-            tap_name: Some("virtual".to_string()),
-            ip: Some(ip),
             mtu,
-            cloud_ip: cloud_ip_opt,
+            cloud_ip: Some(external_ip),
             rsu_params: rsu_lib::RsuParameters {
                 hello_history,
                 hello_periodicity: settings
@@ -210,28 +204,14 @@ pub fn create_node_from_settings(
                     .flatten()
                     .ok_or_else(|| anyhow::anyhow!("hello_periodicity is required"))?,
                 cached_candidates,
-                enable_encryption,
                 server_ip,
                 server_port,
             },
         };
 
-        let node = SimNode::Rsu(rsu_lib::create_with_vdev(
-            rsu_args,
-            virtual_tun.clone(),
-            dev.clone(),
-            node_name,
-        )?);
+        let node = SimNode::Rsu(rsu_lib::create_with_vdev(rsu_args, dev.clone(), node_name)?);
 
-        // external_ip was created when building cloud_tun_opt; reuse it via parsing from cloud_tun interface isn't possible
-        // Instead we have `external_ip` in the branch where cloud_tun was created; to keep types simple, pass Some(ip) for virtual and Some(external_ip) for cloud
-        let interfaces = NodeInterfaces::rsu(
-            vanet_tun,
-            virtual_tun.clone(),
-            cloud_tun,
-            Some(ip),
-            cloud_ip_opt,
-        );
+        let interfaces = NodeInterfaces::rsu(vanet_tun, cloud_tun, Some(external_ip));
         Ok(NodeCreationResult::new(dev, interfaces, node))
     }
 }
@@ -286,9 +266,9 @@ mod tests {
             "test_rsu".to_string(),
         )?;
 
-        // Verify RSU has correct interfaces
+        // Verify RSU has correct interfaces — RSU has no virtual TAP (server owns it)
         assert!(result.interfaces.vanet().is_some());
-        assert!(result.interfaces.virtual_tap().is_some());
+        assert!(result.interfaces.virtual_tap().is_none());
         assert!(result.interfaces.cloud().is_some());
 
         Ok(())

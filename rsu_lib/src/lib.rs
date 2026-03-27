@@ -13,7 +13,6 @@ pub mod test_helpers;
 
 use anyhow::Result;
 use common::device::Device;
-use common::tun::Tun;
 use std::sync::Arc;
 
 // Re-export the shared Node trait from node_lib
@@ -30,23 +29,25 @@ pub fn create(args: RsuArgs) -> Result<Arc<dyn Node>> {
     Ok(RsuBuilder::from_args(args).build()?)
 }
 
+/// Create an RSU node with a pre-built device (for simulator and tests).
+///
+/// RSU nodes no longer require a TUN device. They only use the VANET device
+/// for wireless communication and a cloud socket for server connectivity.
 pub fn create_with_vdev(
     args: RsuArgs,
-    tun: Arc<Tun>,
     node_device: Arc<Device>,
     node_name: String,
 ) -> Result<Arc<dyn Node>> {
     #[cfg(any(test, feature = "test_helpers"))]
     {
         Ok(RsuBuilder::from_args(args)
-            .with_tun(tun)
             .with_device(node_device)
             .with_node_name(node_name)
             .build()?)
     }
     #[cfg(not(any(test, feature = "test_helpers")))]
     {
-        Ok(Rsu::new(args, tun, node_device, node_name)?)
+        Ok(Rsu::new(args, node_device, node_name)?)
     }
 }
 
@@ -69,15 +70,12 @@ mod tests {
     fn create_stub_returns_error_under_test_helpers() {
         let args = RsuArgs {
             bind: String::new(),
-            tap_name: None,
-            ip: None,
             mtu: 1500,
             cloud_ip: None,
             rsu_params: RsuParameters {
                 hello_history: 1,
                 hello_periodicity: 5000,
                 cached_candidates: 1,
-                enable_encryption: false,
                 server_ip: None,
                 server_port: 8080,
             },
