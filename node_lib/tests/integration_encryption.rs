@@ -1,260 +1,318 @@
-/// End-to-end encryption integration tests.
+/// VANET-level encryption integration tests.
 ///
-/// These tests exercise the full data path:
-///   OBU TAP → OBU (encrypt) → VANET → RSU (relay) → Server (decrypt) → Server TAP
-///   Server TAP → Server (encrypt) → RSU (relay) → OBU (decrypt) → OBU TAP
+/// These tests verify that OBU nodes encrypt their TAP frames before
+/// transmitting over the VANET, so intermediate relay nodes cannot read
+/// the plaintext payload.
 ///
-/// Each test creates real UDP sockets (no mocked time) so that the Server's
-/// async I/O integrates naturally with the VANET simulation.
-use std::sync::Arc;
-use std::time::Duration;
-
-use node_lib::test_helpers::util::{mk_device_from_fd, mk_shim_pair, mk_socketpairs};
+/// All tests use mocked time and the in-process Hub — no real UDP sockets.
+/// End-to-end tests involving the Server node live in server_lib/tests/.
+use node_lib::test_helpers::hub::HubCheck;
+use node_lib::test_helpers::util::{
+    advance_until, await_condition_with_time_advance, mk_device_from_fd, mk_shim_pairs,
+};
 use obu_lib::Obu;
 use rsu_lib::Rsu;
-use server_lib::Server;
+mod common;
+use common::{mk_obu_args, mk_obu_args_encrypted, mk_rsu_args};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Duration;
 
-/// Helper: poll a fallible async condition with real-time timeout.
-async fn wait_until<F, Fut>(mut check: F, timeout: Duration)
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if check().await {
+/// HubCheck that scans every VANET packet for a target byte sequence.
+struct PayloadChecker {
+    payload_found: Arc<AtomicBool>,
+    test_payload: Vec<u8>,
+}
+
+impl HubCheck for PayloadChecker {
+    fn on_packet(&self, from_idx: usize, data: &[u8]) {
+        // Only inspect packets originating from OBU nodes (index > 0).
+        if from_idx == 0 {
             return;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "wait_until timed out after {:?}",
-            timeout
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let Ok(msg) = node_lib::messages::message::Message::try_from(data) else {
+            return;
+        };
+
+        let node_lib::messages::packet_type::PacketType::Data(data_msg) = msg.get_packet_type()
+        else {
+            return;
+        };
+
+        let message_data = match data_msg {
+            node_lib::messages::data::Data::Upstream(upstream) => upstream.data(),
+            node_lib::messages::data::Data::Downstream(downstream) => downstream.data(),
+        };
+
+        if message_data
+            .windows(self.test_payload.len())
+            .any(|window| window == self.test_payload)
+        {
+            self.payload_found.store(true, Ordering::SeqCst);
+        }
     }
 }
 
-/// Build RsuArgs pointing at a real server address.
-fn mk_rsu_args_with_server(hello_periodicity: u32, server_port: u16) -> rsu_lib::RsuArgs {
-    rsu_lib::RsuArgs {
-        bind: String::new(),
-        mtu: 1400,
-        cloud_ip: None,
-        rsu_params: rsu_lib::RsuParameters {
-            hello_history: 10,
-            hello_periodicity,
-            cached_candidates: 3,
-            server_ip: Some(std::net::Ipv4Addr::LOCALHOST),
-            server_port,
-        },
-    }
-}
-
-/// Test that an OBU's upstream frame reaches the server TAP after decryption.
+/// Verify that OBU encryption prevents intermediate nodes from reading the payload.
 ///
-/// Topology: OBU ─── VANET ─── RSU ──── UDP ──── Server
-///
-/// With encryption enabled on both OBU and Server, the OBU encrypts its TAP
-/// frame before sending upstream.  The Server must decrypt it and inject it
-/// into its own TAP.
+/// Topology: RSU ─ OBU1 ─ OBU2
+/// OBU2 routes through OBU1.  The HubCheck inspector sits at the wire level
+/// and should NOT see the plaintext payload in any VANET packet.
 #[tokio::test]
-async fn test_obu_upstream_reaches_server() -> anyhow::Result<()> {
+async fn test_payload_encryption_prevents_inspection() {
     node_lib::init_test_tracing();
+    tokio::time::pause();
 
-    // --- Server TUN shim ---
-    let (server_tun, server_tun_peer) = mk_shim_pair();
+    let mut pairs = mk_shim_pairs(2);
+    let (tun_obu1, _tun_obu1_peer) = pairs.remove(0);
+    let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
 
-    let server = Server::new(
-        std::net::Ipv4Addr::LOCALHOST,
-        0, // OS-assigned port
-        "test_server".to_string(),
-    )
-    .with_tun(Arc::new(server_tun))
-    .with_encryption(true);
-    server.start().await?;
-    let server_port = server
-        .bound_addr()
-        .await
-        .expect("server should be bound")
-        .port();
+    let (node_fds_v, hub_fds_v) =
+        node_lib::test_helpers::util::mk_socketpairs(3).expect("mk_socketpairs failed");
 
-    // --- VANET: one RSU + one OBU via socketpair hub ---
-    let (node_fds, hub_fds) = mk_socketpairs(2)?;
+    let mac_rsu: mac_address::MacAddress = [1, 2, 3, 4, 5, 6].into();
+    let mac_obu1: mac_address::MacAddress = [10, 11, 12, 13, 14, 15].into();
+    let mac_obu2: mac_address::MacAddress = [20, 21, 22, 23, 24, 25].into();
+
+    let dev_rsu = mk_device_from_fd(mac_rsu, node_fds_v[0]);
+    let dev_obu1 = mk_device_from_fd(mac_obu1, node_fds_v[1]);
+    let dev_obu2 = mk_device_from_fd(mac_obu2, node_fds_v[2]);
+
+    // RSU-OBU1: 2ms, OBU1-OBU2: 2ms, RSU-OBU2: 100ms — forces OBU2→OBU1→RSU path.
+    let delays: Vec<Vec<u64>> = vec![vec![0, 2, 100], vec![2, 0, 2], vec![100, 2, 0]];
+
+    let test_payload = b"secret data should not be readable by OBU1";
+    let payload_found = Arc::new(AtomicBool::new(false));
+    let inspector = Arc::new(PayloadChecker {
+        payload_found: payload_found.clone(),
+        test_payload: test_payload.to_vec(),
+    });
+
     node_lib::test_helpers::util::mk_hub_with_checks_mocked_time(
-        hub_fds,
-        vec![vec![0, 0], vec![0, 0]],
-        vec![],
+        hub_fds_v,
+        delays,
+        vec![inspector],
     );
 
-    let mac_rsu: mac_address::MacAddress = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06].into();
-    let mac_obu: mac_address::MacAddress = [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F].into();
-
-    let dev_rsu = mk_device_from_fd(mac_rsu, node_fds[0]);
-    let dev_obu = mk_device_from_fd(mac_obu, node_fds[1]);
-
-    let (obu_tun, obu_tun_peer) = mk_shim_pair();
-
-    // RSU connected to the live server; 100 ms heartbeats for fast convergence.
-    let _rsu = Rsu::new(
-        mk_rsu_args_with_server(100, server_port),
-        Arc::new(dev_rsu),
-        "test_rsu".to_string(),
-    )?;
-
-    let obu_args = obu_lib::test_helpers::mk_obu_args_encrypted();
-    let obu = Obu::new(
-        obu_args,
-        Arc::new(obu_tun),
-        Arc::new(dev_obu),
-        "test_obu".to_string(),
-    )?;
-
-    // Wait for OBU to discover the RSU (real-time routing via timerfd heartbeats).
-    wait_until(
-        || async { obu.cached_upstream_mac().is_some() },
-        Duration::from_secs(5),
-    )
-    .await;
-
-    // Build a TAP Ethernet frame: dest = server dummy MAC, src = OBU TAP MAC.
-    // Since the server has no obu_routes entry for "server_dummy_mac", it will
-    // write the decrypted frame to its own TAP.
-    let server_dummy_mac: [u8; 6] = [0x02, 0x42, 0x00, 0x00, 0x00, 0x01];
-    let obu_tap_mac: [u8; 6] = [0x02, 0x42, 0x00, 0x00, 0x00, 0x02];
-    let mut frame = Vec::new();
-    frame.extend_from_slice(&server_dummy_mac);
-    frame.extend_from_slice(&obu_tap_mac);
-    frame.extend_from_slice(&[0x08, 0x00]); // IPv4 ethertype
-    frame.extend_from_slice(b"hello_from_obu_to_server");
-
-    obu_tun_peer.send_all(&frame).await?;
-
-    // The server should decrypt the frame and deliver it to its TAP.
-    let mut buf = vec![0u8; 65536];
-    let n = tokio::time::timeout(Duration::from_secs(5), server_tun_peer.recv(&mut buf)).await??;
-
-    assert_eq!(
-        &buf[..n],
-        frame.as_slice(),
-        "server TAP should receive the original frame"
-    );
-    Ok(())
-}
-
-/// Regression test: OBU1 can ping OBU2 through the Server (L2 switch).
-///
-/// Topology: OBU1 ─┐
-///                  ├── VANET ─── RSU ──── UDP ──── Server
-///           OBU2 ─┘
-///
-/// The Server acts as an L2 switch: frames from OBU1 destined for OBU2's TAP
-/// MAC are forwarded as DownstreamForward messages instead of being written to
-/// the server's own TAP.
-#[tokio::test]
-async fn test_obu_to_obu_ping_through_server() -> anyhow::Result<()> {
-    node_lib::init_test_tracing();
-
-    // --- Server (no TAP needed — it only L2-switches between OBUs) ---
-    let server = Server::new(std::net::Ipv4Addr::LOCALHOST, 0, "test_server".to_string())
-        .with_encryption(true);
-    server.start().await?;
-    let server_port = server
-        .bound_addr()
-        .await
-        .expect("server should be bound")
-        .port();
-
-    // --- VANET: one RSU + two OBUs ---
-    let (node_fds, hub_fds) = mk_socketpairs(3)?;
-    // All links symmetric with 0 ms delay.
-    node_lib::test_helpers::util::mk_hub_with_checks_mocked_time(
-        hub_fds,
-        vec![vec![0, 0, 0], vec![0, 0, 0], vec![0, 0, 0]],
-        vec![],
-    );
-
-    let mac_rsu: mac_address::MacAddress = [0x01, 0x00, 0x00, 0x00, 0x00, 0x01].into();
-    let mac_obu1: mac_address::MacAddress = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01].into();
-    let mac_obu2: mac_address::MacAddress = [0x02, 0x00, 0x00, 0x00, 0x00, 0x02].into();
-
-    let dev_rsu = mk_device_from_fd(mac_rsu, node_fds[0]);
-    let dev_obu1 = mk_device_from_fd(mac_obu1, node_fds[1]);
-    let dev_obu2 = mk_device_from_fd(mac_obu2, node_fds[2]);
-
-    let (obu1_tun, obu1_tun_peer) = mk_shim_pair();
-    let (obu2_tun, obu2_tun_peer) = mk_shim_pair();
-
-    let _rsu = Rsu::new(
-        mk_rsu_args_with_server(100, server_port),
-        Arc::new(dev_rsu),
-        "test_rsu".to_string(),
-    )?;
-
-    let obu1 = Obu::new(
-        obu_lib::test_helpers::mk_obu_args_encrypted(),
-        Arc::new(obu1_tun),
+    // RSU no longer takes a TUN device; it is a transparent relay only.
+    let _rsu = Rsu::new(mk_rsu_args(100), Arc::new(dev_rsu), "test_rsu".to_string()).unwrap();
+    let _obu1 = Obu::new(
+        mk_obu_args_encrypted(),
+        Arc::new(tun_obu1),
         Arc::new(dev_obu1),
         "test_obu1".to_string(),
-    )?;
+    )
+    .unwrap();
     let obu2 = Obu::new(
-        obu_lib::test_helpers::mk_obu_args_encrypted(),
-        Arc::new(obu2_tun),
+        mk_obu_args_encrypted(),
+        Arc::new(tun_obu2),
         Arc::new(dev_obu2),
         "test_obu2".to_string(),
-    )?;
+    )
+    .unwrap();
 
-    // Wait for both OBUs to discover the RSU.
-    wait_until(
-        || async { obu1.cached_upstream_mac().is_some() },
+    tokio::time::advance(Duration::from_millis(500)).await;
+
+    let result = await_condition_with_time_advance(
+        Duration::from_millis(10),
+        || obu2.cached_upstream_mac(),
         Duration::from_secs(5),
     )
     .await;
-    wait_until(
-        || async { obu2.cached_upstream_mac().is_some() },
-        Duration::from_secs(5),
+    assert!(result.is_ok(), "OBU2 should discover upstream");
+
+    let upstream_mac = obu2
+        .cached_upstream_mac()
+        .expect("OBU2 should have upstream");
+    assert_eq!(
+        upstream_mac, mac_obu1,
+        "OBU2 should route through OBU1 (not directly to RSU)"
+    );
+
+    // Inject a TAP frame with the secret payload from OBU2.
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&mac_rsu.bytes());
+    frame.extend_from_slice(&mac_obu2.bytes());
+    frame.extend_from_slice(test_payload);
+
+    tun_obu2_peer
+        .send_all(&frame)
+        .await
+        .expect("Failed to send test frame");
+
+    tokio::time::advance(Duration::from_millis(200)).await;
+
+    // The plaintext secret must not appear in any VANET packet.
+    assert!(
+        !payload_found.load(Ordering::SeqCst),
+        "Intermediate OBU1 should not be able to read the encrypted payload"
+    );
+}
+
+/// Verify that disabling encryption leaves the payload visible in transit.
+///
+/// When encryption is off the VANET packet carries the plaintext, so the
+/// HubCheck inspector SHOULD find it.
+#[tokio::test]
+async fn test_encryption_disabled_allows_inspection() {
+    node_lib::init_test_tracing();
+    tokio::time::pause();
+
+    let mut pairs = mk_shim_pairs(1);
+    let (tun_obu1, tun_obu1_peer) = pairs.remove(0);
+
+    let (node_fds_v, hub_fds_v) =
+        node_lib::test_helpers::util::mk_socketpairs(2).expect("mk_socketpairs failed");
+
+    let mac_rsu: mac_address::MacAddress = [1, 2, 3, 4, 5, 6].into();
+    let mac_obu1: mac_address::MacAddress = [10, 11, 12, 13, 14, 15].into();
+
+    let dev_rsu = mk_device_from_fd(mac_rsu, node_fds_v[0]);
+    let dev_obu1 = mk_device_from_fd(mac_obu1, node_fds_v[1]);
+
+    let delays: Vec<Vec<u64>> = vec![vec![0, 2], vec![2, 0]];
+
+    let test_payload = b"readable data";
+    let payload_found = Arc::new(AtomicBool::new(false));
+    let checker = Arc::new(PayloadChecker {
+        payload_found: payload_found.clone(),
+        test_payload: test_payload.to_vec(),
+    });
+
+    node_lib::test_helpers::util::mk_hub_with_checks_mocked_time(hub_fds_v, delays, vec![checker]);
+
+    let _rsu = Rsu::new(mk_rsu_args(100), Arc::new(dev_rsu), "test_rsu".to_string()).unwrap();
+    let obu1 = Obu::new(
+        mk_obu_args(), // encryption disabled
+        Arc::new(tun_obu1),
+        Arc::new(dev_obu1),
+        "test_obu1".to_string(),
+    )
+    .unwrap();
+
+    tokio::time::advance(Duration::from_millis(200)).await;
+
+    let result = await_condition_with_time_advance(
+        Duration::from_millis(10),
+        || obu1.cached_upstream_mac(),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(result.is_ok(), "OBU1 should discover upstream");
+
+    tokio::time::advance(Duration::from_millis(500)).await;
+
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&mac_rsu.bytes());
+    frame.extend_from_slice(&mac_obu1.bytes());
+    frame.extend_from_slice(test_payload);
+
+    tun_obu1_peer
+        .send_all(&frame)
+        .await
+        .expect("Failed to send test frame");
+
+    advance_until(
+        || payload_found.load(Ordering::SeqCst),
+        Duration::from_millis(1),
+        Duration::from_millis(10),
     )
     .await;
 
-    // Choose explicit TAP MACs that we embed in injected frames.
-    let obu1_tap_mac: [u8; 6] = [0x02, 0x42, 0x01, 0x00, 0x00, 0x01];
-    let obu2_tap_mac: [u8; 6] = [0x02, 0x42, 0x02, 0x00, 0x00, 0x02];
-    let server_dummy_mac: [u8; 6] = [0x02, 0x42, 0xFF, 0x00, 0x00, 0x00];
+    assert!(
+        payload_found.load(Ordering::SeqCst),
+        "With encryption disabled, payload should be readable in transit"
+    );
+}
 
-    // Step 1: OBU2 sends a frame to the server so the server learns OBU2's TAP MAC.
-    let mut obu2_registration_frame = Vec::new();
-    obu2_registration_frame.extend_from_slice(&server_dummy_mac); // dest (goes to server TAP)
-    obu2_registration_frame.extend_from_slice(&obu2_tap_mac); // src (server learns this)
-    obu2_registration_frame.extend_from_slice(&[0x08, 0x00]);
-    obu2_registration_frame.extend_from_slice(b"obu2_hello_to_server");
-    obu2_tun_peer.send_all(&obu2_registration_frame).await?;
+/// Verify that RSU relays encrypted VANET packets opaquely — it cannot read
+/// the payload even though it forwards the frame.
+#[tokio::test]
+async fn test_ping_encryption_prevents_rsu_inspection() {
+    node_lib::init_test_tracing();
+    tokio::time::pause();
 
-    // Wait until the server has learned OBU2's route.
-    wait_until(
+    let mut pairs = mk_shim_pairs(2);
+    let (tun_obu1, _tun_obu1_peer) = pairs.remove(0);
+    let (tun_obu2, tun_obu2_peer) = pairs.remove(0);
+
+    let (node_fds_v, hub_fds_v) =
+        node_lib::test_helpers::util::mk_socketpairs(3).expect("mk_socketpairs failed");
+
+    let mac_rsu: mac_address::MacAddress = [1, 2, 3, 4, 5, 6].into();
+    let mac_obu1: mac_address::MacAddress = [10, 11, 12, 13, 14, 15].into();
+    let mac_obu2: mac_address::MacAddress = [20, 21, 22, 23, 24, 25].into();
+
+    let dev_rsu = mk_device_from_fd(mac_rsu, node_fds_v[0]);
+    let dev_obu1 = mk_device_from_fd(mac_obu1, node_fds_v[1]);
+    let dev_obu2 = mk_device_from_fd(mac_obu2, node_fds_v[2]);
+
+    // OBU2 routes through RSU (not OBU1): RSU-OBU2: 4ms, RSU-OBU1: 2ms, OBU1-OBU2: 50ms.
+    let delays: Vec<Vec<u64>> = vec![vec![0, 2, 4], vec![2, 0, 50], vec![4, 50, 0]];
+
+    let ping_payload = b"This is a ping payload that should be encrypted";
+    let payload_found = Arc::new(AtomicBool::new(false));
+    let inspector = Arc::new(PayloadChecker {
+        payload_found: payload_found.clone(),
+        test_payload: ping_payload.to_vec(),
+    });
+
+    node_lib::test_helpers::util::mk_hub_with_checks_mocked_time(
+        hub_fds_v,
+        delays,
+        vec![inspector],
+    );
+
+    let _rsu = Rsu::new(mk_rsu_args(100), Arc::new(dev_rsu), "test_rsu".to_string()).unwrap();
+    let _obu1 = Obu::new(
+        mk_obu_args_encrypted(),
+        Arc::new(tun_obu1),
+        Arc::new(dev_obu1),
+        "test_obu1".to_string(),
+    )
+    .unwrap();
+    let obu2 = Obu::new(
+        mk_obu_args_encrypted(),
+        Arc::new(tun_obu2),
+        Arc::new(dev_obu2),
+        "test_obu2".to_string(),
+    )
+    .unwrap();
+
+    tokio::time::advance(Duration::from_millis(500)).await;
+
+    let result = await_condition_with_time_advance(
+        Duration::from_millis(10),
         || {
-            let s = &server;
-            async move { s.obu_route_count().await >= 1 }
+            if let Some(upstream_mac) = obu2.cached_upstream_mac() {
+                if upstream_mac == mac_rsu {
+                    return Some(upstream_mac);
+                }
+            }
+            None
         },
         Duration::from_secs(5),
     )
     .await;
+    assert!(result.is_ok(), "OBU2 should discover upstream through RSU");
 
-    // Step 2: OBU1 sends a frame destined for OBU2's TAP MAC.
-    let mut frame_obu1_to_obu2 = Vec::new();
-    frame_obu1_to_obu2.extend_from_slice(&obu2_tap_mac); // dest = OBU2 TAP
-    frame_obu1_to_obu2.extend_from_slice(&obu1_tap_mac); // src = OBU1 TAP
-    frame_obu1_to_obu2.extend_from_slice(&[0x08, 0x00]);
-    frame_obu1_to_obu2.extend_from_slice(b"ping_from_obu1_to_obu2");
-    obu1_tun_peer.send_all(&frame_obu1_to_obu2).await?;
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&mac_obu1.bytes()); // to OBU1
+    frame.extend_from_slice(&mac_obu2.bytes()); // from OBU2
+    frame.extend_from_slice(ping_payload);
 
-    // OBU2's TAP should receive OBU1's original frame (server decrypts → re-encrypts
-    // → RSU delivers → OBU2 decrypts → writes to TAP).
-    let mut buf = vec![0u8; 65536];
-    let n = tokio::time::timeout(Duration::from_secs(5), obu2_tun_peer.recv(&mut buf)).await??;
+    tun_obu2_peer
+        .send_all(&frame)
+        .await
+        .expect("Failed to send ping frame");
 
-    assert_eq!(
-        &buf[..n],
-        frame_obu1_to_obu2.as_slice(),
-        "OBU2 TAP should receive OBU1's original frame via server L2 switch"
+    tokio::time::advance(Duration::from_millis(200)).await;
+
+    assert!(
+        !payload_found.load(Ordering::SeqCst),
+        "RSU should not be able to read the encrypted ping payload while relaying it"
     );
-    Ok(())
 }

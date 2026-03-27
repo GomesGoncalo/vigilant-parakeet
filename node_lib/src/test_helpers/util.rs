@@ -50,6 +50,26 @@ where
     None
 }
 
+/// Real-clock poll: check condition every 10 ms until the wall-clock deadline
+/// passes.  Unlike `poll_until`, this is reliable under coverage tools such as
+/// tarpaulin that intercept `epoll_wait` and make `tokio::time::sleep` return
+/// much sooner than requested.
+pub async fn poll_until_real<T, F>(mut check: F, timeout: Duration) -> Option<T>
+where
+    F: FnMut() -> Option<T>,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(v) = check() {
+            return Some(v);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 /// Mocked-time version of poll_until that uses tokio::time::advance instead of sleep.
 /// This works with tokio::time::pause() for deterministic, fast tests.
 /// Uses smaller time increments to allow Hub delay simulation to work correctly.

@@ -15,6 +15,10 @@ common = { path = "../common" }
 
 [dev-dependencies]
 tokio = { version = "*", features = ["full", "test-util"] }
+obu_lib = { path = "../obu_lib/", features = ["test_helpers"] }
+rsu_lib = { path = "../rsu_lib/", features = ["test_helpers"] }
+mac_address = "*"
+anyhow = "*"
 
 [features]
 test_helpers = ["node_lib/test_helpers", "common/test_helpers"]
