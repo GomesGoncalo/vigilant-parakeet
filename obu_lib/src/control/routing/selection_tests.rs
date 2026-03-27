@@ -145,6 +145,11 @@ async fn test_latency_measurement_with_mocked_time() {
             hello_history: 3,
             cached_candidates: 3,
             enable_encryption: false,
+            enable_dh: false,
+            dh_rekey_interval_ms: 60_000,
+            dh_key_lifetime_ms: 120_000,
+            dh_max_retries: 3,
+            dh_reply_timeout_ms: 5_000,
         },
     };
     let mut obu_routing = Routing::new(&obu_args, &boot).expect("OBU routing built");

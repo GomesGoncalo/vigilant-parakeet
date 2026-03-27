@@ -1,12 +1,16 @@
 pub mod heartbeat;
+pub mod key_exchange;
 
 use crate::error::NodeError;
 use heartbeat::{Heartbeat, HeartbeatReply};
+use key_exchange::{KeyExchangeInit, KeyExchangeReply};
 
 #[derive(Debug)]
 pub enum Control<'a> {
     Heartbeat(Heartbeat<'a>),
     HeartbeatReply(HeartbeatReply<'a>),
+    KeyExchangeInit(KeyExchangeInit<'a>),
+    KeyExchangeReply(KeyExchangeReply<'a>),
 }
 
 impl<'a> TryFrom<&'a [u8]> for Control<'a> {
@@ -21,6 +25,8 @@ impl<'a> TryFrom<&'a [u8]> for Control<'a> {
         match value.first() {
             Some(0u8) => Ok(Self::Heartbeat(next.try_into()?)),
             Some(1u8) => Ok(Self::HeartbeatReply(next.try_into()?)),
+            Some(2u8) => Ok(Self::KeyExchangeInit(next.try_into()?)),
+            Some(3u8) => Ok(Self::KeyExchangeReply(next.try_into()?)),
             _ => Err(NodeError::ParseError(
                 "Invalid control message type".to_string(),
             )),
@@ -42,6 +48,16 @@ impl<'a> From<&Control<'a>> for Vec<u8> {
                 let hbr_bytes: Vec<u8> = c.into();
                 buf.extend_from_slice(&hbr_bytes);
             }
+            Control::KeyExchangeInit(c) => {
+                buf.push(2u8);
+                let ke_bytes: Vec<u8> = c.into();
+                buf.extend_from_slice(&ke_bytes);
+            }
+            Control::KeyExchangeReply(c) => {
+                buf.push(3u8);
+                let ke_bytes: Vec<u8> = c.into();
+                buf.extend_from_slice(&ke_bytes);
+            }
         }
         buf
     }
@@ -61,6 +77,16 @@ impl<'a> From<&Control<'a>> for Vec<Vec<u8>> {
                 let mut result = vec![vec![1u8]];
                 let more: Vec<Vec<u8>> = c.into();
                 result.extend(more);
+                result
+            }
+            Control::KeyExchangeInit(c) => {
+                let mut result = vec![vec![2u8]];
+                result.push(c.into());
+                result
+            }
+            Control::KeyExchangeReply(c) => {
+                let mut result = vec![vec![3u8]];
+                result.push(c.into());
                 result
             }
         }

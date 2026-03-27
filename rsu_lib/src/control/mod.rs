@@ -231,9 +231,10 @@ impl Rsu {
                     Ok(None)
                 }
             }
-            PacketType::Data(Data::Downstream(_)) | PacketType::Control(Control::Heartbeat(_)) => {
-                Ok(None)
-            }
+            PacketType::Data(Data::Downstream(_))
+            | PacketType::Control(Control::Heartbeat(_))
+            | PacketType::Control(Control::KeyExchangeInit(_))
+            | PacketType::Control(Control::KeyExchangeReply(_)) => Ok(None),
         }
     }
 
@@ -473,9 +474,10 @@ pub(crate) fn handle_msg_for_test(
                 Ok(None)
             }
         }
-        PacketType::Data(Data::Downstream(_)) | PacketType::Control(Control::Heartbeat(_)) => {
-            Ok(None)
-        }
+        PacketType::Data(Data::Downstream(_))
+        | PacketType::Control(Control::Heartbeat(_))
+        | PacketType::Control(Control::KeyExchangeInit(_))
+        | PacketType::Control(Control::KeyExchangeReply(_)) => Ok(None),
     }
 }
 

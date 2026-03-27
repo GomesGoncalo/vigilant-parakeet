@@ -10,6 +10,7 @@ use crate::args::{ObuArgs, ObuParameters};
 /// - `hello_history: 2` (small for fast tests)
 /// - `cached_candidates: 3`
 /// - `enable_encryption: false`
+/// - `enable_dh: false`
 /// - `mtu: 1500`
 pub fn mk_test_obu_args() -> ObuArgs {
     ObuArgs {
@@ -21,6 +22,11 @@ pub fn mk_test_obu_args() -> ObuArgs {
             hello_history: 2,
             cached_candidates: 3,
             enable_encryption: false,
+            enable_dh: false,
+            dh_rekey_interval_ms: 60_000,
+            dh_key_lifetime_ms: 120_000,
+            dh_max_retries: 3,
+            dh_reply_timeout_ms: 5_000,
         },
     }
 }
@@ -36,6 +42,11 @@ pub fn mk_test_obu_args_with_history(hello_history: u32) -> ObuArgs {
             hello_history,
             cached_candidates: 3,
             enable_encryption: false,
+            enable_dh: false,
+            dh_rekey_interval_ms: 60_000,
+            dh_key_lifetime_ms: 120_000,
+            dh_max_retries: 3,
+            dh_reply_timeout_ms: 5_000,
         },
     }
 }
@@ -51,6 +62,31 @@ pub fn mk_test_obu_args_encrypted() -> ObuArgs {
             hello_history: 2,
             cached_candidates: 3,
             enable_encryption: true,
+            enable_dh: false,
+            dh_rekey_interval_ms: 60_000,
+            dh_key_lifetime_ms: 120_000,
+            dh_max_retries: 3,
+            dh_reply_timeout_ms: 5_000,
+        },
+    }
+}
+
+/// Create ObuArgs with encryption and DH enabled for tests.
+pub fn mk_test_obu_args_dh() -> ObuArgs {
+    ObuArgs {
+        bind: String::new(),
+        tap_name: None,
+        ip: None,
+        mtu: 1500,
+        obu_params: ObuParameters {
+            hello_history: 2,
+            cached_candidates: 3,
+            enable_encryption: true,
+            enable_dh: true,
+            dh_rekey_interval_ms: 5_000,
+            dh_key_lifetime_ms: 10_000,
+            dh_max_retries: 3,
+            dh_reply_timeout_ms: 2_000,
         },
     }
 }
@@ -72,6 +108,31 @@ pub fn mk_obu_args_encrypted() -> ObuArgs {
             hello_history: 10,
             cached_candidates: 3,
             enable_encryption: true,
+            enable_dh: false,
+            dh_rekey_interval_ms: 60_000,
+            dh_key_lifetime_ms: 120_000,
+            dh_max_retries: 3,
+            dh_reply_timeout_ms: 5_000,
+        },
+    }
+}
+
+/// Create ObuArgs with hello_history: 10, encryption, and DH for integration tests.
+pub fn mk_obu_args_dh() -> ObuArgs {
+    ObuArgs {
+        bind: String::from("unused"),
+        tap_name: None,
+        ip: None,
+        mtu: 1500,
+        obu_params: ObuParameters {
+            hello_history: 10,
+            cached_candidates: 3,
+            enable_encryption: true,
+            enable_dh: true,
+            dh_rekey_interval_ms: 1_000,
+            dh_key_lifetime_ms: 10_000,
+            dh_max_retries: 3,
+            dh_reply_timeout_ms: 2_000,
         },
     }
 }
@@ -86,6 +147,7 @@ mod tests {
         assert_eq!(args.obu_params.hello_history, 2);
         assert_eq!(args.obu_params.cached_candidates, 3);
         assert!(!args.obu_params.enable_encryption);
+        assert!(!args.obu_params.enable_dh);
     }
 
     #[test]
@@ -98,5 +160,15 @@ mod tests {
     fn test_mk_test_obu_args_encrypted() {
         let args = mk_test_obu_args_encrypted();
         assert!(args.obu_params.enable_encryption);
+        assert!(!args.obu_params.enable_dh);
+    }
+
+    #[test]
+    fn test_mk_test_obu_args_dh() {
+        let args = mk_test_obu_args_dh();
+        assert!(args.obu_params.enable_encryption);
+        assert!(args.obu_params.enable_dh);
+        assert_eq!(args.obu_params.dh_rekey_interval_ms, 5_000);
+        assert_eq!(args.obu_params.dh_key_lifetime_ms, 10_000);
     }
 }

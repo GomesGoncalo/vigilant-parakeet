@@ -47,6 +47,11 @@ impl ObuBuilder {
         inner.hello_history = args.obu_params.hello_history;
         inner.cached_candidates = args.obu_params.cached_candidates;
         inner.enable_encryption = args.obu_params.enable_encryption;
+        inner.enable_dh = args.obu_params.enable_dh;
+        inner.dh_rekey_interval_ms = args.obu_params.dh_rekey_interval_ms;
+        inner.dh_key_lifetime_ms = args.obu_params.dh_key_lifetime_ms;
+        inner.dh_max_retries = args.obu_params.dh_max_retries;
+        inner.dh_reply_timeout_ms = args.obu_params.dh_reply_timeout_ms;
         Self { inner }
     }
 
@@ -83,6 +88,36 @@ impl ObuBuilder {
     /// Enable or disable encryption (default: false)
     pub fn with_encryption(mut self, enabled: bool) -> Self {
         self.inner = self.inner.with_encryption(enabled);
+        self
+    }
+
+    /// Enable or disable Diffie-Hellman key exchange (default: false)
+    pub fn with_dh(mut self, enabled: bool) -> Self {
+        self.inner = self.inner.with_dh(enabled);
+        self
+    }
+
+    /// Set the DH re-key interval in milliseconds (default: 60000)
+    pub fn with_dh_rekey_interval_ms(mut self, ms: u64) -> Self {
+        self.inner = self.inner.with_dh_rekey_interval_ms(ms);
+        self
+    }
+
+    /// Set the DH key lifetime in milliseconds (default: 120000)
+    pub fn with_dh_key_lifetime_ms(mut self, ms: u64) -> Self {
+        self.inner = self.inner.with_dh_key_lifetime_ms(ms);
+        self
+    }
+
+    /// Set the DH max retries before fallback (default: 3)
+    pub fn with_dh_max_retries(mut self, retries: u32) -> Self {
+        self.inner = self.inner.with_dh_max_retries(retries);
+        self
+    }
+
+    /// Set the DH reply timeout in milliseconds (default: 5000)
+    pub fn with_dh_reply_timeout_ms(mut self, ms: u64) -> Self {
+        self.inner = self.inner.with_dh_reply_timeout_ms(ms);
         self
     }
 
@@ -152,6 +187,11 @@ impl ObuBuilder {
                 hello_history: self.inner.hello_history,
                 cached_candidates: self.inner.cached_candidates,
                 enable_encryption: self.inner.enable_encryption,
+                enable_dh: self.inner.enable_dh,
+                dh_rekey_interval_ms: self.inner.dh_rekey_interval_ms,
+                dh_key_lifetime_ms: self.inner.dh_key_lifetime_ms,
+                dh_max_retries: self.inner.dh_max_retries,
+                dh_reply_timeout_ms: self.inner.dh_reply_timeout_ms,
             },
         }
     }
@@ -169,6 +209,11 @@ mod tests {
         assert_eq!(builder.inner.hello_history, 10);
         assert_eq!(builder.inner.cached_candidates, 3);
         assert!(!builder.inner.enable_encryption);
+        assert!(!builder.inner.enable_dh);
+        assert_eq!(builder.inner.dh_rekey_interval_ms, 60_000);
+        assert_eq!(builder.inner.dh_key_lifetime_ms, 120_000);
+        assert_eq!(builder.inner.dh_max_retries, 3);
+        assert_eq!(builder.inner.dh_reply_timeout_ms, 5_000);
     }
 
     #[test]
@@ -178,13 +223,23 @@ mod tests {
             .with_mtu(1500)
             .with_hello_history(20)
             .with_cached_candidates(5)
-            .with_encryption(true);
+            .with_encryption(true)
+            .with_dh(true)
+            .with_dh_rekey_interval_ms(30_000)
+            .with_dh_key_lifetime_ms(90_000)
+            .with_dh_max_retries(5)
+            .with_dh_reply_timeout_ms(2_000);
 
         assert_eq!(builder.inner.ip, Some("192.168.1.100".parse().unwrap()));
         assert_eq!(builder.inner.mtu, 1500);
         assert_eq!(builder.inner.hello_history, 20);
         assert_eq!(builder.inner.cached_candidates, 5);
         assert!(builder.inner.enable_encryption);
+        assert!(builder.inner.enable_dh);
+        assert_eq!(builder.inner.dh_rekey_interval_ms, 30_000);
+        assert_eq!(builder.inner.dh_key_lifetime_ms, 90_000);
+        assert_eq!(builder.inner.dh_max_retries, 5);
+        assert_eq!(builder.inner.dh_reply_timeout_ms, 2_000);
     }
 
     #[test]
@@ -198,6 +253,11 @@ mod tests {
                 hello_history: 15,
                 cached_candidates: 4,
                 enable_encryption: true,
+                enable_dh: true,
+                dh_rekey_interval_ms: 45_000,
+                dh_key_lifetime_ms: 90_000,
+                dh_max_retries: 2,
+                dh_reply_timeout_ms: 3_000,
             },
         };
 
@@ -206,5 +266,7 @@ mod tests {
         assert_eq!(builder.inner.tap_name, Some("tap0".to_string()));
         assert_eq!(builder.inner.hello_history, 15);
         assert!(builder.inner.enable_encryption);
+        assert!(builder.inner.enable_dh);
+        assert_eq!(builder.inner.dh_rekey_interval_ms, 45_000);
     }
 }

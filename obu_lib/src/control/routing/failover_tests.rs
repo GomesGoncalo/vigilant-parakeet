@@ -23,6 +23,11 @@ fn failover_rebuilds_candidates_from_latency() {
             hello_history: 2,
             cached_candidates: 3,
             enable_encryption: false,
+            enable_dh: false,
+            dh_rekey_interval_ms: 60_000,
+            dh_key_lifetime_ms: 120_000,
+            dh_max_retries: 3,
+            dh_reply_timeout_ms: 5_000,
         },
     };
 
@@ -90,6 +95,11 @@ fn select_and_cache_upstream_backfills_by_hops() {
             hello_history: 2,
             cached_candidates: 3,
             enable_encryption: false,
+            enable_dh: false,
+            dh_rekey_interval_ms: 60_000,
+            dh_key_lifetime_ms: 120_000,
+            dh_max_retries: 3,
+            dh_reply_timeout_ms: 5_000,
         },
     };
 
@@ -150,6 +160,11 @@ fn test_set_cached_candidates_clears_and_sets() {
             hello_history: 2,
             cached_candidates: 3,
             enable_encryption: false,
+            enable_dh: false,
+            dh_rekey_interval_ms: 60_000,
+            dh_key_lifetime_ms: 120_000,
+            dh_max_retries: 3,
+            dh_reply_timeout_ms: 5_000,
         },
     };
 
@@ -181,6 +196,11 @@ fn failover_backfills_from_hops_when_no_latency() {
             hello_history: 2,
             cached_candidates: 3,
             enable_encryption: false,
+            enable_dh: false,
+            dh_rekey_interval_ms: 60_000,
+            dh_key_lifetime_ms: 120_000,
+            dh_max_retries: 3,
+            dh_reply_timeout_ms: 5_000,
         },
     };
 

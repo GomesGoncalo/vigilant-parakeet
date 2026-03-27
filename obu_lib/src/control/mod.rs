@@ -1,3 +1,4 @@
+pub mod dh_key_store;
 pub mod node;
 pub mod routing;
 mod routing_cache;
@@ -11,10 +12,14 @@ use crate::args::ObuArgs;
 use anyhow::{anyhow, Result};
 use common::tun::Tun;
 use common::{device::Device, network_interface::NetworkInterface};
+use dh_key_store::DhKeyStore;
 use mac_address::MacAddress;
 use node::ReplyType;
 use node_lib::messages::{
-    control::Control,
+    control::{
+        key_exchange::{KeyExchangeInit, KeyExchangeReply},
+        Control,
+    },
     data::{Data, ToUpstream},
     message::Message,
     packet_type::PacketType,
@@ -22,11 +27,13 @@ use node_lib::messages::{
 use routing::Routing;
 use session::Session;
 use std::sync::{Arc, RwLock};
-use tokio::time::Instant;
+use tokio::time::{Duration, Instant};
 use tracing::Instrument;
 
 // Re-export type aliases for cleaner code
 use node_lib::{Shared, SharedDevice, SharedTun};
+
+type SharedKeyStore = Arc<RwLock<DhKeyStore>>;
 
 pub struct Obu {
     args: ObuArgs,
@@ -35,6 +42,7 @@ pub struct Obu {
     device: SharedDevice,
     session: Arc<Session>,
     node_name: String,
+    dh_key_store: SharedKeyStore,
 }
 
 impl Obu {
@@ -49,6 +57,7 @@ impl Obu {
 
         let boot = Instant::now();
         let routing = Arc::new(RwLock::new(Routing::new(&args, &boot)?));
+        let dh_key_store = Arc::new(RwLock::new(DhKeyStore::new()));
         let obu = Arc::new(Self {
             args,
             routing,
@@ -56,6 +65,7 @@ impl Obu {
             device,
             session: Session::new(tun).into(),
             node_name,
+            dh_key_store,
         });
 
         tracing::info!(
@@ -65,10 +75,16 @@ impl Obu {
             hello_history = obu.args.obu_params.hello_history,
             cached_candidates = obu.args.obu_params.cached_candidates,
             encryption = obu.args.obu_params.enable_encryption,
+            dh = obu.args.obu_params.enable_dh,
+            dh_rekey_interval_ms = obu.args.obu_params.dh_rekey_interval_ms,
+            dh_key_lifetime_ms = obu.args.obu_params.dh_key_lifetime_ms,
             "OBU initialized"
         );
         obu.session_task()?;
         Obu::wire_traffic_task(obu.clone())?;
+        if obu.args.obu_params.enable_dh && obu.args.obu_params.enable_encryption {
+            Obu::dh_rekey_task(obu.clone())?;
+        }
         Ok(obu)
     }
 
@@ -97,6 +113,120 @@ impl Obu {
             .get_cached_candidates()
             .map(|v| v.len())
             .unwrap_or(0)
+    }
+
+    /// Periodic DH re-keying task.
+    fn dh_rekey_task(obu: Arc<Self>) -> Result<()> {
+        let rekey_interval = Duration::from_millis(obu.args.obu_params.dh_rekey_interval_ms);
+        let key_lifetime_ms = obu.args.obu_params.dh_key_lifetime_ms;
+        let reply_timeout_ms = obu.args.obu_params.dh_reply_timeout_ms;
+        let max_retries = obu.args.obu_params.dh_max_retries;
+        let node_name = obu.node_name.clone();
+
+        let span = tracing::info_span!("node", name = %node_name);
+        tokio::task::spawn(
+            async move {
+                // Initial delay before first key exchange to allow routing to establish
+                tokio::time::sleep(Duration::from_millis(500)).await;
+
+                loop {
+                    // Check if we have an upstream to exchange keys with
+                    if let Some(upstream_mac) = obu.cached_upstream_mac() {
+                        let needs_exchange = {
+                            let store = obu
+                                .dh_key_store
+                                .read()
+                                .expect("dh key store read lock poisoned");
+                            !store.has_established_key(upstream_mac)
+                                || store.is_key_expired(upstream_mac, key_lifetime_ms)
+                        };
+
+                        if needs_exchange {
+                            // Check for timed-out pending exchanges
+                            {
+                                let store = obu
+                                    .dh_key_store
+                                    .read()
+                                    .expect("dh key store read lock poisoned");
+                                if store.has_pending(upstream_mac)
+                                    && store.is_pending_timed_out(upstream_mac, reply_timeout_ms)
+                                {
+                                    let retries = store.pending_retries(upstream_mac).unwrap_or(0);
+                                    if retries >= max_retries {
+                                        drop(store);
+                                        let mut store = obu
+                                            .dh_key_store
+                                            .write()
+                                            .expect("dh key store write lock poisoned");
+                                        store.remove_pending(upstream_mac);
+                                        tracing::warn!(
+                                            peer = %upstream_mac,
+                                            retries = retries,
+                                            "DH key exchange failed after max retries, using fixed key"
+                                        );
+                                    } else {
+                                        drop(store);
+                                        let mut store = obu
+                                            .dh_key_store
+                                            .write()
+                                            .expect("dh key store write lock poisoned");
+                                        store.increment_retries(upstream_mac);
+                                        store.remove_pending(upstream_mac);
+                                        // Will re-initiate below
+                                    }
+                                }
+                            }
+
+                            // Initiate new exchange if no pending one
+                            let should_initiate = {
+                                let store = obu
+                                    .dh_key_store
+                                    .read()
+                                    .expect("dh key store read lock poisoned");
+                                !store.has_pending(upstream_mac)
+                            };
+
+                            if should_initiate {
+                                let (key_id, pub_key) = {
+                                    let mut store = obu
+                                        .dh_key_store
+                                        .write()
+                                        .expect("dh key store write lock poisoned");
+                                    store.initiate_exchange(upstream_mac)
+                                };
+
+                                let our_mac = obu.device.mac_address();
+                                let init_msg = KeyExchangeInit::new(key_id, pub_key, our_mac);
+                                let msg = Message::new(
+                                    our_mac,
+                                    upstream_mac,
+                                    PacketType::Control(Control::KeyExchangeInit(init_msg)),
+                                );
+                                let wire: Vec<u8> = (&msg).into();
+
+                                if let Err(e) = obu.device.send(&wire).await {
+                                    tracing::warn!(
+                                        error = %e,
+                                        peer = %upstream_mac,
+                                        "Failed to send DH KeyExchangeInit"
+                                    );
+                                }
+
+                                tracing::debug!(
+                                    peer = %upstream_mac,
+                                    key_id = key_id,
+                                    "Sent DH KeyExchangeInit"
+                                );
+                            }
+                        }
+                    }
+
+                    tokio::time::sleep(rekey_interval).await;
+                }
+            }
+            .instrument(span),
+        );
+        Ok(())
     }
 
     fn wire_traffic_task(obu: Arc<Self>) -> Result<()> {
@@ -176,6 +306,8 @@ impl Obu {
         let tun = self.tun.clone();
         let routing_handle = routing.clone();
         let enable_encryption = self.args.obu_params.enable_encryption;
+        let enable_dh = self.args.obu_params.enable_dh;
+        let dh_key_store = self.dh_key_store.clone();
         let node_name = self.node_name.clone();
 
         let span = tracing::info_span!("node", name = %node_name);
@@ -185,6 +317,7 @@ impl Obu {
                     let devicec = device.clone();
                     let routing_for_closure = routing_handle.clone();
                     let routing_for_handle = routing_handle.clone();
+                    let dh_store = dh_key_store.clone();
                     let messages = session
                         .process(|x, size| async move {
                             let y: &[u8] = &x[..size];
@@ -197,7 +330,21 @@ impl Obu {
                             };
 
                             let payload_data = if enable_encryption {
-                                match node_lib::crypto::encrypt_payload(y) {
+                                let key = if enable_dh {
+                                    dh_store
+                                        .read()
+                                        .expect("dh key store read lock poisoned")
+                                        .get_key(upstream.mac)
+                                        .copied()
+                                } else {
+                                    None
+                                };
+                                let encrypt_result = if let Some(dh_key) = key {
+                                    node_lib::crypto::encrypt_payload_with_key(y, &dh_key)
+                                } else {
+                                    node_lib::crypto::encrypt_payload(y)
+                                };
+                                match encrypt_result {
                                     Ok(encrypted_data) => encrypted_data,
                                     Err(e) => {
                                         tracing::error!(
@@ -277,13 +424,28 @@ impl Obu {
                 let is_for_us =
                     destination == self.device.mac_address() || destination.bytes()[0] & 0x1 != 0;
                 if is_for_us {
+                    let sender_mac = msg.from().unwrap_or([0u8; 6].into());
                     let payload_data = if self.args.obu_params.enable_encryption {
-                        match node_lib::crypto::decrypt_payload(buf.data()) {
+                        let key = if self.args.obu_params.enable_dh {
+                            self.dh_key_store
+                                .read()
+                                .expect("dh key store read lock poisoned")
+                                .get_key(sender_mac)
+                                .copied()
+                        } else {
+                            None
+                        };
+                        let decrypt_result = if let Some(dh_key) = key {
+                            node_lib::crypto::decrypt_payload_with_key(buf.data(), &dh_key)
+                        } else {
+                            node_lib::crypto::decrypt_payload(buf.data())
+                        };
+                        match decrypt_result {
                             Ok(decrypted_data) => decrypted_data,
                             Err(e) => {
                                 tracing::warn!(
                                     size = buf.data().len(),
-                                    from = %msg.from().unwrap_or([0u8; 6].into()),
+                                    from = %sender_mac,
                                     error = %e,
                                     "Failed to decrypt downstream frame, dropping"
                                 );
@@ -326,7 +488,90 @@ impl Obu {
                 .write()
                 .expect("routing table write lock poisoned during heartbeat reply handling")
                 .handle_heartbeat_reply(msg, self.device.mac_address()),
+            PacketType::Control(Control::KeyExchangeInit(ke_init)) => {
+                self.handle_key_exchange_init(ke_init)
+            }
+            PacketType::Control(Control::KeyExchangeReply(ke_reply)) => {
+                self.handle_key_exchange_reply(ke_reply)
+            }
         }
+    }
+
+    fn handle_key_exchange_init(
+        &self,
+        ke_init: &KeyExchangeInit<'_>,
+    ) -> Result<Option<Vec<ReplyType>>> {
+        if !self.args.obu_params.enable_dh || !self.args.obu_params.enable_encryption {
+            tracing::trace!("Ignoring KeyExchangeInit — DH or encryption not enabled");
+            return Ok(None);
+        }
+
+        let peer_mac = ke_init.sender();
+        let key_id = ke_init.key_id();
+        let peer_pub = ke_init.public_key();
+
+        let our_pub = {
+            let mut store = self
+                .dh_key_store
+                .write()
+                .expect("dh key store write lock poisoned");
+            store.handle_incoming_init(peer_mac, key_id, &peer_pub)
+        };
+
+        tracing::debug!(
+            peer = %peer_mac,
+            key_id = key_id,
+            "Handled DH KeyExchangeInit, sending reply"
+        );
+
+        let reply = KeyExchangeReply::new(key_id, our_pub, self.device.mac_address());
+        let msg = Message::new(
+            self.device.mac_address(),
+            peer_mac,
+            PacketType::Control(Control::KeyExchangeReply(reply)),
+        );
+        let wire: Vec<u8> = (&msg).into();
+        Ok(Some(vec![ReplyType::WireFlat(wire)]))
+    }
+
+    fn handle_key_exchange_reply(
+        &self,
+        ke_reply: &KeyExchangeReply<'_>,
+    ) -> Result<Option<Vec<ReplyType>>> {
+        if !self.args.obu_params.enable_dh || !self.args.obu_params.enable_encryption {
+            return Ok(None);
+        }
+
+        let peer_mac = ke_reply.sender();
+        let key_id = ke_reply.key_id();
+        let peer_pub = ke_reply.public_key();
+
+        let result = {
+            let mut store = self
+                .dh_key_store
+                .write()
+                .expect("dh key store write lock poisoned");
+            store.complete_exchange(peer_mac, key_id, &peer_pub)
+        };
+
+        match result {
+            Some(_) => {
+                tracing::info!(
+                    peer = %peer_mac,
+                    key_id = key_id,
+                    "DH key exchange completed successfully"
+                );
+            }
+            None => {
+                tracing::warn!(
+                    peer = %peer_mac,
+                    key_id = key_id,
+                    "Failed to complete DH key exchange"
+                );
+            }
+        }
+
+        Ok(None)
     }
 }
 
@@ -392,6 +637,11 @@ pub(crate) fn handle_msg_for_test(
             .write()
             .expect("routing table write lock poisoned in test helper")
             .handle_heartbeat_reply(msg, device_mac),
+        PacketType::Control(Control::KeyExchangeInit(_))
+        | PacketType::Control(Control::KeyExchangeReply(_)) => {
+            // Key exchange messages not handled in basic test helper
+            Ok(None)
+        }
     }
 }
 
