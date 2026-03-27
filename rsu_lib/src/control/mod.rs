@@ -33,9 +33,10 @@ pub struct Rsu {
     routing: Shared<Routing>,
     device: SharedDevice,
     cache: Arc<ClientCache>,
-    /// Pre-connected UDP socket for communicating with the server.
-    /// `None` when no server_ip is configured.
-    cloud_socket: Option<Arc<UdpSocket>>,
+    /// UDP socket for communicating with the server.
+    /// Always present; connected to the configured server address when `server_ip`
+    /// is set, or to a no-op loopback address when unconfigured (test scenarios).
+    cloud_socket: Arc<UdpSocket>,
     node_name: String,
 }
 
@@ -44,36 +45,42 @@ impl Rsu {
         // Create tracing span for this node's initialization
         let _span = tracing::info_span!("node", name = %node_name).entered();
 
-        // If a server IP is configured, create and pre-connect a UDP socket inside the
-        // current namespace context (block_in_place keeps us on the same thread).
-        let cloud_socket = if let Some(server_ip) = args.rsu_params.server_ip {
-            let server_port = args.rsu_params.server_port;
-            let bind_addr = args
-                .cloud_ip
-                .map(|ip| format!("{}:0", ip))
-                .unwrap_or_else(|| "0.0.0.0:0".to_string());
-            let server_addr: SocketAddr = format!("{}:{}", server_ip, server_port)
-                .parse()
-                .map_err(|e| anyhow!("Invalid server address: {}", e))?;
+        // Always create a cloud socket, connected to the configured server or a
+        // no-op loopback address when server_ip is not set (test scenarios).
+        // Use std::net::UdpSocket (synchronous) and convert to Tokio so this works
+        // in both current-thread and multi-thread runtimes.
+        let bind_addr = args
+            .cloud_ip
+            .map(|ip| format!("{}:0", ip))
+            .unwrap_or_else(|| "0.0.0.0:0".to_string());
+        let server_addr: SocketAddr = args
+            .rsu_params
+            .server_ip
+            .map(|ip| format!("{}:{}", ip, args.rsu_params.server_port))
+            .unwrap_or_else(|| "127.0.0.1:1".to_string())
+            .parse()
+            .map_err(|e| anyhow!("Invalid server address: {}", e))?;
 
-            let bind_addr_log = bind_addr.clone();
-            let socket = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    let sock = UdpSocket::bind(&bind_addr).await?;
-                    sock.connect(server_addr).await?;
-                    anyhow::Ok(sock)
-                })
-            })?;
+        let std_sock = std::net::UdpSocket::bind(&bind_addr)
+            .map_err(|e| anyhow!("Failed to bind cloud socket at {}: {}", bind_addr, e))?;
+        std_sock
+            .connect(server_addr)
+            .map_err(|e| anyhow!("Failed to connect cloud socket to {}: {}", server_addr, e))?;
+        std_sock
+            .set_nonblocking(true)
+            .map_err(|e| anyhow!("Failed to set cloud socket non-blocking: {}", e))?;
+        let socket = UdpSocket::from_std(std_sock)
+            .map_err(|e| anyhow!("Failed to register cloud socket with Tokio: {}", e))?;
 
+        if args.rsu_params.server_ip.is_some() {
             tracing::info!(
                 server = %server_addr,
-                bind = %bind_addr_log,
+                bind = %bind_addr,
                 "RSU cloud socket created for server communication"
             );
-            Some(Arc::new(socket))
-        } else {
-            None
-        };
+        }
+
+        let cloud_socket = Arc::new(socket);
 
         let rsu = Arc::new(Self {
             routing: Arc::new(RwLock::new(Routing::new(&args)?)),
@@ -199,17 +206,17 @@ impl Rsu {
                 // Update client cache so we know which OBU is reachable via which neighbor
                 self.cache.store_mac(source, msg.from().unwrap_or(source));
 
-                if let Some(socket) = &self.cloud_socket {
+                if self.args.rsu_params.server_ip.is_some() {
                     let fwd = UpstreamForward::new(
                         self.device.mac_address(),
                         source,
                         buf.data().to_vec(),
                     );
-                    if let Err(e) = socket.send(&fwd.to_bytes()).await {
+                    if let Err(e) = self.cloud_socket.send(&fwd.to_bytes()).await {
                         tracing::warn!(error = %e, "Failed to forward upstream to server");
                     }
                 } else {
-                    tracing::trace!("No cloud socket configured, dropping upstream data");
+                    tracing::trace!("No server configured, dropping upstream data");
                 }
 
                 Ok(None)
@@ -277,9 +284,10 @@ impl Rsu {
     ///
     /// Does nothing if no `server_ip` was configured.
     fn registration_task(&self) -> Result<()> {
-        let Some(socket) = self.cloud_socket.clone() else {
+        if self.args.rsu_params.server_ip.is_none() {
             return Ok(());
-        };
+        }
+        let socket = self.cloud_socket.clone();
 
         let cache = self.cache.clone();
         let rsu_mac = self.device.mac_address();
@@ -322,9 +330,10 @@ impl Rsu {
     ///
     /// Does nothing if no `server_ip` was configured.
     fn cloud_recv_task(&self) -> Result<()> {
-        let Some(socket) = self.cloud_socket.clone() else {
+        if self.args.rsu_params.server_ip.is_none() {
             return Ok(());
-        };
+        }
+        let socket = self.cloud_socket.clone();
 
         let device = self.device.clone();
         let routing = self.routing.clone();
