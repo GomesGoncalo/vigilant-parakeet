@@ -250,7 +250,14 @@ impl Rsu {
                             }
                             from_mac
                         }
-                        Err(_) => ke_init.sender(),
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "Failed to parse source MAC in KeyExchangeInit; dropping message"
+                            );
+                            // Do not trust spoofable ke_init.sender() when the frame source MAC is invalid.
+                            return Ok(None);
+                        }
                     };
                     let ke_bytes: Vec<u8> = ke_init.into();
                     let fwd = KeyExchangeForward::new(obu_mac, self.device.mac_address(), ke_bytes);
