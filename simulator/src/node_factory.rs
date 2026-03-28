@@ -62,11 +62,19 @@ pub fn create_node_from_settings(
             .build_tap()?;
 
         let enable_encryption = settings.get_bool("enable_encryption").unwrap_or(false);
+        let crypto_config = parse_crypto_config(settings);
+        let key_ttl_ms = settings
+            .get_int("key_ttl_ms")
+            .ok()
+            .and_then(|v| u64::try_from(v).ok())
+            .unwrap_or(86_400_000);
 
         let server = Arc::new(
             Server::new(cloud_ip, port, node_name)
                 .with_tun(virtual_tun.clone())
-                .with_encryption(enable_encryption),
+                .with_encryption(enable_encryption)
+                .with_key_ttl_ms(key_ttl_ms)
+                .with_crypto_config(crypto_config),
         );
 
         // Start the server immediately in the namespace context using block_in_place
@@ -130,6 +138,22 @@ pub fn create_node_from_settings(
     if node_type == node_lib::args::NodeType::Obu {
         let ip = Ipv4Addr::from_str(&settings.get_string("ip")?)?;
         let enable_encryption = settings.get_bool("enable_encryption").unwrap_or(false);
+        let crypto_config = parse_crypto_config(settings);
+        let dh_key_lifetime_ms = settings
+            .get_int("dh_key_lifetime_ms")
+            .ok()
+            .and_then(|v| u64::try_from(v).ok())
+            .unwrap_or(86_400_000);
+        let dh_rekey_interval_ms = settings
+            .get_int("dh_rekey_interval_ms")
+            .ok()
+            .and_then(|v| u64::try_from(v).ok())
+            .unwrap_or(dh_key_lifetime_ms / 2);
+        let dh_reply_timeout_ms = settings
+            .get_int("dh_reply_timeout_ms")
+            .ok()
+            .and_then(|v| u64::try_from(v).ok())
+            .unwrap_or(5_000);
 
         // Create virtual interface (for decapsulated data traffic) — OBU only
         let virtual_tun = InterfaceBuilder::new("virtual")
@@ -147,6 +171,12 @@ pub fn create_node_from_settings(
                 hello_history,
                 cached_candidates,
                 enable_encryption,
+                dh_rekey_interval_ms,
+                dh_key_lifetime_ms,
+                dh_reply_timeout_ms,
+                cipher: crypto_config.cipher,
+                kdf: crypto_config.kdf,
+                dh_group: crypto_config.dh_group,
             },
         };
 
@@ -213,6 +243,59 @@ pub fn create_node_from_settings(
 
         let interfaces = NodeInterfaces::rsu(vanet_tun, cloud_tun, Some(external_ip));
         Ok(NodeCreationResult::new(dev, interfaces, node))
+    }
+}
+
+/// Parse crypto configuration from settings, falling back to defaults.
+fn parse_crypto_config(settings: &Config) -> node_lib::crypto::CryptoConfig {
+    let cipher = match settings.get_string("cipher") {
+        Ok(raw) => match raw.parse() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                tracing::warn!(
+                    %raw,
+                    %err,
+                    "Invalid cipher in configuration, falling back to default"
+                );
+                Default::default()
+            }
+        },
+        Err(_) => Default::default(),
+    };
+
+    let kdf = match settings.get_string("kdf") {
+        Ok(raw) => match raw.parse() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                tracing::warn!(
+                    %raw,
+                    %err,
+                    "Invalid kdf in configuration, falling back to default"
+                );
+                Default::default()
+            }
+        },
+        Err(_) => Default::default(),
+    };
+
+    let dh_group = match settings.get_string("dh_group") {
+        Ok(raw) => match raw.parse() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                tracing::warn!(
+                    %raw,
+                    %err,
+                    "Invalid dh_group in configuration, falling back to default"
+                );
+                Default::default()
+            }
+        },
+        Err(_) => Default::default(),
+    };
+    node_lib::crypto::CryptoConfig {
+        cipher,
+        kdf,
+        dh_group,
     }
 }
 

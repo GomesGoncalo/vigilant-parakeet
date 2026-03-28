@@ -33,7 +33,6 @@ impl RoutingCache {
     }
 
     /// Return the last source MAC we cached upstream for.
-    #[allow(dead_code)]
     pub(crate) fn get_cached_source(&self) -> Option<MacAddress> {
         self.cached_source.load().as_ref().map(|m| **m)
     }

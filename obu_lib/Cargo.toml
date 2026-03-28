@@ -25,6 +25,7 @@ node_lib = { path = "../node_lib/" }
 arc-swap = { version = "*" }
 tracing-subscriber = { version = "*", features = ["env-filter"] }
 aes-gcm = { version = "0.10", features = ["aes"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 thiserror = "*"
 
 [features]

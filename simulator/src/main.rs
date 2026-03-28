@@ -47,21 +47,12 @@ async fn main() -> Result<()> {
     } else {
         if args.pretty {
             tracing_subscriber::registry()
-                .with(
-                    fmt::layer()
-                        .with_thread_ids(true)
-                        .with_span_events(fmt::format::FmtSpan::ACTIVE)
-                        .pretty(),
-                )
+                .with(fmt::layer().with_thread_ids(true).pretty())
                 .with(EnvFilter::from_default_env())
                 .init();
         } else {
             tracing_subscriber::registry()
-                .with(
-                    fmt::layer()
-                        .with_thread_ids(true)
-                        .with_span_events(fmt::format::FmtSpan::ACTIVE),
-                )
+                .with(fmt::layer().with_thread_ids(true))
                 .with(EnvFilter::from_default_env())
                 .init();
         }
@@ -72,21 +63,12 @@ async fn main() -> Result<()> {
     {
         if args.pretty {
             tracing_subscriber::registry()
-                .with(
-                    fmt::layer()
-                        .with_thread_ids(true)
-                        .with_span_events(fmt::format::FmtSpan::ACTIVE)
-                        .pretty(),
-                )
+                .with(fmt::layer().with_thread_ids(true).pretty())
                 .with(EnvFilter::from_default_env())
                 .init();
         } else {
             tracing_subscriber::registry()
-                .with(
-                    fmt::layer()
-                        .with_thread_ids(true)
-                        .with_span_events(fmt::format::FmtSpan::ACTIVE),
-                )
+                .with(fmt::layer().with_thread_ids(true))
                 .with(EnvFilter::from_default_env())
                 .init();
         }

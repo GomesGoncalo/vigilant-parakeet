@@ -5,7 +5,9 @@ pub mod builder;
 pub use builder::ServerBuilder;
 
 pub mod cloud_protocol;
-pub use cloud_protocol::{CloudMessage, DownstreamForward, UpstreamForward};
+pub use cloud_protocol::{
+    CloudMessage, DownstreamForward, KeyExchangeForward, KeyExchangeResponse, UpstreamForward,
+};
 
 pub mod registry;
 pub use registry::RegistrationMessage;
@@ -35,6 +37,10 @@ mod tests {
             server_params: ServerParameters {
                 port: 0,
                 enable_encryption: false,
+                key_ttl_ms: 86_400_000,
+                cipher: node_lib::crypto::SymmetricCipher::default(),
+                kdf: node_lib::crypto::KdfAlgorithm::default(),
+                dh_group: node_lib::crypto::DhGroup::default(),
             },
         };
         let _server = create(args).await?;

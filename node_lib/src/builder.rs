@@ -3,6 +3,7 @@
 //! This module provides a generic builder pattern for constructing node instances (OBU/RSU)
 //! with flexible configuration, eliminating duplication between ObuBuilder and RsuBuilder.
 
+use crate::crypto::{DhGroup, KdfAlgorithm, SymmetricCipher};
 use anyhow::{anyhow, Result};
 use common::device::Device;
 use common::tun::Tun;
@@ -22,6 +23,12 @@ pub struct NodeBuilder {
     pub hello_history: u32,
     pub cached_candidates: u32,
     pub enable_encryption: bool,
+    pub dh_rekey_interval_ms: u64,
+    pub dh_key_lifetime_ms: u64,
+    pub dh_reply_timeout_ms: u64,
+    pub cipher: SymmetricCipher,
+    pub kdf: KdfAlgorithm,
+    pub dh_group: DhGroup,
     pub node_name: Option<String>,
     // For testing with injected dependencies
     #[cfg_attr(not(test), allow(dead_code))]
@@ -41,6 +48,12 @@ impl NodeBuilder {
             hello_history: 10,
             cached_candidates: 3,
             enable_encryption: false,
+            dh_rekey_interval_ms: 43_200_000,
+            dh_key_lifetime_ms: 86_400_000,
+            dh_reply_timeout_ms: 5_000,
+            cipher: SymmetricCipher::default(),
+            kdf: KdfAlgorithm::default(),
+            dh_group: DhGroup::default(),
             node_name: None,
             tun: None,
             device: None,
@@ -80,6 +93,42 @@ impl NodeBuilder {
     /// Enable or disable encryption (default: false)
     pub fn with_encryption(mut self, enabled: bool) -> Self {
         self.enable_encryption = enabled;
+        self
+    }
+
+    /// Set the DH re-key interval in milliseconds (default: 43200000 — half of key lifetime)
+    pub fn with_dh_rekey_interval_ms(mut self, ms: u64) -> Self {
+        self.dh_rekey_interval_ms = ms;
+        self
+    }
+
+    /// Set the DH key lifetime in milliseconds (default: 86400000 — 24h)
+    pub fn with_dh_key_lifetime_ms(mut self, ms: u64) -> Self {
+        self.dh_key_lifetime_ms = ms;
+        self
+    }
+
+    /// Set the DH reply timeout in milliseconds (default: 5000)
+    pub fn with_dh_reply_timeout_ms(mut self, ms: u64) -> Self {
+        self.dh_reply_timeout_ms = ms;
+        self
+    }
+
+    /// Set the symmetric cipher (default: AES-256-GCM)
+    pub fn with_cipher(mut self, cipher: SymmetricCipher) -> Self {
+        self.cipher = cipher;
+        self
+    }
+
+    /// Set the key derivation function (default: HKDF-SHA256)
+    pub fn with_kdf(mut self, kdf: KdfAlgorithm) -> Self {
+        self.kdf = kdf;
+        self
+    }
+
+    /// Set the DH group (default: X25519)
+    pub fn with_dh_group(mut self, dh_group: DhGroup) -> Self {
+        self.dh_group = dh_group;
         self
     }
 
@@ -189,6 +238,8 @@ mod tests {
         assert_eq!(builder.hello_history, 10);
         assert_eq!(builder.cached_candidates, 3);
         assert!(!builder.enable_encryption);
+        assert_eq!(builder.dh_rekey_interval_ms, 43_200_000);
+        assert_eq!(builder.dh_key_lifetime_ms, 86_400_000);
     }
 
     #[test]
@@ -198,12 +249,14 @@ mod tests {
             .with_mtu(1500)
             .with_hello_history(20)
             .with_cached_candidates(5)
-            .with_encryption(true);
+            .with_encryption(true)
+            .with_dh_rekey_interval_ms(30_000);
 
         assert_eq!(builder.ip, Some("192.168.1.100".parse().unwrap()));
         assert_eq!(builder.mtu, 1500);
         assert_eq!(builder.hello_history, 20);
         assert_eq!(builder.cached_candidates, 5);
         assert!(builder.enable_encryption);
+        assert_eq!(builder.dh_rekey_interval_ms, 30_000);
     }
 }

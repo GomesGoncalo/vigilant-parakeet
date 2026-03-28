@@ -47,6 +47,12 @@ impl ObuBuilder {
         inner.hello_history = args.obu_params.hello_history;
         inner.cached_candidates = args.obu_params.cached_candidates;
         inner.enable_encryption = args.obu_params.enable_encryption;
+        inner.dh_rekey_interval_ms = args.obu_params.dh_rekey_interval_ms;
+        inner.dh_key_lifetime_ms = args.obu_params.dh_key_lifetime_ms;
+        inner.dh_reply_timeout_ms = args.obu_params.dh_reply_timeout_ms;
+        inner.cipher = args.obu_params.cipher;
+        inner.kdf = args.obu_params.kdf;
+        inner.dh_group = args.obu_params.dh_group;
         Self { inner }
     }
 
@@ -83,6 +89,42 @@ impl ObuBuilder {
     /// Enable or disable encryption (default: false)
     pub fn with_encryption(mut self, enabled: bool) -> Self {
         self.inner = self.inner.with_encryption(enabled);
+        self
+    }
+
+    /// Set the DH re-key interval in milliseconds (default: 43200000 — half of key lifetime)
+    pub fn with_dh_rekey_interval_ms(mut self, ms: u64) -> Self {
+        self.inner = self.inner.with_dh_rekey_interval_ms(ms);
+        self
+    }
+
+    /// Set the DH key lifetime in milliseconds (default: 120000)
+    pub fn with_dh_key_lifetime_ms(mut self, ms: u64) -> Self {
+        self.inner = self.inner.with_dh_key_lifetime_ms(ms);
+        self
+    }
+
+    /// Set the DH reply timeout in milliseconds (default: 5000)
+    pub fn with_dh_reply_timeout_ms(mut self, ms: u64) -> Self {
+        self.inner = self.inner.with_dh_reply_timeout_ms(ms);
+        self
+    }
+
+    /// Set the symmetric cipher (default: AES-256-GCM)
+    pub fn with_cipher(mut self, cipher: node_lib::crypto::SymmetricCipher) -> Self {
+        self.inner = self.inner.with_cipher(cipher);
+        self
+    }
+
+    /// Set the key derivation function (default: HKDF-SHA256)
+    pub fn with_kdf(mut self, kdf: node_lib::crypto::KdfAlgorithm) -> Self {
+        self.inner = self.inner.with_kdf(kdf);
+        self
+    }
+
+    /// Set the DH group (default: X25519)
+    pub fn with_dh_group(mut self, dh_group: node_lib::crypto::DhGroup) -> Self {
+        self.inner = self.inner.with_dh_group(dh_group);
         self
     }
 
@@ -152,6 +194,12 @@ impl ObuBuilder {
                 hello_history: self.inner.hello_history,
                 cached_candidates: self.inner.cached_candidates,
                 enable_encryption: self.inner.enable_encryption,
+                dh_rekey_interval_ms: self.inner.dh_rekey_interval_ms,
+                dh_key_lifetime_ms: self.inner.dh_key_lifetime_ms,
+                dh_reply_timeout_ms: self.inner.dh_reply_timeout_ms,
+                cipher: self.inner.cipher,
+                kdf: self.inner.kdf,
+                dh_group: self.inner.dh_group,
             },
         }
     }
@@ -169,6 +217,9 @@ mod tests {
         assert_eq!(builder.inner.hello_history, 10);
         assert_eq!(builder.inner.cached_candidates, 3);
         assert!(!builder.inner.enable_encryption);
+        assert_eq!(builder.inner.dh_rekey_interval_ms, 43_200_000);
+        assert_eq!(builder.inner.dh_key_lifetime_ms, 86_400_000);
+        assert_eq!(builder.inner.dh_reply_timeout_ms, 5_000);
     }
 
     #[test]
@@ -178,13 +229,19 @@ mod tests {
             .with_mtu(1500)
             .with_hello_history(20)
             .with_cached_candidates(5)
-            .with_encryption(true);
+            .with_encryption(true)
+            .with_dh_rekey_interval_ms(30_000)
+            .with_dh_key_lifetime_ms(90_000)
+            .with_dh_reply_timeout_ms(2_000);
 
         assert_eq!(builder.inner.ip, Some("192.168.1.100".parse().unwrap()));
         assert_eq!(builder.inner.mtu, 1500);
         assert_eq!(builder.inner.hello_history, 20);
         assert_eq!(builder.inner.cached_candidates, 5);
         assert!(builder.inner.enable_encryption);
+        assert_eq!(builder.inner.dh_rekey_interval_ms, 30_000);
+        assert_eq!(builder.inner.dh_key_lifetime_ms, 90_000);
+        assert_eq!(builder.inner.dh_reply_timeout_ms, 2_000);
     }
 
     #[test]
@@ -198,6 +255,12 @@ mod tests {
                 hello_history: 15,
                 cached_candidates: 4,
                 enable_encryption: true,
+                dh_rekey_interval_ms: 45_000,
+                dh_key_lifetime_ms: 90_000,
+                dh_reply_timeout_ms: 3_000,
+                cipher: node_lib::crypto::SymmetricCipher::default(),
+                kdf: node_lib::crypto::KdfAlgorithm::default(),
+                dh_group: node_lib::crypto::DhGroup::default(),
             },
         };
 
@@ -206,5 +269,6 @@ mod tests {
         assert_eq!(builder.inner.tap_name, Some("tap0".to_string()));
         assert_eq!(builder.inner.hello_history, 15);
         assert!(builder.inner.enable_encryption);
+        assert_eq!(builder.inner.dh_rekey_interval_ms, 45_000);
     }
 }

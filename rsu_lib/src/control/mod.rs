@@ -15,7 +15,9 @@ use mac_address::MacAddress;
 use node::ReplyType;
 use node_lib::messages::{control::Control, data::Data, message::Message, packet_type::PacketType};
 use routing::Routing;
-use server_lib::cloud_protocol::{CloudMessage, DownstreamForward, UpstreamForward};
+use server_lib::cloud_protocol::{
+    CloudMessage, DownstreamForward, KeyExchangeForward, KeyExchangeResponse, UpstreamForward,
+};
 use std::{
     io::IoSlice,
     net::SocketAddr,
@@ -231,9 +233,67 @@ impl Rsu {
                     Ok(None)
                 }
             }
-            PacketType::Data(Data::Downstream(_)) | PacketType::Control(Control::Heartbeat(_)) => {
+            PacketType::Control(Control::KeyExchangeInit(ke_init)) => {
+                // Relay KeyExchangeInit from OBU to server via cloud protocol.
+                // Use the originating OBU MAC from the payload (ke_init.sender())
+                // as the authoritative identifier, since KeyExchangeInit may be
+                // forwarded hop-by-hop and msg.from() only reflects the last hop.
+                if self.args.rsu_params.server_ip.is_some() {
+                    let obu_mac = ke_init.sender();
+
+                    // Optionally use the VANET frame source only for diagnostics
+                    // and anti-spoofing heuristics, but do not change the
+                    // authoritative OBU MAC or drop the message based on it.
+                    match msg.from() {
+                        Ok(from_mac) => {
+                            if from_mac != obu_mac {
+                                tracing::warn!(
+                                    from = %from_mac,
+                                    claimed = %obu_mac,
+                                    "Mismatching OBU MAC in KeyExchangeInit; using payload sender()"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                obu = %obu_mac,
+                                "Failed to parse source MAC in KeyExchangeInit frame; proceeding with payload sender()"
+                            );
+                        }
+                    }
+                    let ke_bytes: Vec<u8> = ke_init.into();
+                    let fwd =
+                        match KeyExchangeForward::new(obu_mac, self.device.mac_address(), ke_bytes)
+                        {
+                            Ok(f) => f,
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    obu = %obu_mac,
+                                    "Failed to build KeyExchangeForward"
+                                );
+                                return Ok(None);
+                            }
+                        };
+                    if let Err(e) = self.cloud_socket.send(&fwd.to_bytes()).await {
+                        tracing::warn!(
+                            error = %e,
+                            obu = %obu_mac,
+                            "Failed to forward KeyExchangeInit to server"
+                        );
+                    } else {
+                        tracing::debug!(
+                            obu = %obu_mac,
+                            "Relayed KeyExchangeInit to server"
+                        );
+                    }
+                }
                 Ok(None)
             }
+            PacketType::Data(Data::Downstream(_))
+            | PacketType::Control(Control::Heartbeat(_))
+            | PacketType::Control(Control::KeyExchangeReply(_)) => Ok(None),
         }
     }
 
@@ -355,6 +415,12 @@ impl Rsu {
                                     )
                                     .await;
                                 }
+                                Some(CloudMessage::KeyExchangeResponse(rsp)) => {
+                                    Self::handle_key_exchange_response(
+                                        &rsp, &device, &routing, &cache,
+                                    )
+                                    .await;
+                                }
                                 Some(_) => {
                                     tracing::trace!(
                                         "Received non-downstream cloud message, ignoring"
@@ -435,6 +501,72 @@ impl Rsu {
             );
         }
     }
+
+    /// Handle a KeyExchangeResponse from the server and relay to OBU on VANET.
+    async fn handle_key_exchange_response(
+        rsp: &KeyExchangeResponse,
+        device: &Arc<Device>,
+        routing: &Shared<Routing>,
+        cache: &Arc<ClientCache>,
+    ) {
+        let dest_mac = rsp.obu_dest_mac;
+
+        // Parse the key exchange reply payload
+        let ke_reply = match node_lib::messages::control::key_exchange::KeyExchangeReply::try_from(
+            rsp.payload.as_slice(),
+        ) {
+            Ok(reply) => reply,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    obu = %dest_mac,
+                    "Failed to parse KeyExchangeReply payload from server"
+                );
+                return;
+            }
+        };
+
+        // Find the next hop to the destination OBU
+        let next_hop = {
+            let routing = routing
+                .read()
+                .expect("routing table read lock poisoned during key exchange response");
+            if let Some(route) = routing.get_route_to(Some(dest_mac)) {
+                Some(route.mac)
+            } else {
+                cache.get(dest_mac)
+            }
+        };
+
+        let Some(next_hop) = next_hop else {
+            tracing::debug!(
+                dest = %dest_mac,
+                "No route to OBU for key exchange response relay"
+            );
+            return;
+        };
+
+        // Construct VANET KeyExchangeReply message and send
+        let msg = Message::new(
+            device.mac_address(),
+            next_hop,
+            PacketType::Control(Control::KeyExchangeReply(ke_reply)),
+        );
+        let wire: Vec<u8> = (&msg).into();
+        let slices = [IoSlice::new(&wire)];
+        if let Err(e) = device.send_vectored(&slices).await {
+            tracing::error!(
+                error = %e,
+                dest = %dest_mac,
+                "Failed to relay KeyExchangeReply to OBU on VANET"
+            );
+        } else {
+            tracing::debug!(
+                dest = %dest_mac,
+                "Relayed KeyExchangeReply from server to OBU"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -473,9 +605,10 @@ pub(crate) fn handle_msg_for_test(
                 Ok(None)
             }
         }
-        PacketType::Data(Data::Downstream(_)) | PacketType::Control(Control::Heartbeat(_)) => {
-            Ok(None)
-        }
+        PacketType::Data(Data::Downstream(_))
+        | PacketType::Control(Control::Heartbeat(_))
+        | PacketType::Control(Control::KeyExchangeInit(_))
+        | PacketType::Control(Control::KeyExchangeReply(_)) => Ok(None),
     }
 }
 
