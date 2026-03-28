@@ -359,12 +359,13 @@ impl Obu {
                             let payload_data = if enable_encryption {
                                 // Always use server_virtual_mac() — the key is
                                 // negotiated with the server, not the RSU.
-                                let dh_key = dh_store
-                                    .read()
-                                    .expect("dh key store read lock poisoned")
-                                    .get_key(server_virtual_mac())
-                                    .map(|k| k.to_vec());
-                                let Some(ref key) = dh_key else {
+                                let dh_key = {
+                                    let dh_store_guard = dh_store
+                                        .read()
+                                        .expect("dh key store read lock poisoned");
+                                    dh_store_guard.get_key(server_virtual_mac())
+                                };
+                                let Some(key) = dh_key else {
                                     tracing::debug!(
                                         size = y.len(),
                                         cipher = %cipher,
