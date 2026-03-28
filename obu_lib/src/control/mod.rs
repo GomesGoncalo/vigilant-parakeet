@@ -607,12 +607,13 @@ impl Obu {
         };
 
         match result {
-            Some(ref derived_key) => {
+            Some((ref derived_key, elapsed)) => {
                 tracing::info!(
                     key_id = key_id,
                     cipher = %self.crypto_config.cipher,
                     kdf = %self.crypto_config.kdf,
                     key_len = derived_key.len(),
+                    elapsed_ms = elapsed.as_millis() as u64,
                     "DH key exchange with server completed, session key established"
                 );
             }

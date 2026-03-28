@@ -405,45 +405,55 @@ impl Server {
                     tracing::error!(error = %e, "Failed to write multicast frame to TAP");
                 }
             }
-            let routes = obu_routes.read().await;
-            let keys = dh_keys.read().await;
-            for (_, route) in routes.iter() {
-                let payload_for_obu = if enable_encryption {
-                    match Self::encrypt_for_obu(
-                        &tap_frame,
-                        route.vanet_mac,
-                        &keys,
-                        key_ttl_ms,
-                        crypto_config,
-                    ) {
-                        Some(Ok(enc)) => enc,
-                        Some(Err(e)) => {
-                            tracing::error!(
-                                obu = %route.vanet_mac,
-                                error = %e,
-                                "Failed to re-encrypt multicast frame for OBU"
-                            );
-                            continue;
-                        }
-                        None => {
-                            tracing::debug!(
-                                obu = %route.vanet_mac,
-                                "No DH session for OBU, skipping multicast re-encrypt"
-                            );
-                            continue;
-                        }
-                    }
-                } else {
-                    tap_frame.clone()
-                };
-                let downstream = DownstreamForward::new(
-                    route.vanet_mac,
-                    MacAddress::new([0; 6]),
-                    payload_for_obu,
-                );
-                if let Err(e) = socket.send_to(&downstream.to_bytes(), route.rsu_addr).await {
+            // Snapshot routes and encrypt payloads while holding locks,
+            // then drop locks before awaiting on network I/O.
+            let sends: Vec<_> = {
+                let routes = obu_routes.read().await;
+                let keys = dh_keys.read().await;
+                routes
+                    .iter()
+                    .filter_map(|(_, route)| {
+                        let payload_for_obu = if enable_encryption {
+                            match Self::encrypt_for_obu(
+                                &tap_frame,
+                                route.vanet_mac,
+                                &keys,
+                                key_ttl_ms,
+                                crypto_config,
+                            ) {
+                                Some(Ok(enc)) => enc,
+                                Some(Err(e)) => {
+                                    tracing::error!(
+                                        obu = %route.vanet_mac,
+                                        error = %e,
+                                        "Failed to re-encrypt multicast frame for OBU"
+                                    );
+                                    return None;
+                                }
+                                None => {
+                                    tracing::debug!(
+                                        obu = %route.vanet_mac,
+                                        "No DH session for OBU, skipping multicast re-encrypt"
+                                    );
+                                    return None;
+                                }
+                            }
+                        } else {
+                            tap_frame.clone()
+                        };
+                        let downstream = DownstreamForward::new(
+                            route.vanet_mac,
+                            MacAddress::new([0; 6]),
+                            payload_for_obu,
+                        );
+                        Some((downstream.to_bytes(), route.rsu_addr, route.vanet_mac))
+                    })
+                    .collect()
+            };
+            for (bytes, addr, vanet_mac) in &sends {
+                if let Err(e) = socket.send_to(bytes, addr).await {
                     tracing::error!(
-                        obu = %route.vanet_mac,
+                        obu = %vanet_mac,
                         error = %e,
                         "Failed to send multicast downstream to OBU"
                     );
@@ -538,46 +548,55 @@ impl Server {
             let is_multicast = dest_mac_bytes[0] & 0x01 != 0;
 
             if is_multicast {
-                // Send to all known OBU routes, encrypting per-OBU if DH enabled
-                let routes = obu_routes.read().await;
-                let keys = dh_keys.read().await;
-                for (&_tap_mac, route) in routes.iter() {
-                    let payload_data = if enable_encryption {
-                        match Self::encrypt_for_obu(
-                            frame,
-                            route.vanet_mac,
-                            &keys,
-                            key_ttl_ms,
-                            crypto_config,
-                        ) {
-                            Some(Ok(enc)) => enc,
-                            Some(Err(e)) => {
-                                tracing::error!(
-                                    obu = %route.vanet_mac,
-                                    error = %e,
-                                    "Failed to encrypt broadcast downstream for OBU"
-                                );
-                                continue;
-                            }
-                            None => {
-                                tracing::debug!(
-                                    obu = %route.vanet_mac,
-                                    "No DH session for OBU, skipping broadcast"
-                                );
-                                continue;
-                            }
-                        }
-                    } else {
-                        frame.to_vec()
-                    };
-                    let fwd = DownstreamForward::new(
-                        route.vanet_mac,
-                        MacAddress::new([0; 6]), // server origin
-                        payload_data,
-                    );
-                    if let Err(e) = socket.send_to(&fwd.to_bytes(), route.rsu_addr).await {
+                // Snapshot routes and encrypt payloads while holding locks,
+                // then drop locks before awaiting on network I/O.
+                let sends: Vec<_> = {
+                    let routes = obu_routes.read().await;
+                    let keys = dh_keys.read().await;
+                    routes
+                        .iter()
+                        .filter_map(|(&_tap_mac, route)| {
+                            let payload_data = if enable_encryption {
+                                match Self::encrypt_for_obu(
+                                    frame,
+                                    route.vanet_mac,
+                                    &keys,
+                                    key_ttl_ms,
+                                    crypto_config,
+                                ) {
+                                    Some(Ok(enc)) => enc,
+                                    Some(Err(e)) => {
+                                        tracing::error!(
+                                            obu = %route.vanet_mac,
+                                            error = %e,
+                                            "Failed to encrypt broadcast downstream for OBU"
+                                        );
+                                        return None;
+                                    }
+                                    None => {
+                                        tracing::debug!(
+                                            obu = %route.vanet_mac,
+                                            "No DH session for OBU, skipping broadcast"
+                                        );
+                                        return None;
+                                    }
+                                }
+                            } else {
+                                frame.to_vec()
+                            };
+                            let fwd = DownstreamForward::new(
+                                route.vanet_mac,
+                                MacAddress::new([0; 6]), // server origin
+                                payload_data,
+                            );
+                            Some((fwd.to_bytes(), route.rsu_addr, route.vanet_mac))
+                        })
+                        .collect()
+                };
+                for (bytes, addr, vanet_mac) in &sends {
+                    if let Err(e) = socket.send_to(bytes, addr).await {
                         tracing::error!(
-                            obu = %route.vanet_mac,
+                            obu = %vanet_mac,
                             error = %e,
                             "Failed to send broadcast downstream to RSU"
                         );

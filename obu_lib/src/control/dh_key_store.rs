@@ -96,13 +96,13 @@ impl DhKeyStore {
     }
 
     /// Complete a DH exchange when we receive a reply.
-    /// Returns the derived key on success.
+    /// Returns the derived key and session establishment duration on success.
     pub fn complete_exchange(
         &mut self,
         peer: MacAddress,
         key_id: u32,
         peer_public_bytes: &[u8; 32],
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(Vec<u8>, std::time::Duration)> {
         let pending = self.pending.get(&peer.bytes())?;
         if pending.key_id != key_id {
             tracing::warn!(
@@ -113,6 +113,9 @@ impl DhKeyStore {
             );
             return None;
         }
+
+        let session_duration = pending.initiated_at.elapsed();
+        let retries = pending.retries;
 
         let peer_public = x25519_dalek::PublicKey::from(*peer_public_bytes);
         let shared_secret = pending.keypair.diffie_hellman(&peer_public);
@@ -129,6 +132,14 @@ impl DhKeyStore {
             }
         };
 
+        tracing::info!(
+            peer = %peer,
+            key_id = key_id,
+            retries = retries,
+            elapsed_ms = session_duration.as_millis() as u64,
+            "DH session established"
+        );
+
         self.pending.remove(&peer.bytes());
         self.established.insert(
             peer.bytes(),
@@ -139,7 +150,7 @@ impl DhKeyStore {
             },
         );
 
-        Some(derived_key)
+        Some((derived_key, session_duration))
     }
 
     /// Handle an incoming DH init from a peer. Generates our keypair, computes
@@ -248,9 +259,10 @@ mod tests {
         let pub_b = store_b
             .handle_incoming_init(mac_a, key_id, &pub_a)
             .expect("should derive key");
-        let key_a = store_a
+        let (key_a, elapsed) = store_a
             .complete_exchange(mac_b, key_id, &pub_b)
             .expect("should complete");
+        assert!(elapsed.as_millis() < 1000, "exchange should be fast");
 
         let key_b = store_b.get_key(mac_a).expect("should have key");
         assert_eq!(key_a, key_b);

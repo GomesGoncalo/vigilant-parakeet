@@ -48,6 +48,20 @@ use tokio::time::{Duration, Instant};
 // Type Definitions
 // ============================================================================
 
+/// Action to take when forwarding a HeartbeatReply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForwardAction {
+    /// next_upstream == message.sender() with no viable alternative — drop.
+    Bail,
+    /// pkt.from == next_upstream — would bounce, skip forwarding.
+    SkipForward,
+    /// Safe to forward toward next_upstream.
+    Forward,
+    /// next_upstream == sender (would loop), but cached/alternative upstream
+    /// provides a viable forwarding path.
+    ForwardCached,
+}
+
 // Type aliases for complex routing table structures
 /// Per-hop routing information with latency measurements
 type PerHopInfo = (
@@ -435,12 +449,7 @@ impl Routing {
         // observations below, but skip forwarding in that case.
 
         // Decide action and emit a trace-level log so we can inspect decisions
-        // in live runs. Action values:
-        //  - "bail"           : next_upstream == message.sender() with no viable alternative
-        //  - "skip_forward"   : pkt.from == next_upstream (would bounce)
-        //  - "forward"        : safe to forward toward next_upstream
-        //  - "forward_cached" : next_upstream == sender (would loop), but cached upstream
-        //                       provides a viable alternative forwarding path
+        // in live runs.
         let pkt_from = pkt.from()?;
         let sender = message.sender();
 
@@ -483,20 +492,20 @@ impl Routing {
                 });
 
             if let Some(alt_mac) = alt {
-                ("forward_cached", alt_mac)
+                (ForwardAction::ForwardCached, alt_mac)
             } else {
-                ("bail", next_upstream_copy)
+                (ForwardAction::Bail, next_upstream_copy)
             }
         } else if pkt_from == next_upstream_copy {
-            ("skip_forward", next_upstream_copy)
+            (ForwardAction::SkipForward, next_upstream_copy)
         } else {
-            ("forward", next_upstream_copy)
+            (ForwardAction::Forward, next_upstream_copy)
         };
 
         // Log the decision at appropriate level
         match action {
-            "bail" => {} // Will be logged as warn below
-            "skip_forward" => {
+            ForwardAction::Bail => {} // Will be logged as warn below
+            ForwardAction::SkipForward => {
                 tracing::debug!(
                     pkt_from = %pkt_from,
                     message_sender = %sender,
@@ -504,7 +513,7 @@ impl Routing {
                     "Skipping forward to prevent loop"
                 );
             }
-            "forward_cached" => {
+            ForwardAction::ForwardCached => {
                 tracing::debug!(
                     pkt_from = %pkt_from,
                     message_sender = %sender,
@@ -513,18 +522,17 @@ impl Routing {
                     "seq next_upstream would loop; forwarding via cached upstream"
                 );
             }
-            _ => {
+            ForwardAction::Forward => {
                 tracing::trace!(
                     pkt_from = %pkt_from,
                     message_sender = %sender,
                     next_upstream = %next_upstream_copy,
-                    action = %action,
                     "Heartbeat reply forwarding"
                 );
             }
         }
 
-        if action == "bail" {
+        if action == ForwardAction::Bail {
             #[cfg(feature = "stats")]
             node_lib::metrics::inc_loop_detected();
             // Build a compact snapshot of downstream observations for this
@@ -610,9 +618,9 @@ impl Routing {
         // If the reply arrived from the node we'd forward to, don't forward
         // it back: that would produce an immediate bounce. Drop forwarding
         // (but keep the recorded downstream information above).
-        // Exception: when we're using a cached upstream fallback (forward_cached),
+        // Exception: when we're using a cached upstream fallback (ForwardCached),
         // pkt_from == next_upstream_copy is intentional — we still forward to forward_to.
-        if action == "skip_forward" {
+        if action == ForwardAction::SkipForward {
             return Ok(None);
         }
 
