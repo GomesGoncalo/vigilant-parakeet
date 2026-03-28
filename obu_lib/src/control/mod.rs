@@ -15,6 +15,7 @@ use common::{device::Device, network_interface::NetworkInterface};
 use dh_key_store::DhKeyStore;
 use mac_address::MacAddress;
 use node::ReplyType;
+use node_lib::crypto::{CryptoConfig, SymmetricCipher};
 use node_lib::messages::{
     control::{
         key_exchange::{KeyExchangeInit, KeyExchangeReply},
@@ -43,6 +44,7 @@ pub struct Obu {
     session: Arc<Session>,
     node_name: String,
     dh_key_store: SharedKeyStore,
+    crypto_config: CryptoConfig,
 }
 
 impl Obu {
@@ -52,12 +54,18 @@ impl Obu {
         device: Arc<Device>,
         node_name: String,
     ) -> Result<Arc<Self>> {
-        // Create tracing span for this node's initialization
         let _span = tracing::info_span!("node", name = %node_name).entered();
 
         let boot = Instant::now();
         let routing = Arc::new(RwLock::new(Routing::new(&args, &boot)?));
-        let dh_key_store = Arc::new(RwLock::new(DhKeyStore::new()));
+
+        let crypto_config = CryptoConfig {
+            cipher: args.obu_params.cipher,
+            kdf: args.obu_params.kdf,
+            dh_group: args.obu_params.dh_group,
+        };
+
+        let dh_key_store = Arc::new(RwLock::new(DhKeyStore::new(crypto_config)));
         let obu = Arc::new(Self {
             args,
             routing,
@@ -66,6 +74,7 @@ impl Obu {
             session: Session::new(tun).into(),
             node_name,
             dh_key_store,
+            crypto_config,
         });
 
         tracing::info!(
@@ -75,14 +84,26 @@ impl Obu {
             hello_history = obu.args.obu_params.hello_history,
             cached_candidates = obu.args.obu_params.cached_candidates,
             encryption = obu.args.obu_params.enable_encryption,
+            cipher = %obu.crypto_config.cipher,
             dh = obu.args.obu_params.enable_dh,
+            dh_group = %obu.crypto_config.dh_group,
+            kdf = %obu.crypto_config.kdf,
             dh_rekey_interval_ms = obu.args.obu_params.dh_rekey_interval_ms,
             dh_key_lifetime_ms = obu.args.obu_params.dh_key_lifetime_ms,
+            dh_max_retries = obu.args.obu_params.dh_max_retries,
+            dh_reply_timeout_ms = obu.args.obu_params.dh_reply_timeout_ms,
             "OBU initialized"
         );
         obu.session_task()?;
         Obu::wire_traffic_task(obu.clone())?;
         if obu.args.obu_params.enable_dh && obu.args.obu_params.enable_encryption {
+            tracing::info!(
+                cipher = %obu.crypto_config.cipher,
+                kdf = %obu.crypto_config.kdf,
+                dh_group = %obu.crypto_config.dh_group,
+                rekey_interval_ms = obu.args.obu_params.dh_rekey_interval_ms,
+                "Starting DH re-keying task"
+            );
             Obu::dh_rekey_task(obu.clone())?;
         }
         Ok(obu)
@@ -98,7 +119,6 @@ impl Obu {
 
     /// Return the cached upstream Route if present (hops, mac, latency).
     pub fn cached_upstream_route(&self) -> Option<route::Route> {
-        // routing.get_route_to(None) returns Option<Route>
         self.routing
             .read()
             .expect("routing table read lock poisoned")
@@ -115,6 +135,12 @@ impl Obu {
             .unwrap_or(0)
     }
 
+    /// Build the fixed-key fallback for the configured cipher.
+    fn fixed_key_for_cipher(cipher: SymmetricCipher) -> Vec<u8> {
+        let full = b"vigilant_parakeet_fixed_key_256!";
+        full[..cipher.key_len()].to_vec()
+    }
+
     /// Periodic DH re-keying task.
     fn dh_rekey_task(obu: Arc<Self>) -> Result<()> {
         let rekey_interval = Duration::from_millis(obu.args.obu_params.dh_rekey_interval_ms);
@@ -126,23 +152,30 @@ impl Obu {
         let span = tracing::info_span!("node", name = %node_name);
         tokio::task::spawn(
             async move {
-                // Initial delay before first key exchange to allow routing to establish
+                // Initial delay to allow routing to establish
                 tokio::time::sleep(Duration::from_millis(500)).await;
 
                 loop {
-                    // Check if we have an upstream to exchange keys with
                     if let Some(upstream_mac) = obu.cached_upstream_mac() {
                         let needs_exchange = {
                             let store = obu
                                 .dh_key_store
                                 .read()
                                 .expect("dh key store read lock poisoned");
-                            !store.has_established_key(upstream_mac)
-                                || store.is_key_expired(upstream_mac, key_lifetime_ms)
+                            let no_key = !store.has_established_key(upstream_mac);
+                            let expired = store.is_key_expired(upstream_mac, key_lifetime_ms);
+                            if expired {
+                                tracing::debug!(
+                                    peer = %upstream_mac,
+                                    lifetime_ms = key_lifetime_ms,
+                                    "DH key expired, initiating re-key"
+                                );
+                            }
+                            no_key || expired
                         };
 
                         if needs_exchange {
-                            // Check for timed-out pending exchanges
+                            // Handle timed-out pending exchanges
                             {
                                 let store = obu
                                     .dh_key_store
@@ -162,7 +195,9 @@ impl Obu {
                                         tracing::warn!(
                                             peer = %upstream_mac,
                                             retries = retries,
-                                            "DH key exchange failed after max retries, using fixed key"
+                                            max_retries = max_retries,
+                                            cipher = %obu.crypto_config.cipher,
+                                            "DH key exchange failed after max retries, falling back to fixed key"
                                         );
                                     } else {
                                         drop(store);
@@ -172,7 +207,12 @@ impl Obu {
                                             .expect("dh key store write lock poisoned");
                                         store.increment_retries(upstream_mac);
                                         store.remove_pending(upstream_mac);
-                                        // Will re-initiate below
+                                        tracing::debug!(
+                                            peer = %upstream_mac,
+                                            retry = retries + 1,
+                                            max_retries = max_retries,
+                                            "DH reply timed out, retrying"
+                                        );
                                     }
                                 }
                             }
@@ -208,15 +248,17 @@ impl Obu {
                                     tracing::warn!(
                                         error = %e,
                                         peer = %upstream_mac,
+                                        key_id = key_id,
                                         "Failed to send DH KeyExchangeInit"
                                     );
+                                } else {
+                                    tracing::debug!(
+                                        peer = %upstream_mac,
+                                        key_id = key_id,
+                                        dh_group = %obu.crypto_config.dh_group,
+                                        "Sent DH KeyExchangeInit"
+                                    );
                                 }
-
-                                tracing::debug!(
-                                    peer = %upstream_mac,
-                                    key_id = key_id,
-                                    "Sent DH KeyExchangeInit"
-                                );
                             }
                         }
                     }
@@ -235,7 +277,6 @@ impl Obu {
         let routing_handle = obu.routing.clone();
         let node_name = obu.node_name.clone();
 
-        // Create span for this node - will be attached to the async task
         let span = tracing::info_span!("node", name = %node_name);
         tokio::task::spawn(
             async move {
@@ -256,7 +297,6 @@ impl Obu {
                                         if let Ok(Some(responses)) = response {
                                             all_responses.extend(responses);
                                         }
-                                        // Use flat serialization for better performance
                                         let msg_bytes: Vec<u8> = (&msg).into();
                                         let msg_size: usize = msg_bytes.len();
                                         offset += msg_size;
@@ -283,7 +323,6 @@ impl Obu {
                     })
                     .await;
                     if let Ok(Some(messages)) = messages {
-                        // Use batched message handling for improved throughput (2-3x faster)
                         let _ = node::handle_messages_batched(
                             messages,
                             &tun,
@@ -307,6 +346,7 @@ impl Obu {
         let routing_handle = routing.clone();
         let enable_encryption = self.args.obu_params.enable_encryption;
         let enable_dh = self.args.obu_params.enable_dh;
+        let cipher = self.crypto_config.cipher;
         let dh_key_store = self.dh_key_store.clone();
         let node_name = self.node_name.clone();
 
@@ -330,25 +370,28 @@ impl Obu {
                             };
 
                             let payload_data = if enable_encryption {
-                                let key = if enable_dh {
+                                let dh_key = if enable_dh {
                                     dh_store
                                         .read()
                                         .expect("dh key store read lock poisoned")
                                         .get_key(upstream.mac)
-                                        .copied()
+                                        .map(|k| k.to_vec())
                                 } else {
                                     None
                                 };
-                                let encrypt_result = if let Some(dh_key) = key {
-                                    node_lib::crypto::encrypt_payload_with_key(y, &dh_key)
+                                let encrypt_result = if let Some(ref key) = dh_key {
+                                    node_lib::crypto::encrypt_with_config(cipher, y, key)
                                 } else {
-                                    node_lib::crypto::encrypt_payload(y)
+                                    let fallback = Self::fixed_key_for_cipher(cipher);
+                                    node_lib::crypto::encrypt_with_config(cipher, y, &fallback)
                                 };
                                 match encrypt_result {
                                     Ok(encrypted_data) => encrypted_data,
                                     Err(e) => {
                                         tracing::error!(
                                             size = y.len(),
+                                            cipher = %cipher,
+                                            using_dh_key = dh_key.is_some(),
                                             error = %e,
                                             "Failed to encrypt upstream frame"
                                         );
@@ -359,8 +402,6 @@ impl Obu {
                                 y.to_vec()
                             };
 
-                            // Use zero-copy serialization (12.4x faster than traditional)
-                            // This is the critical path for ALL client data traffic
                             let origin = devicec.mac_address();
                             let mut wire = Vec::with_capacity(24 + payload_data.len());
                             let tu = ToUpstream::new(origin, &payload_data);
@@ -376,8 +417,6 @@ impl Obu {
                         .await;
 
                     if let Ok(Some(messages)) = messages {
-                        // Pass the routing handle so send failures from TAP-originated
-                        // upstream packets can promote the next candidate.
                         let _ = node::handle_messages(
                             messages,
                             &tun,
@@ -404,7 +443,6 @@ impl Obu {
                     return Ok(None);
                 };
 
-                // Use zero-copy serialization (12.4x faster than traditional)
                 let mut wire = Vec::with_capacity(24 + buf.data().len());
                 Message::serialize_upstream_forward_into(
                     buf,
@@ -426,19 +464,21 @@ impl Obu {
                 if is_for_us {
                     let sender_mac = msg.from().unwrap_or([0u8; 6].into());
                     let payload_data = if self.args.obu_params.enable_encryption {
-                        let key = if self.args.obu_params.enable_dh {
+                        let dh_key = if self.args.obu_params.enable_dh {
                             self.dh_key_store
                                 .read()
                                 .expect("dh key store read lock poisoned")
                                 .get_key(sender_mac)
-                                .copied()
+                                .map(|k| k.to_vec())
                         } else {
                             None
                         };
-                        let decrypt_result = if let Some(dh_key) = key {
-                            node_lib::crypto::decrypt_payload_with_key(buf.data(), &dh_key)
+                        let cipher = self.crypto_config.cipher;
+                        let decrypt_result = if let Some(ref key) = dh_key {
+                            node_lib::crypto::decrypt_with_config(cipher, buf.data(), key)
                         } else {
-                            node_lib::crypto::decrypt_payload(buf.data())
+                            let fallback = Self::fixed_key_for_cipher(cipher);
+                            node_lib::crypto::decrypt_with_config(cipher, buf.data(), &fallback)
                         };
                         match decrypt_result {
                             Ok(decrypted_data) => decrypted_data,
@@ -446,6 +486,8 @@ impl Obu {
                                 tracing::warn!(
                                     size = buf.data().len(),
                                     from = %sender_mac,
+                                    cipher = %cipher,
+                                    using_dh_key = dh_key.is_some(),
                                     error = %e,
                                     "Failed to decrypt downstream frame, dropping"
                                 );
@@ -467,7 +509,6 @@ impl Obu {
                         return Ok(None);
                     };
 
-                    // Use zero-copy serialization (18.6x faster than traditional)
                     let mut wire = Vec::with_capacity(30 + buf.data().len());
                     Message::serialize_downstream_forward_into(
                         buf,
@@ -521,6 +562,9 @@ impl Obu {
         tracing::debug!(
             peer = %peer_mac,
             key_id = key_id,
+            cipher = %self.crypto_config.cipher,
+            kdf = %self.crypto_config.kdf,
+            dh_group = %self.crypto_config.dh_group,
             "Handled DH KeyExchangeInit, sending reply"
         );
 
@@ -555,18 +599,21 @@ impl Obu {
         };
 
         match result {
-            Some(_) => {
+            Some(ref derived_key) => {
                 tracing::info!(
                     peer = %peer_mac,
                     key_id = key_id,
-                    "DH key exchange completed successfully"
+                    cipher = %self.crypto_config.cipher,
+                    kdf = %self.crypto_config.kdf,
+                    key_len = derived_key.len(),
+                    "DH key exchange completed, new session key established"
                 );
             }
             None => {
                 tracing::warn!(
                     peer = %peer_mac,
                     key_id = key_id,
-                    "Failed to complete DH key exchange"
+                    "Failed to complete DH key exchange — no matching pending exchange"
                 );
             }
         }
@@ -712,7 +759,6 @@ mod obu_tests {
             Routing::new(&args, &boot).expect("routing"),
         ));
 
-        // Create a heartbeat to populate routes
         let hb_source: MacAddress = [7u8; 6].into();
         let pkt_from: MacAddress = [8u8; 6].into();
         let our_mac: MacAddress = [9u8; 6].into();
@@ -722,17 +768,14 @@ mod obu_tests {
             [255u8; 6].into(),
             PacketType::Control(Control::Heartbeat(hb.clone())),
         );
-        // Insert heartbeat via routing handle
         let _ = routing
             .write()
             .unwrap()
             .handle_heartbeat(&hb_msg, our_mac)
             .expect("handled hb");
 
-        // Ensure selection and caching of upstream
         let _ = routing.read().unwrap().select_and_cache_upstream(hb_source);
 
-        // Now send an upstream data packet and expect a Wire reply to the cached upstream
         let from: MacAddress = [3u8; 6].into();
         let to: MacAddress = [4u8; 6].into();
         let payload = b"x";
@@ -742,7 +785,6 @@ mod obu_tests {
         let res = handle_msg_for_test(routing.clone(), our_mac, &msg).expect("ok");
         assert!(res.is_some());
         let v = res.unwrap();
-        // should have at least one WireFlat reply
         assert!(v.iter().any(|x| matches!(x, super::ReplyType::WireFlat(_))));
     }
 
@@ -768,9 +810,7 @@ mod obu_tests {
         let res = handle_msg_for_test(routing.clone(), our_mac, &msg).expect("ok");
         assert!(res.is_some());
         let v = res.unwrap();
-        // expect at least two Wire replies (forward and reply)
         assert!(v.len() >= 2);
-        // Updated to check for flat serialization (better performance)
         assert!(v.iter().all(|x| matches!(x, super::ReplyType::WireFlat(_))));
     }
 
@@ -786,7 +826,6 @@ mod obu_tests {
         let pkt_from: MacAddress = [22u8; 6].into();
         let our_mac: MacAddress = [23u8; 6].into();
 
-        // Insert initial heartbeat
         let hb = Heartbeat::new(std::time::Duration::from_millis(1), 7u32, hb_source);
         let initial = Message::new(
             pkt_from,
@@ -799,7 +838,6 @@ mod obu_tests {
             .handle_heartbeat(&initial, our_mac)
             .expect("handled");
 
-        // Create a HeartbeatReply from some sender
         let reply_sender: MacAddress = [42u8; 6].into();
         let hbr =
             node_lib::messages::control::heartbeat::HeartbeatReply::from_sender(&hb, reply_sender);
@@ -824,7 +862,6 @@ mod obu_tests {
             Routing::new(&args, &boot).expect("routing"),
         ));
 
-        // create a heartbeat so that a route to `hb_source` exists
         let hb_source: MacAddress = [77u8; 6].into();
         let pkt_from: MacAddress = [78u8; 6].into();
         let our_mac: MacAddress = [79u8; 6].into();
@@ -840,10 +877,8 @@ mod obu_tests {
             .handle_heartbeat(&hb_msg, our_mac)
             .expect("handled hb");
 
-        // Ensure route options are populated and cache selected
         let _ = routing.read().unwrap().select_and_cache_upstream(hb_source);
 
-        // Prepare a downstream payload addressed to someone other than our device
         let src = [3u8; 6];
         let target_mac: MacAddress = hb_source;
         let payload = b"ok";

@@ -3,6 +3,7 @@
 //! This module provides a generic builder pattern for constructing node instances (OBU/RSU)
 //! with flexible configuration, eliminating duplication between ObuBuilder and RsuBuilder.
 
+use crate::crypto::{DhGroup, KdfAlgorithm, SymmetricCipher};
 use anyhow::{anyhow, Result};
 use common::device::Device;
 use common::tun::Tun;
@@ -27,6 +28,9 @@ pub struct NodeBuilder {
     pub dh_key_lifetime_ms: u64,
     pub dh_max_retries: u32,
     pub dh_reply_timeout_ms: u64,
+    pub cipher: SymmetricCipher,
+    pub kdf: KdfAlgorithm,
+    pub dh_group: DhGroup,
     pub node_name: Option<String>,
     // For testing with injected dependencies
     #[cfg_attr(not(test), allow(dead_code))]
@@ -51,6 +55,9 @@ impl NodeBuilder {
             dh_key_lifetime_ms: 120_000,
             dh_max_retries: 3,
             dh_reply_timeout_ms: 5_000,
+            cipher: SymmetricCipher::default(),
+            kdf: KdfAlgorithm::default(),
+            dh_group: DhGroup::default(),
             node_name: None,
             tun: None,
             device: None,
@@ -120,6 +127,24 @@ impl NodeBuilder {
     /// Set the DH reply timeout in milliseconds (default: 5000)
     pub fn with_dh_reply_timeout_ms(mut self, ms: u64) -> Self {
         self.dh_reply_timeout_ms = ms;
+        self
+    }
+
+    /// Set the symmetric cipher (default: AES-256-GCM)
+    pub fn with_cipher(mut self, cipher: SymmetricCipher) -> Self {
+        self.cipher = cipher;
+        self
+    }
+
+    /// Set the key derivation function (default: HKDF-SHA256)
+    pub fn with_kdf(mut self, kdf: KdfAlgorithm) -> Self {
+        self.kdf = kdf;
+        self
+    }
+
+    /// Set the DH group (default: X25519)
+    pub fn with_dh_group(mut self, dh_group: DhGroup) -> Self {
+        self.dh_group = dh_group;
         self
     }
 

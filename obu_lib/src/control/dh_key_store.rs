@@ -1,5 +1,5 @@
 use mac_address::MacAddress;
-use node_lib::crypto::DhKeypair;
+use node_lib::crypto::{CryptoConfig, DhKeypair};
 use std::collections::HashMap;
 use tokio::time::Instant;
 
@@ -11,9 +11,9 @@ pub struct PendingExchange {
     pub retries: u32,
 }
 
-/// An established DH-derived AES-256-GCM key for a peer.
+/// An established DH-derived key for a peer.
 pub struct EstablishedKey {
-    pub key: [u8; 32],
+    pub key: Vec<u8>,
     pub key_id: u32,
     pub established_at: Instant,
 }
@@ -26,20 +26,23 @@ pub struct DhKeyStore {
     established: HashMap<[u8; 6], EstablishedKey>,
     /// Counter for generating unique key IDs.
     next_key_id: u32,
+    /// Crypto configuration for key derivation.
+    crypto_config: CryptoConfig,
 }
 
 impl Default for DhKeyStore {
     fn default() -> Self {
-        Self::new()
+        Self::new(CryptoConfig::default())
     }
 }
 
 impl DhKeyStore {
-    pub fn new() -> Self {
+    pub fn new(crypto_config: CryptoConfig) -> Self {
         Self {
             pending: HashMap::new(),
             established: HashMap::new(),
             next_key_id: 1,
+            crypto_config,
         }
     }
 
@@ -65,13 +68,13 @@ impl DhKeyStore {
     }
 
     /// Complete a DH exchange when we receive a reply.
-    /// Returns the derived AES key on success.
+    /// Returns the derived key on success.
     pub fn complete_exchange(
         &mut self,
         peer: MacAddress,
         key_id: u32,
         peer_public_bytes: &[u8; 32],
-    ) -> Option<[u8; 32]> {
+    ) -> Option<Vec<u8>> {
         let pending = self.pending.get(&peer.bytes())?;
         if pending.key_id != key_id {
             tracing::warn!(
@@ -85,14 +88,18 @@ impl DhKeyStore {
 
         let peer_public = x25519_dalek::PublicKey::from(*peer_public_bytes);
         let shared_secret = pending.keypair.diffie_hellman(&peer_public);
-        let derived_key =
-            node_lib::crypto::derive_key_from_shared_secret(shared_secret.as_bytes(), key_id);
+        let derived_key = node_lib::crypto::derive_key(
+            self.crypto_config.kdf,
+            shared_secret.as_bytes(),
+            key_id,
+            self.crypto_config.cipher.key_len(),
+        );
 
         self.pending.remove(&peer.bytes());
         self.established.insert(
             peer.bytes(),
             EstablishedKey {
-                key: derived_key,
+                key: derived_key.clone(),
                 key_id,
                 established_at: Instant::now(),
             },
@@ -114,8 +121,12 @@ impl DhKeyStore {
 
         let peer_public = x25519_dalek::PublicKey::from(*peer_public_bytes);
         let shared_secret = our_keypair.diffie_hellman(&peer_public);
-        let derived_key =
-            node_lib::crypto::derive_key_from_shared_secret(shared_secret.as_bytes(), key_id);
+        let derived_key = node_lib::crypto::derive_key(
+            self.crypto_config.kdf,
+            shared_secret.as_bytes(),
+            key_id,
+            self.crypto_config.cipher.key_len(),
+        );
 
         self.established.insert(
             peer.bytes(),
@@ -130,8 +141,10 @@ impl DhKeyStore {
     }
 
     /// Get the established key for a peer, if any.
-    pub fn get_key(&self, peer: MacAddress) -> Option<&[u8; 32]> {
-        self.established.get(&peer.bytes()).map(|e| &e.key)
+    pub fn get_key(&self, peer: MacAddress) -> Option<&[u8]> {
+        self.established
+            .get(&peer.bytes())
+            .map(|e| e.key.as_slice())
     }
 
     /// Check if a pending exchange for a peer has timed out.
@@ -182,71 +195,80 @@ mod tests {
 
     #[test]
     fn initiate_and_complete_exchange() {
-        // Simulate two nodes doing a DH exchange
-        let mut store_a = DhKeyStore::new();
-        let mut store_b = DhKeyStore::new();
+        let cfg = CryptoConfig::default();
+        let mut store_a = DhKeyStore::new(cfg);
+        let mut store_b = DhKeyStore::new(cfg);
 
         let mac_a: MacAddress = [1u8; 6].into();
         let mac_b: MacAddress = [2u8; 6].into();
 
-        // Node A initiates
         let (key_id, pub_a) = store_a.initiate_exchange(mac_b);
-
-        // Node B handles the init and returns its public key
         let pub_b = store_b.handle_incoming_init(mac_a, key_id, &pub_a);
-
-        // Node A completes with B's public key
         let key_a = store_a
             .complete_exchange(mac_b, key_id, &pub_b)
             .expect("should complete");
 
-        // Both sides should have the same derived key
         let key_b = store_b.get_key(mac_a).expect("should have key");
-        assert_eq!(key_a, *key_b);
+        assert_eq!(key_a, key_b);
     }
 
     #[test]
     fn wrong_key_id_rejected() {
-        let mut store = DhKeyStore::new();
+        let mut store = DhKeyStore::new(CryptoConfig::default());
         let peer: MacAddress = [3u8; 6].into();
 
         let (_key_id, _pub_key) = store.initiate_exchange(peer);
         let fake_pub = [0u8; 32];
-
-        // Wrong key_id
         assert!(store.complete_exchange(peer, 999, &fake_pub).is_none());
     }
 
     #[test]
     fn has_pending_and_established() {
-        let mut store = DhKeyStore::new();
+        let mut store = DhKeyStore::new(CryptoConfig::default());
         let peer: MacAddress = [4u8; 6].into();
 
         assert!(!store.has_pending(peer));
         assert!(!store.has_established_key(peer));
 
-        let (key_id, pub_key) = store.initiate_exchange(peer);
+        let (key_id, _pub_key) = store.initiate_exchange(peer);
         assert!(store.has_pending(peer));
 
         let fake_peer_pub = [42u8; 32];
         store.complete_exchange(peer, key_id, &fake_peer_pub);
         assert!(!store.has_pending(peer));
         assert!(store.has_established_key(peer));
-
-        // After the assertion, we just check get_key returns something
         assert!(store.get_key(peer).is_some());
-        // suppress unused variable warnings
-        let _ = pub_key;
     }
 
     #[test]
     fn unique_key_ids() {
-        let mut store = DhKeyStore::new();
+        let mut store = DhKeyStore::new(CryptoConfig::default());
         let peer1: MacAddress = [5u8; 6].into();
         let peer2: MacAddress = [6u8; 6].into();
 
         let (id1, _) = store.initiate_exchange(peer1);
         let (id2, _) = store.initiate_exchange(peer2);
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn configurable_cipher_produces_correct_key_len() {
+        use node_lib::crypto::SymmetricCipher;
+
+        let cfg_128 = CryptoConfig {
+            cipher: SymmetricCipher::Aes128Gcm,
+            ..CryptoConfig::default()
+        };
+        let mut store_a = DhKeyStore::new(cfg_128);
+        let mut store_b = DhKeyStore::new(cfg_128);
+
+        let mac_a: MacAddress = [10u8; 6].into();
+        let mac_b: MacAddress = [20u8; 6].into();
+
+        let (key_id, pub_a) = store_a.initiate_exchange(mac_b);
+        let _pub_b = store_b.handle_incoming_init(mac_a, key_id, &pub_a);
+
+        let key_b = store_b.get_key(mac_a).expect("key");
+        assert_eq!(key_b.len(), 16, "AES-128-GCM key should be 16 bytes");
     }
 }

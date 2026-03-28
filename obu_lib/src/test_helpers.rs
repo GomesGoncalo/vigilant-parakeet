@@ -27,6 +27,9 @@ pub fn mk_test_obu_args() -> ObuArgs {
             dh_key_lifetime_ms: 120_000,
             dh_max_retries: 3,
             dh_reply_timeout_ms: 5_000,
+            cipher: node_lib::crypto::SymmetricCipher::default(),
+            kdf: node_lib::crypto::KdfAlgorithm::default(),
+            dh_group: node_lib::crypto::DhGroup::default(),
         },
     }
 }
@@ -47,6 +50,9 @@ pub fn mk_test_obu_args_with_history(hello_history: u32) -> ObuArgs {
             dh_key_lifetime_ms: 120_000,
             dh_max_retries: 3,
             dh_reply_timeout_ms: 5_000,
+            cipher: node_lib::crypto::SymmetricCipher::default(),
+            kdf: node_lib::crypto::KdfAlgorithm::default(),
+            dh_group: node_lib::crypto::DhGroup::default(),
         },
     }
 }
@@ -67,6 +73,9 @@ pub fn mk_test_obu_args_encrypted() -> ObuArgs {
             dh_key_lifetime_ms: 120_000,
             dh_max_retries: 3,
             dh_reply_timeout_ms: 5_000,
+            cipher: node_lib::crypto::SymmetricCipher::default(),
+            kdf: node_lib::crypto::KdfAlgorithm::default(),
+            dh_group: node_lib::crypto::DhGroup::default(),
         },
     }
 }
@@ -87,6 +96,9 @@ pub fn mk_test_obu_args_dh() -> ObuArgs {
             dh_key_lifetime_ms: 10_000,
             dh_max_retries: 3,
             dh_reply_timeout_ms: 2_000,
+            cipher: node_lib::crypto::SymmetricCipher::default(),
+            kdf: node_lib::crypto::KdfAlgorithm::default(),
+            dh_group: node_lib::crypto::DhGroup::default(),
         },
     }
 }
@@ -113,6 +125,9 @@ pub fn mk_obu_args_encrypted() -> ObuArgs {
             dh_key_lifetime_ms: 120_000,
             dh_max_retries: 3,
             dh_reply_timeout_ms: 5_000,
+            cipher: node_lib::crypto::SymmetricCipher::default(),
+            kdf: node_lib::crypto::KdfAlgorithm::default(),
+            dh_group: node_lib::crypto::DhGroup::default(),
         },
     }
 }
@@ -133,6 +148,9 @@ pub fn mk_obu_args_dh() -> ObuArgs {
             dh_key_lifetime_ms: 10_000,
             dh_max_retries: 3,
             dh_reply_timeout_ms: 2_000,
+            cipher: node_lib::crypto::SymmetricCipher::default(),
+            kdf: node_lib::crypto::KdfAlgorithm::default(),
+            dh_group: node_lib::crypto::DhGroup::default(),
         },
     }
 }

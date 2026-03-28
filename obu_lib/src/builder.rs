@@ -52,6 +52,9 @@ impl ObuBuilder {
         inner.dh_key_lifetime_ms = args.obu_params.dh_key_lifetime_ms;
         inner.dh_max_retries = args.obu_params.dh_max_retries;
         inner.dh_reply_timeout_ms = args.obu_params.dh_reply_timeout_ms;
+        inner.cipher = args.obu_params.cipher;
+        inner.kdf = args.obu_params.kdf;
+        inner.dh_group = args.obu_params.dh_group;
         Self { inner }
     }
 
@@ -118,6 +121,24 @@ impl ObuBuilder {
     /// Set the DH reply timeout in milliseconds (default: 5000)
     pub fn with_dh_reply_timeout_ms(mut self, ms: u64) -> Self {
         self.inner = self.inner.with_dh_reply_timeout_ms(ms);
+        self
+    }
+
+    /// Set the symmetric cipher (default: AES-256-GCM)
+    pub fn with_cipher(mut self, cipher: node_lib::crypto::SymmetricCipher) -> Self {
+        self.inner = self.inner.with_cipher(cipher);
+        self
+    }
+
+    /// Set the key derivation function (default: HKDF-SHA256)
+    pub fn with_kdf(mut self, kdf: node_lib::crypto::KdfAlgorithm) -> Self {
+        self.inner = self.inner.with_kdf(kdf);
+        self
+    }
+
+    /// Set the DH group (default: X25519)
+    pub fn with_dh_group(mut self, dh_group: node_lib::crypto::DhGroup) -> Self {
+        self.inner = self.inner.with_dh_group(dh_group);
         self
     }
 
@@ -192,6 +213,9 @@ impl ObuBuilder {
                 dh_key_lifetime_ms: self.inner.dh_key_lifetime_ms,
                 dh_max_retries: self.inner.dh_max_retries,
                 dh_reply_timeout_ms: self.inner.dh_reply_timeout_ms,
+                cipher: self.inner.cipher,
+                kdf: self.inner.kdf,
+                dh_group: self.inner.dh_group,
             },
         }
     }
@@ -258,6 +282,9 @@ mod tests {
                 dh_key_lifetime_ms: 90_000,
                 dh_max_retries: 2,
                 dh_reply_timeout_ms: 3_000,
+                cipher: node_lib::crypto::SymmetricCipher::default(),
+                kdf: node_lib::crypto::KdfAlgorithm::default(),
+                dh_group: node_lib::crypto::DhGroup::default(),
             },
         };
 
