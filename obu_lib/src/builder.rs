@@ -93,7 +93,7 @@ impl ObuBuilder {
         self
     }
 
-    /// Set the DH re-key interval in milliseconds (default: 43200000 ��� half of key lifetime)
+    /// Set the DH re-key interval in milliseconds (default: 43200000 — half of key lifetime)
     pub fn with_dh_rekey_interval_ms(mut self, ms: u64) -> Self {
         self.inner = self.inner.with_dh_rekey_interval_ms(ms);
         self
