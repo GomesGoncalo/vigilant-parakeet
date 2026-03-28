@@ -8,9 +8,6 @@ use hkdf::Hkdf;
 use sha2::{Sha256, Sha384, Sha512};
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
 
-/// Fixed key for backward compatibility when DH is not enabled.
-pub const FIXED_KEY: &[u8; 32] = b"vigilant_parakeet_fixed_key_256!";
-
 /// HKDF info string for deriving keys from DH shared secrets.
 const HKDF_INFO: &[u8] = b"vigilant-parakeet-dh-aes256gcm";
 
@@ -176,40 +173,44 @@ pub fn derive_key(
     shared_secret: &[u8; 32],
     key_id: u32,
     key_len: usize,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, NodeError> {
     let mut salt = Vec::with_capacity(36);
     salt.extend_from_slice(b"vigilant-parakeet-salt-");
     salt.extend_from_slice(&key_id.to_be_bytes());
 
     let mut okm = vec![0u8; key_len];
 
-    match kdf {
+    let expand_result = match kdf {
         KdfAlgorithm::HkdfSha256 => {
             let hk = Hkdf::<Sha256>::new(Some(&salt), shared_secret);
             hk.expand(HKDF_INFO, &mut okm)
-                .expect("HKDF-SHA256 expand failed");
         }
         KdfAlgorithm::HkdfSha384 => {
             let hk = Hkdf::<Sha384>::new(Some(&salt), shared_secret);
             hk.expand(HKDF_INFO, &mut okm)
-                .expect("HKDF-SHA384 expand failed");
         }
         KdfAlgorithm::HkdfSha512 => {
             let hk = Hkdf::<Sha512>::new(Some(&salt), shared_secret);
             hk.expand(HKDF_INFO, &mut okm)
-                .expect("HKDF-SHA512 expand failed");
         }
-    }
+    };
 
-    okm
+    expand_result.map_err(|e| {
+        NodeError::EncryptionError(format!("HKDF expand failed for {:?}: {}", kdf, e))
+    })?;
+
+    Ok(okm)
 }
 
-/// Convenience wrapper: derive a 32-byte key with HKDF-SHA256 (backward compat).
-pub fn derive_key_from_shared_secret(shared_secret: &[u8; 32], key_id: u32) -> [u8; 32] {
-    let v = derive_key(KdfAlgorithm::HkdfSha256, shared_secret, key_id, 32);
+/// Convenience wrapper: derive a 32-byte key with HKDF-SHA256.
+pub fn derive_key_from_shared_secret(
+    shared_secret: &[u8; 32],
+    key_id: u32,
+) -> Result<[u8; 32], NodeError> {
+    let v = derive_key(KdfAlgorithm::HkdfSha256, shared_secret, key_id, 32)?;
     let mut out = [0u8; 32];
     out.copy_from_slice(&v);
-    out
+    Ok(out)
 }
 
 // ── Configurable encrypt / decrypt ─────────────────────────────────
@@ -223,6 +224,15 @@ pub fn encrypt_with_config(
     plaintext: &[u8],
     key: &[u8],
 ) -> Result<Vec<u8>, NodeError> {
+    let expected = cipher.key_len();
+    if key.len() != expected {
+        return Err(NodeError::EncryptionError(format!(
+            "key length mismatch: expected {} bytes for {:?}, got {}",
+            expected,
+            cipher,
+            key.len()
+        )));
+    }
     match cipher {
         SymmetricCipher::Aes256Gcm => {
             let c = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
@@ -264,6 +274,15 @@ pub fn decrypt_with_config(
     encrypted_data: &[u8],
     key: &[u8],
 ) -> Result<Vec<u8>, NodeError> {
+    let expected = cipher.key_len();
+    if key.len() != expected {
+        return Err(NodeError::DecryptionError(format!(
+            "key length mismatch: expected {} bytes for {:?}, got {}",
+            expected,
+            cipher,
+            key.len()
+        )));
+    }
     if encrypted_data.len() < 12 {
         return Err(NodeError::EncryptedDataTooShort(encrypted_data.len()));
     }
@@ -289,7 +308,7 @@ pub fn decrypt_with_config(
     }
 }
 
-// ── Fixed-key convenience wrappers (backward compat) ───────────────
+// ── Key-based convenience wrappers ───────────────
 
 /// Encrypt with AES-256-GCM and the given 32-byte key.
 pub fn encrypt_payload_with_key(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, NodeError> {
@@ -304,65 +323,65 @@ pub fn decrypt_payload_with_key(
     decrypt_with_config(SymmetricCipher::Aes256Gcm, encrypted_data, key)
 }
 
-/// Encrypt plaintext using AES-256-GCM with the fixed key.
-pub fn encrypt_payload(plaintext: &[u8]) -> Result<Vec<u8>, NodeError> {
-    encrypt_payload_with_key(plaintext, FIXED_KEY)
-}
-
-/// Decrypt data that was encrypted with encrypt_payload (fixed key).
-pub fn decrypt_payload(encrypted_data: &[u8]) -> Result<Vec<u8>, NodeError> {
-    decrypt_payload_with_key(encrypted_data, FIXED_KEY)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn encrypt_decrypt_roundtrip() {
+        let key: [u8; 32] = [0x42; 32];
         let plaintext = b"test payload data";
-        let encrypted = encrypt_payload(plaintext).expect("encryption failed");
-        let decrypted = decrypt_payload(&encrypted).expect("decryption failed");
+        let encrypted = encrypt_payload_with_key(plaintext, &key).expect("encryption failed");
+        let decrypted = decrypt_payload_with_key(&encrypted, &key).expect("decryption failed");
         assert_eq!(plaintext, decrypted.as_slice());
     }
 
     #[test]
     fn encrypt_produces_different_ciphertext() {
+        let key: [u8; 32] = [0x42; 32];
         let plaintext = b"test payload data";
-        let encrypted1 = encrypt_payload(plaintext).expect("encryption failed");
-        let encrypted2 = encrypt_payload(plaintext).expect("encryption failed");
+        let encrypted1 = encrypt_payload_with_key(plaintext, &key).expect("encryption failed");
+        let encrypted2 = encrypt_payload_with_key(plaintext, &key).expect("encryption failed");
         assert_ne!(encrypted1, encrypted2);
     }
 
     #[test]
     fn decrypt_invalid_data_fails() {
+        let key: [u8; 32] = [0x42; 32];
         let invalid_data = b"too short";
-        assert!(decrypt_payload(invalid_data).is_err());
+        assert!(decrypt_payload_with_key(invalid_data, &key).is_err());
     }
 
     #[test]
     fn decrypt_wrong_key_fails() {
+        let key: [u8; 32] = [0x42; 32];
         let plaintext = b"test data";
-        let encrypted = encrypt_payload(plaintext).expect("encryption failed");
+        let encrypted = encrypt_payload_with_key(plaintext, &key).expect("encryption failed");
         let mut corrupted = encrypted;
         corrupted[15] ^= 0x01;
-        assert!(decrypt_payload(&corrupted).is_err());
+        assert!(decrypt_payload_with_key(&corrupted, &key).is_err());
     }
 
     #[test]
     fn encrypt_large_payload_succeeds() {
+        let key: [u8; 32] = [0x42; 32];
         let large_plaintext = vec![0u8; 2000];
-        let encrypted = encrypt_payload(&large_plaintext).expect("encryption should succeed");
-        let decrypted = decrypt_payload(&encrypted).expect("decryption should succeed");
+        let encrypted =
+            encrypt_payload_with_key(&large_plaintext, &key).expect("encryption should succeed");
+        let decrypted =
+            decrypt_payload_with_key(&encrypted, &key).expect("decryption should succeed");
         assert_eq!(large_plaintext, decrypted);
     }
 
     #[test]
     fn encrypt_payload_adds_overhead() {
+        let key: [u8; 32] = [0x42; 32];
         let plaintext = vec![0u8; 100];
-        let encrypted = encrypt_payload(&plaintext).expect("encryption should succeed");
+        let encrypted =
+            encrypt_payload_with_key(&plaintext, &key).expect("encryption should succeed");
         assert_eq!(encrypted.len(), plaintext.len() + 28);
-        let decrypted = decrypt_payload(&encrypted).expect("decryption should succeed");
+        let decrypted =
+            decrypt_payload_with_key(&encrypted, &key).expect("decryption should succeed");
         assert_eq!(plaintext, decrypted);
     }
 
@@ -387,7 +406,7 @@ mod tests {
         let alice = DhKeypair::generate();
         let bob = DhKeypair::generate();
         let shared = alice.diffie_hellman(&bob.public);
-        let key = derive_key_from_shared_secret(shared.as_bytes(), 1);
+        let key = derive_key_from_shared_secret(shared.as_bytes(), 1).expect("derive key");
 
         let plaintext = b"secret vehicular data";
         let encrypted =
@@ -400,20 +419,18 @@ mod tests {
     #[test]
     fn different_key_ids_produce_different_derived_keys() {
         let shared_secret = [42u8; 32];
-        let key1 = derive_key_from_shared_secret(&shared_secret, 1);
-        let key2 = derive_key_from_shared_secret(&shared_secret, 2);
+        let key1 = derive_key_from_shared_secret(&shared_secret, 1).expect("derive key");
+        let key2 = derive_key_from_shared_secret(&shared_secret, 2).expect("derive key");
         assert_ne!(key1, key2);
     }
 
     #[test]
-    fn dh_key_cannot_decrypt_fixed_key_ciphertext() {
-        let alice = DhKeypair::generate();
-        let bob = DhKeypair::generate();
-        let shared = alice.diffie_hellman(&bob.public);
-        let dh_key = derive_key_from_shared_secret(shared.as_bytes(), 1);
+    fn different_keys_cannot_decrypt_each_other() {
+        let key_a: [u8; 32] = [0xAA; 32];
+        let key_b: [u8; 32] = [0xBB; 32];
         let plaintext = b"test data";
-        let encrypted_fixed = encrypt_payload(plaintext).expect("encrypt with fixed key");
-        assert!(decrypt_payload_with_key(&encrypted_fixed, &dh_key).is_err());
+        let encrypted_a = encrypt_payload_with_key(plaintext, &key_a).expect("encrypt with key_a");
+        assert!(decrypt_payload_with_key(&encrypted_a, &key_b).is_err());
     }
 
     #[test]
@@ -484,7 +501,7 @@ mod tests {
             KdfAlgorithm::HkdfSha384,
             KdfAlgorithm::HkdfSha512,
         ] {
-            let key = derive_key(kdf, &shared, 1, 32);
+            let key = derive_key(kdf, &shared, 1, 32).expect("derive key");
             assert_eq!(key.len(), 32, "{kdf} key length mismatch");
             // Non-zero output
             assert!(key.iter().any(|&b| b != 0), "{kdf} produced zero key");
@@ -494,9 +511,9 @@ mod tests {
     #[test]
     fn different_kdfs_produce_different_keys() {
         let shared = [0x55u8; 32];
-        let k1 = derive_key(KdfAlgorithm::HkdfSha256, &shared, 1, 32);
-        let k2 = derive_key(KdfAlgorithm::HkdfSha384, &shared, 1, 32);
-        let k3 = derive_key(KdfAlgorithm::HkdfSha512, &shared, 1, 32);
+        let k1 = derive_key(KdfAlgorithm::HkdfSha256, &shared, 1, 32).unwrap();
+        let k2 = derive_key(KdfAlgorithm::HkdfSha384, &shared, 1, 32).unwrap();
+        let k3 = derive_key(KdfAlgorithm::HkdfSha512, &shared, 1, 32).unwrap();
         assert_ne!(k1, k2);
         assert_ne!(k2, k3);
     }
@@ -504,7 +521,7 @@ mod tests {
     #[test]
     fn derive_key_16_bytes_for_aes128() {
         let shared = [0x33u8; 32];
-        let key = derive_key(KdfAlgorithm::HkdfSha256, &shared, 1, 16);
+        let key = derive_key(KdfAlgorithm::HkdfSha256, &shared, 1, 16).unwrap();
         assert_eq!(key.len(), 16);
     }
 
@@ -519,7 +536,7 @@ mod tests {
         let alice = DhKeypair::generate();
         let bob = DhKeypair::generate();
         let shared = alice.diffie_hellman(&bob.public);
-        let key = derive_key(config.kdf, shared.as_bytes(), 42, config.cipher.key_len());
+        let key = derive_key(config.kdf, shared.as_bytes(), 42, config.cipher.key_len()).unwrap();
 
         let plaintext = b"full configurable roundtrip";
         let encrypted = encrypt_with_config(config.cipher, plaintext, &key).expect("encrypt");

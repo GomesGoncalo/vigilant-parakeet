@@ -37,7 +37,7 @@ mod tests {
             server_params: ServerParameters {
                 port: 0,
                 enable_encryption: false,
-                enable_dh: false,
+                key_ttl_ms: 86_400_000,
                 cipher: node_lib::crypto::SymmetricCipher::default(),
                 kdf: node_lib::crypto::KdfAlgorithm::default(),
                 dh_group: node_lib::crypto::DhGroup::default(),

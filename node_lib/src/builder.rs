@@ -23,7 +23,6 @@ pub struct NodeBuilder {
     pub hello_history: u32,
     pub cached_candidates: u32,
     pub enable_encryption: bool,
-    pub enable_dh: bool,
     pub dh_rekey_interval_ms: u64,
     pub dh_key_lifetime_ms: u64,
     pub dh_max_retries: u32,
@@ -50,9 +49,8 @@ impl NodeBuilder {
             hello_history: 10,
             cached_candidates: 3,
             enable_encryption: false,
-            enable_dh: false,
-            dh_rekey_interval_ms: 60_000,
-            dh_key_lifetime_ms: 120_000,
+            dh_rekey_interval_ms: 43_200_000,
+            dh_key_lifetime_ms: 86_400_000,
             dh_max_retries: 3,
             dh_reply_timeout_ms: 5_000,
             cipher: SymmetricCipher::default(),
@@ -100,25 +98,19 @@ impl NodeBuilder {
         self
     }
 
-    /// Enable or disable Diffie-Hellman key exchange (default: false)
-    pub fn with_dh(mut self, enabled: bool) -> Self {
-        self.enable_dh = enabled;
-        self
-    }
-
-    /// Set the DH re-key interval in milliseconds (default: 60000)
+    /// Set the DH re-key interval in milliseconds (default: 43200000 — half of key lifetime)
     pub fn with_dh_rekey_interval_ms(mut self, ms: u64) -> Self {
         self.dh_rekey_interval_ms = ms;
         self
     }
 
-    /// Set the DH key lifetime in milliseconds (default: 120000)
+    /// Set the DH key lifetime in milliseconds (default: 86400000 — 24h)
     pub fn with_dh_key_lifetime_ms(mut self, ms: u64) -> Self {
         self.dh_key_lifetime_ms = ms;
         self
     }
 
-    /// Set the DH max retries before fallback (default: 3)
+    /// Set the DH max retries per retry cycle (default: 3)
     pub fn with_dh_max_retries(mut self, retries: u32) -> Self {
         self.dh_max_retries = retries;
         self
@@ -254,9 +246,8 @@ mod tests {
         assert_eq!(builder.hello_history, 10);
         assert_eq!(builder.cached_candidates, 3);
         assert!(!builder.enable_encryption);
-        assert!(!builder.enable_dh);
-        assert_eq!(builder.dh_rekey_interval_ms, 60_000);
-        assert_eq!(builder.dh_key_lifetime_ms, 120_000);
+        assert_eq!(builder.dh_rekey_interval_ms, 43_200_000);
+        assert_eq!(builder.dh_key_lifetime_ms, 86_400_000);
     }
 
     #[test]
@@ -267,7 +258,6 @@ mod tests {
             .with_hello_history(20)
             .with_cached_candidates(5)
             .with_encryption(true)
-            .with_dh(true)
             .with_dh_rekey_interval_ms(30_000);
 
         assert_eq!(builder.ip, Some("192.168.1.100".parse().unwrap()));
@@ -275,7 +265,6 @@ mod tests {
         assert_eq!(builder.hello_history, 20);
         assert_eq!(builder.cached_candidates, 5);
         assert!(builder.enable_encryption);
-        assert!(builder.enable_dh);
         assert_eq!(builder.dh_rekey_interval_ms, 30_000);
     }
 }

@@ -12,23 +12,19 @@ pub struct ObuParameters {
     #[arg(long, default_value_t = 3)]
     pub cached_candidates: u32,
 
-    /// Enable payload encryption between OBUs and upstream RSUs
+    /// Enable payload encryption (implies DH key exchange with server)
     #[arg(long, default_value_t = false)]
     pub enable_encryption: bool,
 
-    /// Enable Diffie-Hellman key negotiation (requires enable_encryption)
-    #[arg(long, default_value_t = false)]
-    pub enable_dh: bool,
-
     /// Interval in milliseconds between DH re-key exchanges
-    #[arg(long, default_value_t = 60_000)]
+    #[arg(long, default_value_t = 43_200_000)]
     pub dh_rekey_interval_ms: u64,
 
     /// Maximum lifetime of a DH-derived key in milliseconds before forced re-key
-    #[arg(long, default_value_t = 120_000)]
+    #[arg(long, default_value_t = 86_400_000)]
     pub dh_key_lifetime_ms: u64,
 
-    /// Number of DH key exchange attempts before giving up and falling back to fixed key
+    /// Number of DH key exchange attempts per retry cycle before re-initiating
     #[arg(long, default_value_t = 3)]
     pub dh_max_retries: u32,
 

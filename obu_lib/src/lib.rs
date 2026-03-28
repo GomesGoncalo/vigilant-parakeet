@@ -78,7 +78,6 @@ mod tests {
                 hello_history: 1,
                 cached_candidates: 1,
                 enable_encryption: false,
-                enable_dh: false,
                 dh_rekey_interval_ms: 60_000,
                 dh_key_lifetime_ms: 120_000,
                 dh_max_retries: 3,

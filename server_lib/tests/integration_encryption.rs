@@ -116,6 +116,9 @@ async fn test_obu_upstream_reaches_server() -> anyhow::Result<()> {
     )
     .await;
 
+    // Wait for DH key exchange to complete with the server.
+    wait_until(|| async { obu.has_dh_session() }, Duration::from_secs(10)).await;
+
     // Build a TAP Ethernet frame: dest = server dummy MAC, src = OBU TAP MAC.
     // Since the server has no obu_routes entry for "server_dummy_mac", it will
     // write the decrypted frame to its own TAP.
@@ -214,6 +217,10 @@ async fn test_obu_to_obu_ping_through_server() -> anyhow::Result<()> {
         Duration::from_secs(5),
     )
     .await;
+
+    // Wait for both OBUs to complete DH key exchange with the server.
+    wait_until(|| async { obu1.has_dh_session() }, Duration::from_secs(10)).await;
+    wait_until(|| async { obu2.has_dh_session() }, Duration::from_secs(10)).await;
 
     // Choose explicit TAP MACs that we embed in injected frames.
     let obu1_tap_mac: [u8; 6] = [0x02, 0x42, 0x01, 0x00, 0x00, 0x01];

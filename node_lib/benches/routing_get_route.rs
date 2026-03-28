@@ -16,7 +16,6 @@ fn bench_obu_get_route(_c: &mut Criterion) {
             hello_history: 8,
             cached_candidates: 3,
             enable_encryption: false,
-            enable_dh: false,
             dh_rekey_interval_ms: 60_000,
             dh_key_lifetime_ms: 120_000,
             dh_max_retries: 3,

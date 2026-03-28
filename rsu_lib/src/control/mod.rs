@@ -234,9 +234,24 @@ impl Rsu {
                 }
             }
             PacketType::Control(Control::KeyExchangeInit(ke_init)) => {
-                // Relay KeyExchangeInit from OBU to server via cloud protocol
+                // Relay KeyExchangeInit from OBU to server via cloud protocol.
+                // Use the VANET message `from()` as the authoritative OBU MAC,
+                // not the payload's ke_init.sender() which could be spoofed.
                 if self.args.rsu_params.server_ip.is_some() {
-                    let obu_mac = ke_init.sender();
+                    let obu_mac = match msg.from() {
+                        Ok(from_mac) => {
+                            let claimed = ke_init.sender();
+                            if from_mac != claimed {
+                                tracing::warn!(
+                                    from = %from_mac,
+                                    claimed = %claimed,
+                                    "Mismatching OBU MAC in KeyExchangeInit; using frame source"
+                                );
+                            }
+                            from_mac
+                        }
+                        Err(_) => ke_init.sender(),
+                    };
                     let ke_bytes: Vec<u8> = ke_init.into();
                     let fwd = KeyExchangeForward::new(obu_mac, self.device.mac_address(), ke_bytes);
                     if let Err(e) = self.cloud_socket.send(&fwd.to_bytes()).await {

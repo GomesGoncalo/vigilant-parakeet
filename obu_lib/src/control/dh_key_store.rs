@@ -67,6 +67,34 @@ impl DhKeyStore {
         (key_id, public_bytes)
     }
 
+    /// Re-initiate a timed-out DH exchange, preserving the retry count.
+    /// Returns the new key_id and public key bytes.
+    pub fn reinitiate_exchange(&mut self, peer: MacAddress) -> (u32, [u8; 32]) {
+        let prev_retries = self
+            .pending
+            .get(&peer.bytes())
+            .map(|p| p.retries)
+            .unwrap_or(0);
+
+        let key_id = self.next_key_id;
+        self.next_key_id = self.next_key_id.wrapping_add(1);
+
+        let keypair = DhKeypair::generate();
+        let public_bytes = *keypair.public.as_bytes();
+
+        self.pending.insert(
+            peer.bytes(),
+            PendingExchange {
+                keypair,
+                key_id,
+                initiated_at: Instant::now(),
+                retries: prev_retries + 1,
+            },
+        );
+
+        (key_id, public_bytes)
+    }
+
     /// Complete a DH exchange when we receive a reply.
     /// Returns the derived key on success.
     pub fn complete_exchange(
@@ -88,12 +116,18 @@ impl DhKeyStore {
 
         let peer_public = x25519_dalek::PublicKey::from(*peer_public_bytes);
         let shared_secret = pending.keypair.diffie_hellman(&peer_public);
-        let derived_key = node_lib::crypto::derive_key(
+        let derived_key = match node_lib::crypto::derive_key(
             self.crypto_config.kdf,
             shared_secret.as_bytes(),
             key_id,
             self.crypto_config.cipher.key_len(),
-        );
+        ) {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to derive DH key");
+                return None;
+            }
+        };
 
         self.pending.remove(&peer.bytes());
         self.established.insert(
@@ -110,23 +144,31 @@ impl DhKeyStore {
 
     /// Handle an incoming DH init from a peer. Generates our keypair, computes
     /// the shared secret, stores the established key, and returns our public key bytes.
+    ///
+    /// Returns `None` if key derivation fails.
     pub fn handle_incoming_init(
         &mut self,
         peer: MacAddress,
         key_id: u32,
         peer_public_bytes: &[u8; 32],
-    ) -> [u8; 32] {
+    ) -> Option<[u8; 32]> {
         let our_keypair = DhKeypair::generate();
         let our_public = *our_keypair.public.as_bytes();
 
         let peer_public = x25519_dalek::PublicKey::from(*peer_public_bytes);
         let shared_secret = our_keypair.diffie_hellman(&peer_public);
-        let derived_key = node_lib::crypto::derive_key(
+        let derived_key = match node_lib::crypto::derive_key(
             self.crypto_config.kdf,
             shared_secret.as_bytes(),
             key_id,
             self.crypto_config.cipher.key_len(),
-        );
+        ) {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to derive DH key in handle_incoming_init");
+                return None;
+            }
+        };
 
         self.established.insert(
             peer.bytes(),
@@ -137,7 +179,7 @@ impl DhKeyStore {
             },
         );
 
-        our_public
+        Some(our_public)
     }
 
     /// Get the established key for a peer, if any.
@@ -203,7 +245,9 @@ mod tests {
         let mac_b: MacAddress = [2u8; 6].into();
 
         let (key_id, pub_a) = store_a.initiate_exchange(mac_b);
-        let pub_b = store_b.handle_incoming_init(mac_a, key_id, &pub_a);
+        let pub_b = store_b
+            .handle_incoming_init(mac_a, key_id, &pub_a)
+            .expect("should derive key");
         let key_a = store_a
             .complete_exchange(mac_b, key_id, &pub_b)
             .expect("should complete");
@@ -266,7 +310,9 @@ mod tests {
         let mac_b: MacAddress = [20u8; 6].into();
 
         let (key_id, pub_a) = store_a.initiate_exchange(mac_b);
-        let _pub_b = store_b.handle_incoming_init(mac_a, key_id, &pub_a);
+        let _pub_b = store_b
+            .handle_incoming_init(mac_a, key_id, &pub_a)
+            .expect("should derive key");
 
         let key_b = store_b.get_key(mac_a).expect("key");
         assert_eq!(key_b.len(), 16, "AES-128-GCM key should be 16 bytes");

@@ -8,13 +8,14 @@ pub struct ServerParameters {
     #[arg(long, default_value_t = 8080)]
     pub port: u16,
 
-    /// Enable encryption for OBU traffic
+    /// Enable encryption for OBU traffic (implies DH key exchange)
     #[arg(long, default_value_t = false)]
     pub enable_encryption: bool,
 
-    /// Enable Diffie-Hellman key negotiation with OBUs (requires enable_encryption)
-    #[arg(long, default_value_t = false)]
-    pub enable_dh: bool,
+    /// Maximum lifetime of a DH-derived key in milliseconds before the server
+    /// considers it expired and drops traffic until the OBU re-keys
+    #[arg(long, default_value_t = 86_400_000)]
+    pub key_ttl_ms: u64,
 
     /// Symmetric cipher: aes-256-gcm, aes-128-gcm, chacha20-poly1305
     #[arg(long, default_value_t = SymmetricCipher::default())]

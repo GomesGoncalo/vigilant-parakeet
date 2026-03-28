@@ -170,8 +170,17 @@ pub struct KeyExchangeForward {
     pub payload: Vec<u8>,
 }
 
+/// Expected key exchange payload size (key_id 4B + public_key 32B + sender 6B).
+pub const KE_PAYLOAD_LEN: usize = 42;
+
 impl KeyExchangeForward {
     pub fn new(obu_mac: MacAddress, rsu_mac: MacAddress, payload: Vec<u8>) -> Self {
+        debug_assert_eq!(
+            payload.len(),
+            KE_PAYLOAD_LEN,
+            "KeyExchangeForward payload must be exactly {} bytes",
+            KE_PAYLOAD_LEN
+        );
         Self {
             obu_mac,
             rsu_mac,
@@ -180,7 +189,7 @@ impl KeyExchangeForward {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(KEY_EXCHANGE_FWD_MIN_LEN);
+        let mut buf = Vec::with_capacity(15 + self.payload.len());
         buf.extend_from_slice(&registry::MAGIC);
         buf.push(KEY_EXCHANGE_FWD_TYPE);
         buf.extend_from_slice(&self.obu_mac.bytes());
@@ -196,12 +205,16 @@ impl KeyExchangeForward {
         if data[0..2] != registry::MAGIC || data[2] != KEY_EXCHANGE_FWD_TYPE {
             return None;
         }
+        let payload = &data[15..];
+        if payload.len() != KE_PAYLOAD_LEN {
+            return None;
+        }
         let obu_bytes: [u8; 6] = data[3..9].try_into().ok()?;
         let rsu_bytes: [u8; 6] = data[9..15].try_into().ok()?;
         Some(Self {
             obu_mac: MacAddress::new(obu_bytes),
             rsu_mac: MacAddress::new(rsu_bytes),
-            payload: data[15..].to_vec(),
+            payload: payload.to_vec(),
         })
     }
 }
@@ -226,6 +239,12 @@ pub struct KeyExchangeResponse {
 
 impl KeyExchangeResponse {
     pub fn new(obu_dest_mac: MacAddress, payload: Vec<u8>) -> Self {
+        debug_assert_eq!(
+            payload.len(),
+            KE_PAYLOAD_LEN,
+            "KeyExchangeResponse payload must be exactly {} bytes",
+            KE_PAYLOAD_LEN
+        );
         Self {
             obu_dest_mac,
             payload,
@@ -233,7 +252,7 @@ impl KeyExchangeResponse {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(KEY_EXCHANGE_RSP_MIN_LEN);
+        let mut buf = Vec::with_capacity(9 + self.payload.len());
         buf.extend_from_slice(&registry::MAGIC);
         buf.push(KEY_EXCHANGE_RSP_TYPE);
         buf.extend_from_slice(&self.obu_dest_mac.bytes());
@@ -248,10 +267,14 @@ impl KeyExchangeResponse {
         if data[0..2] != registry::MAGIC || data[2] != KEY_EXCHANGE_RSP_TYPE {
             return None;
         }
+        let payload = &data[9..];
+        if payload.len() != KE_PAYLOAD_LEN {
+            return None;
+        }
         let dest_bytes: [u8; 6] = data[3..9].try_into().ok()?;
         Some(Self {
             obu_dest_mac: MacAddress::new(dest_bytes),
-            payload: data[9..].to_vec(),
+            payload: payload.to_vec(),
         })
     }
 }

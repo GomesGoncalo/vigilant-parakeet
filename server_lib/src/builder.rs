@@ -12,7 +12,7 @@ pub struct ServerBuilder {
     node_name: Option<String>,
     tun: Option<SharedTun>,
     enable_encryption: bool,
-    enable_dh: bool,
+    key_ttl_ms: u64,
     crypto_config: CryptoConfig,
 }
 
@@ -25,7 +25,7 @@ impl ServerBuilder {
             node_name: None,
             tun: None,
             enable_encryption: false,
-            enable_dh: false,
+            key_ttl_ms: 86_400_000,
             crypto_config: CryptoConfig::default(),
         }
     }
@@ -38,7 +38,7 @@ impl ServerBuilder {
             node_name: None,
             tun: None,
             enable_encryption: args.server_params.enable_encryption,
-            enable_dh: args.server_params.enable_dh,
+            key_ttl_ms: args.server_params.key_ttl_ms,
             crypto_config: CryptoConfig {
                 cipher: args.server_params.cipher,
                 kdf: args.server_params.kdf,
@@ -80,7 +80,7 @@ impl ServerBuilder {
         }
         server = server
             .with_encryption(self.enable_encryption)
-            .with_dh(self.enable_dh)
+            .with_key_ttl_ms(self.key_ttl_ms)
             .with_crypto_config(self.crypto_config);
         let server = Arc::new(server);
         Ok(server)
@@ -118,7 +118,7 @@ mod tests {
             server_params: ServerParameters {
                 port: 7777,
                 enable_encryption: true,
-                enable_dh: false,
+                key_ttl_ms: 86_400_000,
                 cipher: node_lib::crypto::SymmetricCipher::default(),
                 kdf: node_lib::crypto::KdfAlgorithm::default(),
                 dh_group: node_lib::crypto::DhGroup::default(),
