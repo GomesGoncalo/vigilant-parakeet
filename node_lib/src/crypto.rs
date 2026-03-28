@@ -9,7 +9,7 @@ use sha2::{Sha256, Sha384, Sha512};
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
 
 /// Fixed key for backward compatibility when DH is not enabled.
-const FIXED_KEY: &[u8; 32] = b"vigilant_parakeet_fixed_key_256!";
+pub const FIXED_KEY: &[u8; 32] = b"vigilant_parakeet_fixed_key_256!";
 
 /// HKDF info string for deriving keys from DH shared secrets.
 const HKDF_INFO: &[u8] = b"vigilant-parakeet-dh-aes256gcm";

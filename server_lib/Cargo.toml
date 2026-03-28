@@ -12,6 +12,7 @@ clap = { version = "*", features = ["derive"] }
 mac_address = "*"
 node_lib = { path = "../node_lib" }
 common = { path = "../common" }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 [dev-dependencies]
 tokio = { version = "*", features = ["full", "test-util"] }

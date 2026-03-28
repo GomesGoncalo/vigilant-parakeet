@@ -36,6 +36,13 @@ use node_lib::{Shared, SharedDevice, SharedTun};
 
 type SharedKeyStore = Arc<RwLock<DhKeyStore>>;
 
+/// Virtual MAC used to key the DH store for the server tunnel.
+/// The OBU negotiates keys with the server (not peers), so we use a
+/// fixed sentinel MAC as the store key.
+fn server_virtual_mac() -> MacAddress {
+    MacAddress::new([0, 0, 0, 0, 0, 0])
+}
+
 pub struct Obu {
     args: ObuArgs,
     routing: Shared<Routing>,
@@ -157,18 +164,20 @@ impl Obu {
 
                 loop {
                     if let Some(upstream_mac) = obu.cached_upstream_mac() {
+                        // Use server_virtual_mac() for key store lookups — the key
+                        // is with the server, not with a specific RSU/peer.
                         let needs_exchange = {
                             let store = obu
                                 .dh_key_store
                                 .read()
                                 .expect("dh key store read lock poisoned");
-                            let no_key = !store.has_established_key(upstream_mac);
-                            let expired = store.is_key_expired(upstream_mac, key_lifetime_ms);
+                            let no_key = !store.has_established_key(server_virtual_mac());
+                            let expired = store.is_key_expired(server_virtual_mac(), key_lifetime_ms);
                             if expired {
                                 tracing::debug!(
-                                    peer = %upstream_mac,
+                                    via = %upstream_mac,
                                     lifetime_ms = key_lifetime_ms,
-                                    "DH key expired, initiating re-key"
+                                    "Server DH key expired, initiating re-key"
                                 );
                             }
                             no_key || expired
@@ -181,23 +190,23 @@ impl Obu {
                                     .dh_key_store
                                     .read()
                                     .expect("dh key store read lock poisoned");
-                                if store.has_pending(upstream_mac)
-                                    && store.is_pending_timed_out(upstream_mac, reply_timeout_ms)
+                                if store.has_pending(server_virtual_mac())
+                                    && store.is_pending_timed_out(server_virtual_mac(), reply_timeout_ms)
                                 {
-                                    let retries = store.pending_retries(upstream_mac).unwrap_or(0);
+                                    let retries = store.pending_retries(server_virtual_mac()).unwrap_or(0);
                                     if retries >= max_retries {
                                         drop(store);
                                         let mut store = obu
                                             .dh_key_store
                                             .write()
                                             .expect("dh key store write lock poisoned");
-                                        store.remove_pending(upstream_mac);
+                                        store.remove_pending(server_virtual_mac());
                                         tracing::warn!(
-                                            peer = %upstream_mac,
+                                            via = %upstream_mac,
                                             retries = retries,
                                             max_retries = max_retries,
                                             cipher = %obu.crypto_config.cipher,
-                                            "DH key exchange failed after max retries, falling back to fixed key"
+                                            "Server DH key exchange failed after max retries, falling back to fixed key"
                                         );
                                     } else {
                                         drop(store);
@@ -205,13 +214,13 @@ impl Obu {
                                             .dh_key_store
                                             .write()
                                             .expect("dh key store write lock poisoned");
-                                        store.increment_retries(upstream_mac);
-                                        store.remove_pending(upstream_mac);
+                                        store.increment_retries(server_virtual_mac());
+                                        store.remove_pending(server_virtual_mac());
                                         tracing::debug!(
-                                            peer = %upstream_mac,
+                                            via = %upstream_mac,
                                             retry = retries + 1,
                                             max_retries = max_retries,
-                                            "DH reply timed out, retrying"
+                                            "Server DH reply timed out, retrying"
                                         );
                                     }
                                 }
@@ -223,7 +232,7 @@ impl Obu {
                                     .dh_key_store
                                     .read()
                                     .expect("dh key store read lock poisoned");
-                                !store.has_pending(upstream_mac)
+                                !store.has_pending(server_virtual_mac())
                             };
 
                             if should_initiate {
@@ -232,11 +241,12 @@ impl Obu {
                                         .dh_key_store
                                         .write()
                                         .expect("dh key store write lock poisoned");
-                                    store.initiate_exchange(upstream_mac)
+                                    store.initiate_exchange(server_virtual_mac())
                                 };
 
                                 let our_mac = obu.device.mac_address();
                                 let init_msg = KeyExchangeInit::new(key_id, pub_key, our_mac);
+                                // Send to upstream RSU — it will relay to server
                                 let msg = Message::new(
                                     our_mac,
                                     upstream_mac,
@@ -247,16 +257,16 @@ impl Obu {
                                 if let Err(e) = obu.device.send(&wire).await {
                                     tracing::warn!(
                                         error = %e,
-                                        peer = %upstream_mac,
+                                        via = %upstream_mac,
                                         key_id = key_id,
-                                        "Failed to send DH KeyExchangeInit"
+                                        "Failed to send DH KeyExchangeInit (for server)"
                                     );
                                 } else {
                                     tracing::debug!(
-                                        peer = %upstream_mac,
+                                        via = %upstream_mac,
                                         key_id = key_id,
                                         dh_group = %obu.crypto_config.dh_group,
-                                        "Sent DH KeyExchangeInit"
+                                        "Sent DH KeyExchangeInit to server (via RSU)"
                                     );
                                 }
                             }
@@ -370,11 +380,13 @@ impl Obu {
                             };
 
                             let payload_data = if enable_encryption {
+                                // Always use server_virtual_mac() — the key is
+                                // negotiated with the server, not the RSU.
                                 let dh_key = if enable_dh {
                                     dh_store
                                         .read()
                                         .expect("dh key store read lock poisoned")
-                                        .get_key(upstream.mac)
+                                        .get_key(server_virtual_mac())
                                         .map(|k| k.to_vec())
                                 } else {
                                     None
@@ -462,13 +474,14 @@ impl Obu {
                 let is_for_us =
                     destination == self.device.mac_address() || destination.bytes()[0] & 0x1 != 0;
                 if is_for_us {
-                    let sender_mac = msg.from().unwrap_or([0u8; 6].into());
                     let payload_data = if self.args.obu_params.enable_encryption {
+                        // Always use server_virtual_mac() — the key is
+                        // negotiated with the server, not the sender RSU.
                         let dh_key = if self.args.obu_params.enable_dh {
                             self.dh_key_store
                                 .read()
                                 .expect("dh key store read lock poisoned")
-                                .get_key(sender_mac)
+                                .get_key(server_virtual_mac())
                                 .map(|k| k.to_vec())
                         } else {
                             None
@@ -485,7 +498,6 @@ impl Obu {
                             Err(e) => {
                                 tracing::warn!(
                                     size = buf.data().len(),
-                                    from = %sender_mac,
                                     cipher = %cipher,
                                     using_dh_key = dh_key.is_some(),
                                     error = %e,
@@ -540,42 +552,12 @@ impl Obu {
 
     fn handle_key_exchange_init(
         &self,
-        ke_init: &KeyExchangeInit<'_>,
+        _ke_init: &KeyExchangeInit<'_>,
     ) -> Result<Option<Vec<ReplyType>>> {
-        if !self.args.obu_params.enable_dh || !self.args.obu_params.enable_encryption {
-            tracing::trace!("Ignoring KeyExchangeInit — DH or encryption not enabled");
-            return Ok(None);
-        }
-
-        let peer_mac = ke_init.sender();
-        let key_id = ke_init.key_id();
-        let peer_pub = ke_init.public_key();
-
-        let our_pub = {
-            let mut store = self
-                .dh_key_store
-                .write()
-                .expect("dh key store write lock poisoned");
-            store.handle_incoming_init(peer_mac, key_id, &peer_pub)
-        };
-
-        tracing::debug!(
-            peer = %peer_mac,
-            key_id = key_id,
-            cipher = %self.crypto_config.cipher,
-            kdf = %self.crypto_config.kdf,
-            dh_group = %self.crypto_config.dh_group,
-            "Handled DH KeyExchangeInit, sending reply"
-        );
-
-        let reply = KeyExchangeReply::new(key_id, our_pub, self.device.mac_address());
-        let msg = Message::new(
-            self.device.mac_address(),
-            peer_mac,
-            PacketType::Control(Control::KeyExchangeReply(reply)),
-        );
-        let wire: Vec<u8> = (&msg).into();
-        Ok(Some(vec![ReplyType::WireFlat(wire)]))
+        // OBUs do not handle key exchange inits directly — DH is negotiated
+        // between OBU and Server (via RSU relay). Ignore incoming inits.
+        tracing::trace!("Ignoring KeyExchangeInit — OBU only negotiates with server");
+        Ok(None)
     }
 
     fn handle_key_exchange_reply(
@@ -586,34 +568,32 @@ impl Obu {
             return Ok(None);
         }
 
-        let peer_mac = ke_reply.sender();
         let key_id = ke_reply.key_id();
         let peer_pub = ke_reply.public_key();
 
+        // Complete the exchange using server_virtual_mac() — the key is with the server.
         let result = {
             let mut store = self
                 .dh_key_store
                 .write()
                 .expect("dh key store write lock poisoned");
-            store.complete_exchange(peer_mac, key_id, &peer_pub)
+            store.complete_exchange(server_virtual_mac(), key_id, &peer_pub)
         };
 
         match result {
             Some(ref derived_key) => {
                 tracing::info!(
-                    peer = %peer_mac,
                     key_id = key_id,
                     cipher = %self.crypto_config.cipher,
                     kdf = %self.crypto_config.kdf,
                     key_len = derived_key.len(),
-                    "DH key exchange completed, new session key established"
+                    "DH key exchange with server completed, session key established"
                 );
             }
             None => {
                 tracing::warn!(
-                    peer = %peer_mac,
                     key_id = key_id,
-                    "Failed to complete DH key exchange — no matching pending exchange"
+                    "Failed to complete DH key exchange with server — no matching pending exchange"
                 );
             }
         }

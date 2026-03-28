@@ -1,17 +1,36 @@
-use crate::cloud_protocol::{CloudMessage, DownstreamForward, UpstreamForward};
+use crate::cloud_protocol::{
+    CloudMessage, DownstreamForward, KeyExchangeResponse, UpstreamForward,
+};
 use crate::registry::RegistrationMessage;
 use anyhow::Result;
 use common::tun::Tun;
 use mac_address::MacAddress;
+use node_lib::crypto::{CryptoConfig, DhKeypair};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock};
+use tokio::time::Instant;
 use tracing::Instrument;
 
 /// Shared reference to a Tun device.
 pub type SharedTun = Arc<Tun>;
+
+/// An established DH-derived key for a specific OBU.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct ObuKey {
+    /// The derived symmetric key.
+    key: Vec<u8>,
+    /// Key ID from the exchange.
+    key_id: u32,
+    /// When the key was established.
+    established_at: Instant,
+}
+
+/// Per-OBU DH key store on the server side, keyed by OBU VANET MAC.
+type DhKeyStore = HashMap<MacAddress, ObuKey>;
 
 /// Routing entry for an OBU, keyed by virtual TAP MAC.
 #[derive(Debug, Clone, Copy)]
@@ -51,6 +70,12 @@ pub struct Server {
     tun: Option<SharedTun>,
     /// Whether encryption is enabled for OBU traffic.
     enable_encryption: bool,
+    /// Whether DH key exchange is enabled (per-OBU keys).
+    enable_dh: bool,
+    /// Per-OBU DH-derived keys, keyed by OBU VANET MAC.
+    dh_keys: Arc<RwLock<DhKeyStore>>,
+    /// Crypto configuration for key derivation.
+    crypto_config: CryptoConfig,
     /// Node name for tracing/logging identification.
     node_name: String,
 }
@@ -67,6 +92,9 @@ impl Server {
             obu_routes: Arc::new(RwLock::new(HashMap::new())),
             tun: None,
             enable_encryption: false,
+            enable_dh: false,
+            dh_keys: Arc::new(RwLock::new(HashMap::new())),
+            crypto_config: CryptoConfig::default(),
             node_name,
         }
     }
@@ -80,6 +108,18 @@ impl Server {
     /// Enable or disable encryption for OBU traffic.
     pub fn with_encryption(mut self, enable: bool) -> Self {
         self.enable_encryption = enable;
+        self
+    }
+
+    /// Enable or disable DH key exchange (per-OBU session keys).
+    pub fn with_dh(mut self, enable: bool) -> Self {
+        self.enable_dh = enable;
+        self
+    }
+
+    /// Set the crypto configuration for key derivation.
+    pub fn with_crypto_config(mut self, config: CryptoConfig) -> Self {
+        self.crypto_config = config;
         self
     }
 
@@ -104,12 +144,15 @@ impl Server {
             *sock_lock = Some(socket.clone());
         }
 
-        // Spawn cloud recv task (handles registration + upstream forwarding)
+        // Spawn cloud recv task (handles registration + upstream forwarding + key exchange)
         let socket_for_recv = socket.clone();
         let registry = self.registry.clone();
         let obu_routes = self.obu_routes.clone();
         let tun_for_recv = self.tun.clone();
         let enable_encryption = self.enable_encryption;
+        let enable_dh = self.enable_dh;
+        let dh_keys = self.dh_keys.clone();
+        let crypto_config = self.crypto_config;
         let name_for_recv = node_name.clone();
 
         let recv_span = tracing::info_span!("node", name = %name_for_recv);
@@ -121,6 +164,9 @@ impl Server {
                     obu_routes,
                     tun_for_recv,
                     enable_encryption,
+                    enable_dh,
+                    dh_keys,
+                    crypto_config,
                 )
                 .await;
             }
@@ -133,6 +179,9 @@ impl Server {
             let socket_for_tap = socket.clone();
             let obu_routes_for_tap = self.obu_routes.clone();
             let enable_enc = self.enable_encryption;
+            let enable_dh_tap = self.enable_dh;
+            let dh_keys_tap = self.dh_keys.clone();
+            let crypto_config_tap = self.crypto_config;
             let name_for_tap = node_name.clone();
 
             let tap_span = tracing::info_span!("node", name = %name_for_tap);
@@ -143,6 +192,9 @@ impl Server {
                         socket_for_tap,
                         obu_routes_for_tap,
                         enable_enc,
+                        enable_dh_tap,
+                        dh_keys_tap,
+                        crypto_config_tap,
                     )
                     .await;
                 }
@@ -153,13 +205,17 @@ impl Server {
         Ok(())
     }
 
-    /// Main cloud receive loop: handles Registration, UpstreamForward messages.
+    /// Main cloud receive loop: handles Registration, UpstreamForward, KeyExchangeForward.
+    #[allow(clippy::too_many_arguments)]
     async fn cloud_recv_loop(
         socket: Arc<UdpSocket>,
         registry: Arc<RwLock<HashMap<MacAddress, Vec<MacAddress>>>>,
         obu_routes: Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
         tun: Option<SharedTun>,
         enable_encryption: bool,
+        enable_dh: bool,
+        dh_keys: Arc<RwLock<DhKeyStore>>,
+        crypto_config: CryptoConfig,
     ) {
         let mut buf = vec![0u8; 65536];
         loop {
@@ -177,14 +233,28 @@ impl Server {
                                 &obu_routes,
                                 tun.as_ref(),
                                 enable_encryption,
+                                enable_dh,
+                                &dh_keys,
+                                crypto_config,
                                 &socket,
                             )
                             .await;
                         }
-                        Some(CloudMessage::DownstreamForward(_)) => {
+                        Some(CloudMessage::KeyExchangeForward(ke_fwd)) => {
+                            Self::handle_key_exchange_forward(
+                                &ke_fwd,
+                                src_addr,
+                                &dh_keys,
+                                crypto_config,
+                                &socket,
+                            )
+                            .await;
+                        }
+                        Some(CloudMessage::DownstreamForward(_))
+                        | Some(CloudMessage::KeyExchangeResponse(_)) => {
                             tracing::warn!(
                                 src = %src_addr,
-                                "Received unexpected DownstreamForward on server"
+                                "Received unexpected downstream/response message on server"
                             );
                         }
                         None => {
@@ -236,17 +306,45 @@ impl Server {
     /// - **Unicast to a known OBU** (dest MAC is in `obu_routes`): forward as
     ///   `DownstreamForward` directly to that OBU's RSU (do **not** write to server TAP).
     /// - **Unicast to unknown dest** (server-destined or unknown): write to server TAP.
+    #[allow(clippy::too_many_arguments)]
     async fn handle_upstream(
         fwd: &UpstreamForward,
         src_addr: SocketAddr,
         obu_routes: &Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
         tun: Option<&SharedTun>,
         enable_encryption: bool,
+        enable_dh: bool,
+        dh_keys: &Arc<RwLock<DhKeyStore>>,
+        crypto_config: CryptoConfig,
         socket: &Arc<UdpSocket>,
     ) {
         // Decrypt the payload if encryption is enabled.
         let tap_frame = if enable_encryption {
-            match node_lib::crypto::decrypt_payload(&fwd.payload) {
+            let decrypt_result = if enable_dh {
+                let key = dh_keys
+                    .read()
+                    .await
+                    .get(&fwd.obu_source_mac)
+                    .map(|k| k.key.clone());
+                if let Some(key) = key {
+                    node_lib::crypto::decrypt_with_config(crypto_config.cipher, &fwd.payload, &key)
+                } else {
+                    // Fallback to fixed key
+                    let fallback = &node_lib::crypto::FIXED_KEY[..crypto_config.cipher.key_len()];
+                    node_lib::crypto::decrypt_with_config(
+                        crypto_config.cipher,
+                        &fwd.payload,
+                        fallback,
+                    )
+                }
+            } else {
+                node_lib::crypto::decrypt_with_config(
+                    crypto_config.cipher,
+                    &fwd.payload,
+                    &node_lib::crypto::FIXED_KEY[..crypto_config.cipher.key_len()],
+                )
+            };
+            match decrypt_result {
                 Ok(plaintext) => plaintext,
                 Err(e) => {
                     tracing::error!(
@@ -300,23 +398,35 @@ impl Server {
                     tracing::error!(error = %e, "Failed to write multicast frame to TAP");
                 }
             }
-            let payload_for_obus = if enable_encryption {
-                match node_lib::crypto::encrypt_payload(&tap_frame) {
-                    Ok(enc) => enc,
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to re-encrypt multicast frame for OBUs");
-                        return;
-                    }
-                }
-            } else {
-                tap_frame.clone()
-            };
             let routes = obu_routes.read().await;
+            let keys = dh_keys.read().await;
             for (_, route) in routes.iter() {
+                let payload_for_obu = if enable_encryption {
+                    let enc_result = Self::encrypt_for_obu(
+                        &tap_frame,
+                        route.vanet_mac,
+                        enable_dh,
+                        &keys,
+                        crypto_config,
+                    );
+                    match enc_result {
+                        Ok(enc) => enc,
+                        Err(e) => {
+                            tracing::error!(
+                                obu = %route.vanet_mac,
+                                error = %e,
+                                "Failed to re-encrypt multicast frame for OBU"
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    tap_frame.clone()
+                };
                 let downstream = DownstreamForward::new(
                     route.vanet_mac,
                     MacAddress::new([0; 6]),
-                    payload_for_obus.clone(),
+                    payload_for_obu,
                 );
                 if let Err(e) = socket.send_to(&downstream.to_bytes(), route.rsu_addr).await {
                     tracing::error!(
@@ -331,7 +441,14 @@ impl Server {
             let route = { obu_routes.read().await.get(&dest_mac).copied() };
             if let Some(route) = route {
                 let payload = if enable_encryption {
-                    match node_lib::crypto::encrypt_payload(&tap_frame) {
+                    let keys = dh_keys.read().await;
+                    match Self::encrypt_for_obu(
+                        &tap_frame,
+                        route.vanet_mac,
+                        enable_dh,
+                        &keys,
+                        crypto_config,
+                    ) {
                         Ok(enc) => enc,
                         Err(e) => {
                             tracing::error!(error = %e, "Failed to re-encrypt frame for OBU L2 switch");
@@ -367,11 +484,15 @@ impl Server {
     }
 
     /// Read frames from TAP, encrypt, and send downstream to the appropriate RSU.
+    #[allow(clippy::too_many_arguments)]
     async fn tap_read_loop(
         tun: SharedTun,
         socket: Arc<UdpSocket>,
         obu_routes: Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
         enable_encryption: bool,
+        enable_dh: bool,
+        dh_keys: Arc<RwLock<DhKeyStore>>,
+        crypto_config: CryptoConfig,
     ) {
         let mut buf = vec![0u8; 65536];
         loop {
@@ -392,31 +513,40 @@ impl Server {
             let dest_mac_bytes: [u8; 6] = frame[..6].try_into().unwrap();
             let dest_mac = MacAddress::new(dest_mac_bytes);
 
-            // Encrypt the frame data for the OBU
-            let payload_data = if enable_encryption {
-                match node_lib::crypto::encrypt_payload(frame) {
-                    Ok(encrypted) => encrypted,
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to encrypt downstream payload");
-                        continue;
-                    }
-                }
-            } else {
-                frame.to_vec()
-            };
-
             // Broadcast (FF:FF:FF:FF:FF:FF) has the group bit set, so is_multicast
             // already covers it — no separate is_broadcast check needed.
             let is_multicast = dest_mac_bytes[0] & 0x01 != 0;
 
             if is_multicast {
-                // Send to all known OBU routes
+                // Send to all known OBU routes, encrypting per-OBU if DH enabled
                 let routes = obu_routes.read().await;
+                let keys = dh_keys.read().await;
                 for (&_tap_mac, route) in routes.iter() {
+                    let payload_data = if enable_encryption {
+                        match Self::encrypt_for_obu(
+                            frame,
+                            route.vanet_mac,
+                            enable_dh,
+                            &keys,
+                            crypto_config,
+                        ) {
+                            Ok(enc) => enc,
+                            Err(e) => {
+                                tracing::error!(
+                                    obu = %route.vanet_mac,
+                                    error = %e,
+                                    "Failed to encrypt broadcast downstream for OBU"
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        frame.to_vec()
+                    };
                     let fwd = DownstreamForward::new(
                         route.vanet_mac,
                         MacAddress::new([0; 6]), // server origin
-                        payload_data.clone(),
+                        payload_data,
                     );
                     if let Err(e) = socket.send_to(&fwd.to_bytes(), route.rsu_addr).await {
                         tracing::error!(
@@ -434,6 +564,28 @@ impl Server {
                 };
 
                 if let Some(route) = route {
+                    let payload_data = if enable_encryption {
+                        let keys = dh_keys.read().await;
+                        match Self::encrypt_for_obu(
+                            frame,
+                            route.vanet_mac,
+                            enable_dh,
+                            &keys,
+                            crypto_config,
+                        ) {
+                            Ok(enc) => enc,
+                            Err(e) => {
+                                tracing::error!(
+                                    obu = %dest_mac,
+                                    error = %e,
+                                    "Failed to encrypt downstream for OBU"
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        frame.to_vec()
+                    };
                     let fwd = DownstreamForward::new(
                         route.vanet_mac,         // VANET MAC for RSU routing lookup
                         MacAddress::new([0; 6]), // server origin
@@ -453,6 +605,109 @@ impl Server {
                     );
                 }
             }
+        }
+    }
+
+    /// Encrypt a payload for a specific OBU, using its DH key if available.
+    fn encrypt_for_obu(
+        plaintext: &[u8],
+        obu_vanet_mac: MacAddress,
+        enable_dh: bool,
+        dh_keys: &DhKeyStore,
+        crypto_config: CryptoConfig,
+    ) -> std::result::Result<Vec<u8>, node_lib::error::NodeError> {
+        if enable_dh {
+            if let Some(obu_key) = dh_keys.get(&obu_vanet_mac) {
+                return node_lib::crypto::encrypt_with_config(
+                    crypto_config.cipher,
+                    plaintext,
+                    &obu_key.key,
+                );
+            }
+        }
+        // Fallback to fixed key
+        let fallback = &node_lib::crypto::FIXED_KEY[..crypto_config.cipher.key_len()];
+        node_lib::crypto::encrypt_with_config(crypto_config.cipher, plaintext, fallback)
+    }
+
+    /// Handle a KeyExchangeForward from an RSU: generate our keypair,
+    /// compute the shared secret, store the per-OBU key, and send a
+    /// KeyExchangeResponse back to the RSU.
+    async fn handle_key_exchange_forward(
+        ke_fwd: &crate::cloud_protocol::KeyExchangeForward,
+        src_addr: SocketAddr,
+        dh_keys: &Arc<RwLock<DhKeyStore>>,
+        crypto_config: CryptoConfig,
+        socket: &Arc<UdpSocket>,
+    ) {
+        // Parse the KeyExchangeInit payload
+        let ke_init = match node_lib::messages::control::key_exchange::KeyExchangeInit::try_from(
+            ke_fwd.payload.as_slice(),
+        ) {
+            Ok(init) => init,
+            Err(e) => {
+                tracing::warn!(
+                    obu = %ke_fwd.obu_mac,
+                    error = %e,
+                    "Failed to parse KeyExchangeInit payload"
+                );
+                return;
+            }
+        };
+
+        let key_id = ke_init.key_id();
+        let peer_pub_bytes = ke_init.public_key();
+
+        // Generate our keypair and compute shared secret
+        let our_keypair = DhKeypair::generate();
+        let our_public = *our_keypair.public.as_bytes();
+
+        let peer_public = x25519_dalek::PublicKey::from(peer_pub_bytes);
+        let shared_secret = our_keypair.diffie_hellman(&peer_public);
+        let derived_key = node_lib::crypto::derive_key(
+            crypto_config.kdf,
+            shared_secret.as_bytes(),
+            key_id,
+            crypto_config.cipher.key_len(),
+        );
+
+        // Store the per-OBU key
+        dh_keys.write().await.insert(
+            ke_fwd.obu_mac,
+            ObuKey {
+                key: derived_key.clone(),
+                key_id,
+                established_at: Instant::now(),
+            },
+        );
+
+        tracing::info!(
+            obu = %ke_fwd.obu_mac,
+            rsu = %ke_fwd.rsu_mac,
+            key_id = key_id,
+            cipher = %crypto_config.cipher,
+            kdf = %crypto_config.kdf,
+            key_len = derived_key.len(),
+            "DH key exchange completed with OBU, session key established"
+        );
+
+        // Build the KeyExchangeReply payload (42 bytes: key_id + public_key + sender)
+        // The "sender" in the reply is [0;6] (server has no VANET MAC)
+        let ke_reply = node_lib::messages::control::key_exchange::KeyExchangeReply::new(
+            key_id,
+            our_public,
+            MacAddress::new([0; 6]), // Server "MAC"
+        );
+        let reply_bytes: Vec<u8> = (&ke_reply).into();
+
+        // Send KeyExchangeResponse back to the RSU
+        let rsp = KeyExchangeResponse::new(ke_fwd.obu_mac, reply_bytes);
+        if let Err(e) = socket.send_to(&rsp.to_bytes(), src_addr).await {
+            tracing::error!(
+                obu = %ke_fwd.obu_mac,
+                error = %e,
+                "Failed to send KeyExchangeResponse to RSU"
+            );
         }
     }
 

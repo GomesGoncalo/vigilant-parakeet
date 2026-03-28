@@ -1,6 +1,7 @@
 use crate::args::ServerArgs;
 use crate::server::{Server, SharedTun};
 use anyhow::Result;
+use node_lib::crypto::CryptoConfig;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
@@ -11,6 +12,8 @@ pub struct ServerBuilder {
     node_name: Option<String>,
     tun: Option<SharedTun>,
     enable_encryption: bool,
+    enable_dh: bool,
+    crypto_config: CryptoConfig,
 }
 
 impl ServerBuilder {
@@ -22,6 +25,8 @@ impl ServerBuilder {
             node_name: None,
             tun: None,
             enable_encryption: false,
+            enable_dh: false,
+            crypto_config: CryptoConfig::default(),
         }
     }
 
@@ -33,6 +38,12 @@ impl ServerBuilder {
             node_name: None,
             tun: None,
             enable_encryption: args.server_params.enable_encryption,
+            enable_dh: args.server_params.enable_dh,
+            crypto_config: CryptoConfig {
+                cipher: args.server_params.cipher,
+                kdf: args.server_params.kdf,
+                dh_group: args.server_params.dh_group,
+            },
         }
     }
 
@@ -67,7 +78,10 @@ impl ServerBuilder {
         if let Some(tun) = self.tun {
             server = server.with_tun(tun);
         }
-        server = server.with_encryption(self.enable_encryption);
+        server = server
+            .with_encryption(self.enable_encryption)
+            .with_dh(self.enable_dh)
+            .with_crypto_config(self.crypto_config);
         let server = Arc::new(server);
         Ok(server)
     }
@@ -104,6 +118,10 @@ mod tests {
             server_params: ServerParameters {
                 port: 7777,
                 enable_encryption: true,
+                enable_dh: false,
+                cipher: node_lib::crypto::SymmetricCipher::default(),
+                kdf: node_lib::crypto::KdfAlgorithm::default(),
+                dh_group: node_lib::crypto::DhGroup::default(),
             },
         };
         let server = ServerBuilder::from_args(args).build().unwrap();
