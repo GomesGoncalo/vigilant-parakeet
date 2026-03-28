@@ -552,14 +552,18 @@ impl Obu {
     fn handle_key_exchange_reply(
         &self,
         ke_reply: &KeyExchangeReply<'_>,
-        msg: &Message<'_>,
+        _msg: &Message<'_>,
     ) -> Result<Option<Vec<ReplyType>>> {
         if !self.args.obu_params.enable_encryption {
             return Ok(None);
         }
 
-        // Check if the message destination is us.
-        let dest = msg.to().unwrap_or(self.device.mac_address());
+        // The sender field carries the final destination OBU MAC (set by the server).
+        // Use it — rather than msg.to() — to decide whether to consume or relay:
+        // msg.to() is always the VANET next-hop (this node) due to per-hop unicast
+        // delivery enforced by the channel MAC filter, so it cannot distinguish
+        // "the reply is for me" from "the reply arrived here via me as a relay hop".
+        let dest = ke_reply.sender();
         if dest != self.device.mac_address() {
             // Not for us — forward down the tree toward the target OBU.
             let routing = self

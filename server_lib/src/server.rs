@@ -752,11 +752,12 @@ impl Server {
         );
 
         // Build the KeyExchangeReply payload (42 bytes: key_id + public_key + sender)
-        // The "sender" in the reply is [0;6] (server has no VANET MAC)
+        // Set sender = obu_mac so relay OBUs know who the final recipient is and
+        // forward the reply hop-by-hop rather than consuming it themselves.
         let ke_reply = node_lib::messages::control::key_exchange::KeyExchangeReply::new(
             key_id,
             our_public,
-            MacAddress::new([0; 6]), // Server "MAC"
+            ke_fwd.obu_mac,
         );
         let reply_bytes: Vec<u8> = (&ke_reply).into();
 
