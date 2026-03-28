@@ -25,7 +25,6 @@ pub struct NodeBuilder {
     pub enable_encryption: bool,
     pub dh_rekey_interval_ms: u64,
     pub dh_key_lifetime_ms: u64,
-    pub dh_max_retries: u32,
     pub dh_reply_timeout_ms: u64,
     pub cipher: SymmetricCipher,
     pub kdf: KdfAlgorithm,
@@ -51,7 +50,6 @@ impl NodeBuilder {
             enable_encryption: false,
             dh_rekey_interval_ms: 43_200_000,
             dh_key_lifetime_ms: 86_400_000,
-            dh_max_retries: 3,
             dh_reply_timeout_ms: 5_000,
             cipher: SymmetricCipher::default(),
             kdf: KdfAlgorithm::default(),
@@ -107,12 +105,6 @@ impl NodeBuilder {
     /// Set the DH key lifetime in milliseconds (default: 86400000 — 24h)
     pub fn with_dh_key_lifetime_ms(mut self, ms: u64) -> Self {
         self.dh_key_lifetime_ms = ms;
-        self
-    }
-
-    /// Set the DH max retries per retry cycle (default: 3)
-    pub fn with_dh_max_retries(mut self, retries: u32) -> Self {
-        self.dh_max_retries = retries;
         self
     }
 

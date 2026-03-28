@@ -263,7 +263,19 @@ impl Rsu {
                         }
                     }
                     let ke_bytes: Vec<u8> = ke_init.into();
-                    let fwd = KeyExchangeForward::new(obu_mac, self.device.mac_address(), ke_bytes);
+                    let fwd =
+                        match KeyExchangeForward::new(obu_mac, self.device.mac_address(), ke_bytes)
+                        {
+                            Ok(f) => f,
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    obu = %obu_mac,
+                                    "Failed to build KeyExchangeForward"
+                                );
+                                return Ok(None);
+                            }
+                        };
                     if let Err(e) = self.cloud_socket.send(&fwd.to_bytes()).await {
                         tracing::warn!(
                             error = %e,

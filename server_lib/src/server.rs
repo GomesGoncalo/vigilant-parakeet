@@ -21,7 +21,7 @@ pub type SharedTun = Arc<Tun>;
 #[derive(Debug, Clone)]
 struct ObuKey {
     /// The derived symmetric key.
-    key: Vec<u8>,
+    key: Arc<[u8]>,
     /// Key ID from the exchange (used for logging/diagnostics).
     #[allow(dead_code)]
     key_id: u32,
@@ -731,10 +731,11 @@ impl Server {
         };
 
         // Store the per-OBU key
+        let key_len = derived_key.len();
         dh_keys.write().await.insert(
             ke_fwd.obu_mac,
             ObuKey {
-                key: derived_key.clone(),
+                key: derived_key.into(),
                 key_id,
                 established_at: Instant::now(),
             },
@@ -746,7 +747,7 @@ impl Server {
             key_id = key_id,
             cipher = %crypto_config.cipher,
             kdf = %crypto_config.kdf,
-            key_len = derived_key.len(),
+            key_len = key_len,
             "DH key exchange completed with OBU, session key established"
         );
 
@@ -760,7 +761,17 @@ impl Server {
         let reply_bytes: Vec<u8> = (&ke_reply).into();
 
         // Send KeyExchangeResponse back to the RSU
-        let rsp = KeyExchangeResponse::new(ke_fwd.obu_mac, reply_bytes);
+        let rsp = match KeyExchangeResponse::new(ke_fwd.obu_mac, reply_bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(
+                    obu = %ke_fwd.obu_mac,
+                    error = %e,
+                    "Failed to build KeyExchangeResponse"
+                );
+                return;
+            }
+        };
         if let Err(e) = socket.send_to(&rsp.to_bytes(), src_addr).await {
             tracing::error!(
                 obu = %ke_fwd.obu_mac,
@@ -1017,7 +1028,7 @@ mod test_helpers_tests {
         );
 
         // Pre-seed a DH session key for this OBU
-        let test_key = vec![0x42u8; crypto_config.cipher.key_len()];
+        let test_key: Arc<[u8]> = vec![0x42u8; crypto_config.cipher.key_len()].into();
         server.dh_keys.write().await.insert(
             obu_vanet_mac,
             ObuKey {

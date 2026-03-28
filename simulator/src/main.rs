@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
                 .with(
                     fmt::layer()
                         .with_thread_ids(true)
-                        .with_span_events(fmt::format::FmtSpan::ACTIVE)
+                        //.with_span_events(fmt::format::FmtSpan::ACTIVE)
                         .pretty(),
                 )
                 .with(EnvFilter::from_default_env())
@@ -58,9 +58,8 @@ async fn main() -> Result<()> {
         } else {
             tracing_subscriber::registry()
                 .with(
-                    fmt::layer()
-                        .with_thread_ids(true)
-                        .with_span_events(fmt::format::FmtSpan::ACTIVE),
+                    fmt::layer().with_thread_ids(true),
+                    //.with_span_events(fmt::format::FmtSpan::ACTIVE),
                 )
                 .with(EnvFilter::from_default_env())
                 .init();
@@ -75,7 +74,7 @@ async fn main() -> Result<()> {
                 .with(
                     fmt::layer()
                         .with_thread_ids(true)
-                        .with_span_events(fmt::format::FmtSpan::ACTIVE)
+                        // .with_span_events(fmt::format::FmtSpan::ACTIVE)
                         .pretty(),
                 )
                 .with(EnvFilter::from_default_env())
@@ -83,9 +82,8 @@ async fn main() -> Result<()> {
         } else {
             tracing_subscriber::registry()
                 .with(
-                    fmt::layer()
-                        .with_thread_ids(true)
-                        .with_span_events(fmt::format::FmtSpan::ACTIVE),
+                    fmt::layer().with_thread_ids(true),
+                    //.with_span_events(fmt::format::FmtSpan::ACTIVE),
                 )
                 .with(EnvFilter::from_default_env())
                 .init();

@@ -80,7 +80,6 @@ mod tests {
                 enable_encryption: false,
                 dh_rekey_interval_ms: 60_000,
                 dh_key_lifetime_ms: 120_000,
-                dh_max_retries: 3,
                 dh_reply_timeout_ms: 5_000,
                 cipher: node_lib::crypto::SymmetricCipher::default(),
                 kdf: node_lib::crypto::KdfAlgorithm::default(),

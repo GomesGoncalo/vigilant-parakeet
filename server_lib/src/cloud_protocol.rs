@@ -1,4 +1,5 @@
 use crate::registry::{self, RegistrationMessage};
+use anyhow::{bail, Result};
 use mac_address::MacAddress;
 
 /// Message type byte for upstream data forwarding (RSU -> Server).
@@ -174,18 +175,19 @@ pub struct KeyExchangeForward {
 pub const KE_PAYLOAD_LEN: usize = 42;
 
 impl KeyExchangeForward {
-    pub fn new(obu_mac: MacAddress, rsu_mac: MacAddress, payload: Vec<u8>) -> Self {
-        debug_assert_eq!(
-            payload.len(),
-            KE_PAYLOAD_LEN,
-            "KeyExchangeForward payload must be exactly {} bytes",
-            KE_PAYLOAD_LEN
-        );
-        Self {
+    pub fn new(obu_mac: MacAddress, rsu_mac: MacAddress, payload: Vec<u8>) -> Result<Self> {
+        if payload.len() != KE_PAYLOAD_LEN {
+            bail!(
+                "KeyExchangeForward payload must be exactly {} bytes, got {}",
+                KE_PAYLOAD_LEN,
+                payload.len()
+            );
+        }
+        Ok(Self {
             obu_mac,
             rsu_mac,
             payload,
-        }
+        })
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -238,17 +240,18 @@ pub struct KeyExchangeResponse {
 }
 
 impl KeyExchangeResponse {
-    pub fn new(obu_dest_mac: MacAddress, payload: Vec<u8>) -> Self {
-        debug_assert_eq!(
-            payload.len(),
-            KE_PAYLOAD_LEN,
-            "KeyExchangeResponse payload must be exactly {} bytes",
-            KE_PAYLOAD_LEN
-        );
-        Self {
+    pub fn new(obu_dest_mac: MacAddress, payload: Vec<u8>) -> Result<Self> {
+        if payload.len() != KE_PAYLOAD_LEN {
+            bail!(
+                "KeyExchangeResponse payload must be exactly {} bytes, got {}",
+                KE_PAYLOAD_LEN,
+                payload.len()
+            );
+        }
+        Ok(Self {
             obu_dest_mac,
             payload,
-        }
+        })
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -445,7 +448,7 @@ mod tests {
         let obu: MacAddress = [1u8; 6].into();
         let rsu: MacAddress = [2u8; 6].into();
         let payload = vec![0xAB; 42];
-        let msg = KeyExchangeForward::new(obu, rsu, payload.clone());
+        let msg = KeyExchangeForward::new(obu, rsu, payload.clone()).unwrap();
         let bytes = msg.to_bytes();
         assert_eq!(bytes.len(), KEY_EXCHANGE_FWD_MIN_LEN);
         let parsed = KeyExchangeForward::try_from_bytes(&bytes).unwrap();
@@ -461,7 +464,7 @@ mod tests {
     fn key_exchange_response_roundtrip() {
         let dest: MacAddress = [3u8; 6].into();
         let payload = vec![0xCD; 42];
-        let msg = KeyExchangeResponse::new(dest, payload.clone());
+        let msg = KeyExchangeResponse::new(dest, payload.clone()).unwrap();
         let bytes = msg.to_bytes();
         assert_eq!(bytes.len(), KEY_EXCHANGE_RSP_MIN_LEN);
         let parsed = KeyExchangeResponse::try_from_bytes(&bytes).unwrap();
@@ -477,7 +480,7 @@ mod tests {
     fn cloud_message_dispatches_key_exchange_forward() {
         let obu: MacAddress = [1u8; 6].into();
         let rsu: MacAddress = [2u8; 6].into();
-        let fwd = KeyExchangeForward::new(obu, rsu, vec![0; 42]);
+        let fwd = KeyExchangeForward::new(obu, rsu, vec![0; 42]).unwrap();
         let bytes = fwd.to_bytes();
         let parsed = CloudMessage::try_from_bytes(&bytes).unwrap();
         assert_eq!(parsed, CloudMessage::KeyExchangeForward(fwd));
@@ -486,7 +489,7 @@ mod tests {
     #[test]
     fn cloud_message_dispatches_key_exchange_response() {
         let dest: MacAddress = [3u8; 6].into();
-        let rsp = KeyExchangeResponse::new(dest, vec![0; 42]);
+        let rsp = KeyExchangeResponse::new(dest, vec![0; 42]).unwrap();
         let bytes = rsp.to_bytes();
         let parsed = CloudMessage::try_from_bytes(&bytes).unwrap();
         assert_eq!(parsed, CloudMessage::KeyExchangeResponse(rsp));

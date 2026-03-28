@@ -183,7 +183,7 @@ impl Routing {
                         seqs.iter()
                             .map(move |(seq, (_, mac, hops, _, _))| (seq, rsu_mac, mac, hops))
                     })
-                    .filter(|(_, rsu_mac, _, _)| rsu_mac == &&src)
+                    .filter(|(_, rsu_mac, mac, _)| rsu_mac == &&src && *mac != &src)
                     .collect();
                 upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
                 let mut seen: std::collections::HashSet<MacAddress> =
@@ -302,6 +302,8 @@ impl Routing {
                 ),
             );
         }
+        // entry is no longer used after this point; NLL ends the borrow here so
+        // entry_from can take its own mutable borrow of self.routes below.
 
         let entry_from = self
             .routes
@@ -341,8 +343,7 @@ impl Routing {
 
         // If we've already seen this heartbeat id for the given source, we've now ensured
         // the adjacency entry for pkt.from(), but we should not forward or reply again.
-        // However, refresh selection/cached candidates to incorporate the newly observed
-        // neighbor in the N-best list (hysteresis preserves current primary).
+        // Refresh selection/cached candidates to incorporate the newly observed neighbor.
         if seen_seq {
             let _ = self.select_and_cache_upstream(message.source());
             return Ok(None);
@@ -435,17 +436,61 @@ impl Routing {
 
         // Decide action and emit a trace-level log so we can inspect decisions
         // in live runs. Action values:
-        //  - "bail" : next_upstream == message.sender() (genuine loop)
-        //  - "skip_forward" : pkt.from == next_upstream (would bounce)
-        //  - "forward" : safe to forward toward next_upstream
+        //  - "bail"           : next_upstream == message.sender() with no viable alternative
+        //  - "skip_forward"   : pkt.from == next_upstream (would bounce)
+        //  - "forward"        : safe to forward toward next_upstream
+        //  - "forward_cached" : next_upstream == sender (would loop), but cached upstream
+        //                       provides a viable alternative forwarding path
         let pkt_from = pkt.from()?;
         let sender = message.sender();
-        let action = if next_upstream_copy == sender {
-            "bail"
+
+        // When the seq-specific next_upstream equals the reply sender a direct forward
+        // would loop.  Try three alternatives before bailing:
+        //
+        //  1. Globally-cached upstream (set by select_and_cache_upstream on prior seqs)
+        //  2. Any other next_upstream recorded in a different seq entry for this RSU
+        //  3. The RSU source itself (forward directly; works whenever obu5 has a link to RSU)
+        //
+        // This handles the mutual-loop race where two peer OBUs relay the same heartbeat
+        // to each other before either receives the RSU's own broadcast, causing each to
+        // record the other as next_upstream for that seq.  The race is most common when
+        // the direct RSU→obu5 link has packet loss (loss: 0.2 in the example topology),
+        // so obu5 falls back to a peer relay and both peers' next_upstream values point at
+        // each other.
+        let (action, forward_to) = if next_upstream_copy == sender {
+            let alt = self
+                .cache
+                .get_cached_upstream()
+                .filter(|&c| c != sender && c != pkt_from)
+                .or_else(|| {
+                    // Scan all recorded seq entries for this RSU for any non-looping upstream.
+                    source_entries.values().find_map(|(_, mac, _, _, _)| {
+                        if *mac != sender && *mac != pkt_from {
+                            Some(*mac)
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .or_else(|| {
+                    // Last resort: forward directly to the RSU source.
+                    let rsu_mac = message.source();
+                    if rsu_mac != sender && rsu_mac != pkt_from {
+                        Some(rsu_mac)
+                    } else {
+                        None
+                    }
+                });
+
+            if let Some(alt_mac) = alt {
+                ("forward_cached", alt_mac)
+            } else {
+                ("bail", next_upstream_copy)
+            }
         } else if pkt_from == next_upstream_copy {
-            "skip_forward"
+            ("skip_forward", next_upstream_copy)
         } else {
-            "forward"
+            ("forward", next_upstream_copy)
         };
 
         // Log the decision at appropriate level
@@ -457,6 +502,15 @@ impl Routing {
                     message_sender = %sender,
                     next_upstream = %next_upstream_copy,
                     "Skipping forward to prevent loop"
+                );
+            }
+            "forward_cached" => {
+                tracing::debug!(
+                    pkt_from = %pkt_from,
+                    message_sender = %sender,
+                    next_upstream = %next_upstream_copy,
+                    cached_upstream = %forward_to,
+                    "seq next_upstream would loop; forwarding via cached upstream"
                 );
             }
             _ => {
@@ -556,7 +610,9 @@ impl Routing {
         // If the reply arrived from the node we'd forward to, don't forward
         // it back: that would produce an immediate bounce. Drop forwarding
         // (but keep the recorded downstream information above).
-        if pkt.from()? == next_upstream_copy {
+        // Exception: when we're using a cached upstream fallback (forward_cached),
+        // pkt_from == next_upstream_copy is intentional — we still forward to forward_to.
+        if action == "skip_forward" {
             return Ok(None);
         }
 
@@ -565,7 +621,7 @@ impl Routing {
         // Use flat serialization for better performance (8.7x faster)
         let wire: Vec<u8> = (&Message::new(
             mac,
-            next_upstream_copy,
+            forward_to,
             PacketType::Control(Control::HeartbeatReply(message.clone())),
         ))
             .into();
@@ -608,10 +664,16 @@ impl Routing {
     /// Returns None if no route exists.
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
         let Some(target_mac) = mac else {
-            // If we have a cached upstream MAC, compute the full route to it
-            // (hops/latency) by delegating to the regular selection path.
-            if let Some(cached_mac) = self.cache.get_cached_upstream() {
-                return self.get_route_to(Some(cached_mac));
+            // Use the RSU source MAC (cached_source) to compute the upstream route.
+            //
+            // Using cached_upstream (the next-hop) directly would re-enter
+            // get_route_to with the relay OBU's MAC, which is not an RSU source
+            // and triggers the downstream lookup — which fails for nodes that only
+            // receive RSU heartbeats via a relay (multi-hop nodes like obu5).
+            // Using cached_source (RSU MAC) reaches the RSU-keyed branch and
+            // returns the correct Route{mac=relay_obu, hops=N} for data forwarding.
+            if let Some(source_mac) = self.cache.get_cached_source() {
+                return self.get_route_to(Some(source_mac));
             }
             return None;
         };

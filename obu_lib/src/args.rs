@@ -24,10 +24,6 @@ pub struct ObuParameters {
     #[arg(long, default_value_t = 86_400_000)]
     pub dh_key_lifetime_ms: u64,
 
-    /// Number of DH key exchange attempts per retry cycle before re-initiating
-    #[arg(long, default_value_t = 3)]
-    pub dh_max_retries: u32,
-
     /// Timeout in milliseconds to wait for a DH reply before retrying
     #[arg(long, default_value_t = 5_000)]
     pub dh_reply_timeout_ms: u64,

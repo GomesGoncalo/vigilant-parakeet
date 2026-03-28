@@ -60,14 +60,14 @@ fn heartbeat_reply_from_next_hop_does_not_bail() {
 }
 
 #[test]
-fn heartbeat_reply_from_sender_triggers_bail() {
+fn heartbeat_reply_with_loop_falls_back_to_rsu_direct() {
     let args = crate::test_helpers::mk_test_obu_args();
 
     let boot = Instant::now();
     let mut routing = Routing::new(&args, &boot).expect("routing built");
 
-    // Heartbeat originates from A, observed via B (pkt.from)
-    let hb_source: MacAddress = [10u8; 6].into(); // A
+    // Heartbeat originates from A (RSU), observed via B (pkt.from)
+    let hb_source: MacAddress = [10u8; 6].into(); // A = RSU
     let pkt_from: MacAddress = [20u8; 6].into(); // B (next hop)
     let our_mac: MacAddress = [9u8; 6].into();
 
@@ -84,19 +84,200 @@ fn heartbeat_reply_from_sender_triggers_bail() {
         .expect("handled hb");
 
     // Now construct a HeartbeatReply where the HeartbeatReply::sender() is
-    // equal to our recorded next_upstream (i.e., message.sender == next_upstream)
-    let reply_sender: MacAddress = pkt_from; // B == next_upstream
+    // equal to our recorded next_upstream (i.e., message.sender == next_upstream),
+    // but some other node forwarded it.
+    let reply_sender: MacAddress = pkt_from; // B == next_upstream (would loop)
     let hbr = HeartbeatReply::from_sender(&hb, reply_sender);
-    let reply_from: MacAddress = [30u8; 6].into(); // some other node forwarded it
+    let reply_from: MacAddress = [30u8; 6].into(); // a different relay node
     let reply_msg = Message::new(
         reply_from,
         [255u8; 6].into(),
         PacketType::Control(Control::HeartbeatReply(hbr.clone())),
     );
 
-    // This should bail with an error indicating a loop was detected.
+    // Even though next_upstream == sender, we should NOT bail: the RSU source
+    // (hb_source=[10u8;6]) is different from sender and pkt_from, so we fall
+    // back to forwarding directly to the RSU.
+    let res = routing.handle_heartbeat_reply(&reply_msg, our_mac);
+    assert!(
+        res.is_ok(),
+        "should forward via RSU direct instead of bailing: {res:?}"
+    );
+    assert!(
+        res.unwrap().is_some(),
+        "should produce a forwarded reply to RSU"
+    );
+}
+
+#[test]
+fn heartbeat_reply_bails_only_when_rsu_direct_also_loops() {
+    // Bail is only reachable when message.source() (RSU MAC) is also the loop
+    // partner.  Construct an artificial scenario: set the RSU source MAC equal
+    // to both `sender` and `pkt_from` of the HeartbeatReply.
+    let args = crate::test_helpers::mk_test_obu_args();
+    let boot = Instant::now();
+    let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+    // Use the same MAC for both source (RSU) and reply sender to exhaust fallbacks.
+    let shared_mac: MacAddress = [20u8; 6].into(); // acts as both RSU and loop peer
+    let our_mac: MacAddress = [9u8; 6].into();
+
+    let hb = Heartbeat::new(std::time::Duration::from_millis(1), 2u32, shared_mac);
+    let hb_msg = Message::new(
+        shared_mac,
+        [255u8; 6].into(),
+        PacketType::Control(Control::Heartbeat(hb.clone())),
+    );
+    let _ = routing
+        .handle_heartbeat(&hb_msg, our_mac)
+        .expect("handled hb");
+
+    // sender == next_upstream == pkt_from == message.source() — every fallback loops.
+    let hbr = HeartbeatReply::from_sender(&hb, shared_mac);
+    let reply_msg = Message::new(
+        shared_mac,
+        [255u8; 6].into(),
+        PacketType::Control(Control::HeartbeatReply(hbr)),
+    );
     let res = routing.handle_heartbeat_reply(&reply_msg, our_mac);
     assert!(res.is_err());
-    let err = res.unwrap_err();
-    assert!(format!("{}", err).contains("loop detected"));
+    assert!(format!("{}", res.unwrap_err()).contains("loop detected"));
+}
+
+// Regression test for the mutual-loop scenario described in the obu5/RSU visibility bug:
+//
+// When two OBUs are in range of each other and the RSU, timing can cause each to first
+// receive a heartbeat seq forwarded BY the other, recording each other as next_upstream.
+// Without the fix, both nodes bail ("loop detected") on each other's HeartbeatReply,
+// preventing either reply from reaching the RSU.
+//
+// The fix: when next_upstream == sender (loop detected for this seq), fall back to the
+// globally-cached upstream as an alternative forwarding path, provided it differs from
+// both the sender and pkt_from (otherwise bail as before).
+#[test]
+fn mutual_loop_resolved_via_cached_upstream() {
+    use std::time::Duration;
+
+    let args = crate::test_helpers::mk_test_obu_args();
+    let boot = Instant::now();
+    let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+    let rsu_mac: MacAddress = [1u8; 6].into();
+    let peer_mac: MacAddress = [2u8; 6].into();
+    let our_mac: MacAddress = [9u8; 6].into();
+
+    // Step 1: First, establish a correct route to RSU via rsu_mac itself (seq=1),
+    // so the cached upstream is set to rsu_mac.
+    let hb_seq1 = Heartbeat::new(Duration::from_millis(1), 1u32, rsu_mac);
+    let msg_seq1 = Message::new(
+        rsu_mac,
+        [255u8; 6].into(),
+        PacketType::Control(Control::Heartbeat(hb_seq1.clone())),
+    );
+    let _ = routing
+        .handle_heartbeat(&msg_seq1, our_mac)
+        .expect("handled seq1");
+    let _ = routing.select_and_cache_upstream(rsu_mac);
+    assert_eq!(
+        routing.get_cached_upstream(),
+        Some(rsu_mac),
+        "cached upstream should be rsu_mac after seq1"
+    );
+
+    // Step 2: For seq=2, receive heartbeat from peer_mac first → next_upstream = peer_mac.
+    let hb_seq2 = Heartbeat::new(Duration::from_millis(1), 2u32, rsu_mac);
+    let msg_seq2_via_peer = Message::new(
+        peer_mac,
+        [255u8; 6].into(),
+        PacketType::Control(Control::Heartbeat(hb_seq2.clone())),
+    );
+    let _ = routing
+        .handle_heartbeat(&msg_seq2_via_peer, our_mac)
+        .expect("handled seq2 via peer");
+
+    // Step 3: HeartbeatReply for seq=2 with sender=peer_mac (== next_upstream for seq=2).
+    // Old behavior: bail with "loop detected".
+    // New behavior: cached upstream is rsu_mac (≠ peer_mac, ≠ pkt_from=peer_mac)
+    //               → forward_cached to rsu_mac, return Ok(Some(...)).
+    let hbr = HeartbeatReply::from_sender(&hb_seq2, peer_mac);
+    let reply_msg = Message::new(
+        peer_mac,
+        [255u8; 6].into(),
+        PacketType::Control(Control::HeartbeatReply(hbr)),
+    );
+    let res = routing.handle_heartbeat_reply(&reply_msg, our_mac);
+    assert!(
+        res.is_ok(),
+        "should not bail when cached upstream provides a viable alternative: {res:?}"
+    );
+    let out = res.unwrap();
+    assert!(
+        out.is_some(),
+        "should produce a forwarded reply via the cached upstream"
+    );
+}
+
+// Regression test for the worst-case mutual-loop scenario: every recorded upstream
+// (including the cached one) is the looping peer. The fallback should still succeed by
+// forwarding the reply directly to the RSU source.
+#[test]
+fn mutual_loop_resolved_via_rsu_direct_when_all_entries_loop() {
+    use std::time::Duration;
+
+    let args = crate::test_helpers::mk_test_obu_args();
+    let boot = Instant::now();
+    let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+    let rsu_mac: MacAddress = [1u8; 6].into();
+    let peer_mac: MacAddress = [2u8; 6].into();
+    let our_mac: MacAddress = [9u8; 6].into();
+
+    // Step 1: For seq=1, also receive heartbeat from peer_mac first so that
+    // ALL recorded upstreams for rsu_mac point at peer_mac.
+    let hb_seq1 = Heartbeat::new(Duration::from_millis(1), 1u32, rsu_mac);
+    let msg_seq1_via_peer = Message::new(
+        peer_mac,
+        [255u8; 6].into(),
+        PacketType::Control(Control::Heartbeat(hb_seq1.clone())),
+    );
+    let _ = routing
+        .handle_heartbeat(&msg_seq1_via_peer, our_mac)
+        .expect("handled seq1 via peer");
+    // cached upstream is now peer_mac (only upstream seen so far)
+    let _ = routing.select_and_cache_upstream(rsu_mac);
+    assert_eq!(
+        routing.get_cached_upstream(),
+        Some(peer_mac),
+        "cached upstream is peer_mac when peer is the only seen upstream"
+    );
+
+    // Step 2: For seq=2, also receive from peer_mac first.
+    let hb_seq2 = Heartbeat::new(Duration::from_millis(1), 2u32, rsu_mac);
+    let msg_seq2_via_peer = Message::new(
+        peer_mac,
+        [255u8; 6].into(),
+        PacketType::Control(Control::Heartbeat(hb_seq2.clone())),
+    );
+    let _ = routing
+        .handle_heartbeat(&msg_seq2_via_peer, our_mac)
+        .expect("handled seq2 via peer");
+
+    // Step 3: HeartbeatReply for seq=2 where sender=peer_mac (loop), cached=peer_mac (loops
+    // too), all seq entries have next_upstream=peer_mac. Only RSU direct remains.
+    let hbr = HeartbeatReply::from_sender(&hb_seq2, peer_mac);
+    let reply_msg = Message::new(
+        peer_mac,
+        [255u8; 6].into(),
+        PacketType::Control(Control::HeartbeatReply(hbr)),
+    );
+    let res = routing.handle_heartbeat_reply(&reply_msg, our_mac);
+    assert!(
+        res.is_ok(),
+        "should not bail when RSU direct path is available: {res:?}"
+    );
+    let out = res.unwrap();
+    assert!(
+        out.is_some(),
+        "should produce a forwarded reply via RSU direct"
+    );
 }

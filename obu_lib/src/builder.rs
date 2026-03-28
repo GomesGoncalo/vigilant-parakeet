@@ -49,7 +49,6 @@ impl ObuBuilder {
         inner.enable_encryption = args.obu_params.enable_encryption;
         inner.dh_rekey_interval_ms = args.obu_params.dh_rekey_interval_ms;
         inner.dh_key_lifetime_ms = args.obu_params.dh_key_lifetime_ms;
-        inner.dh_max_retries = args.obu_params.dh_max_retries;
         inner.dh_reply_timeout_ms = args.obu_params.dh_reply_timeout_ms;
         inner.cipher = args.obu_params.cipher;
         inner.kdf = args.obu_params.kdf;
@@ -102,12 +101,6 @@ impl ObuBuilder {
     /// Set the DH key lifetime in milliseconds (default: 120000)
     pub fn with_dh_key_lifetime_ms(mut self, ms: u64) -> Self {
         self.inner = self.inner.with_dh_key_lifetime_ms(ms);
-        self
-    }
-
-    /// Set the DH max retries per retry cycle (default: 3)
-    pub fn with_dh_max_retries(mut self, retries: u32) -> Self {
-        self.inner = self.inner.with_dh_max_retries(retries);
         self
     }
 
@@ -203,7 +196,6 @@ impl ObuBuilder {
                 enable_encryption: self.inner.enable_encryption,
                 dh_rekey_interval_ms: self.inner.dh_rekey_interval_ms,
                 dh_key_lifetime_ms: self.inner.dh_key_lifetime_ms,
-                dh_max_retries: self.inner.dh_max_retries,
                 dh_reply_timeout_ms: self.inner.dh_reply_timeout_ms,
                 cipher: self.inner.cipher,
                 kdf: self.inner.kdf,
@@ -227,7 +219,6 @@ mod tests {
         assert!(!builder.inner.enable_encryption);
         assert_eq!(builder.inner.dh_rekey_interval_ms, 43_200_000);
         assert_eq!(builder.inner.dh_key_lifetime_ms, 86_400_000);
-        assert_eq!(builder.inner.dh_max_retries, 3);
         assert_eq!(builder.inner.dh_reply_timeout_ms, 5_000);
     }
 
@@ -241,7 +232,6 @@ mod tests {
             .with_encryption(true)
             .with_dh_rekey_interval_ms(30_000)
             .with_dh_key_lifetime_ms(90_000)
-            .with_dh_max_retries(5)
             .with_dh_reply_timeout_ms(2_000);
 
         assert_eq!(builder.inner.ip, Some("192.168.1.100".parse().unwrap()));
@@ -251,7 +241,6 @@ mod tests {
         assert!(builder.inner.enable_encryption);
         assert_eq!(builder.inner.dh_rekey_interval_ms, 30_000);
         assert_eq!(builder.inner.dh_key_lifetime_ms, 90_000);
-        assert_eq!(builder.inner.dh_max_retries, 5);
         assert_eq!(builder.inner.dh_reply_timeout_ms, 2_000);
     }
 
@@ -268,7 +257,6 @@ mod tests {
                 enable_encryption: true,
                 dh_rekey_interval_ms: 45_000,
                 dh_key_lifetime_ms: 90_000,
-                dh_max_retries: 2,
                 dh_reply_timeout_ms: 3_000,
                 cipher: node_lib::crypto::SymmetricCipher::default(),
                 kdf: node_lib::crypto::KdfAlgorithm::default(),

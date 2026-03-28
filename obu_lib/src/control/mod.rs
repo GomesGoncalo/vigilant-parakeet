@@ -97,7 +97,6 @@ impl Obu {
             kdf = %obu.crypto_config.kdf,
             dh_rekey_interval_ms = obu.args.obu_params.dh_rekey_interval_ms,
             dh_key_lifetime_ms = obu.args.obu_params.dh_key_lifetime_ms,
-            dh_max_retries = obu.args.obu_params.dh_max_retries,
             dh_reply_timeout_ms = obu.args.obu_params.dh_reply_timeout_ms,
             "OBU initialized"
         );

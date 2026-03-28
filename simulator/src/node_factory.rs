@@ -149,11 +149,6 @@ pub fn create_node_from_settings(
             .ok()
             .and_then(|v| u64::try_from(v).ok())
             .unwrap_or(dh_key_lifetime_ms / 2);
-        let dh_max_retries = settings
-            .get_int("dh_max_retries")
-            .ok()
-            .and_then(|v| u32::try_from(v).ok())
-            .unwrap_or(3);
         let dh_reply_timeout_ms = settings
             .get_int("dh_reply_timeout_ms")
             .ok()
@@ -178,7 +173,6 @@ pub fn create_node_from_settings(
                 enable_encryption,
                 dh_rekey_interval_ms,
                 dh_key_lifetime_ms,
-                dh_max_retries,
                 dh_reply_timeout_ms,
                 cipher: crypto_config.cipher,
                 kdf: crypto_config.kdf,
