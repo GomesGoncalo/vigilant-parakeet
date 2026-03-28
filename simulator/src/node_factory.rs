@@ -254,21 +254,50 @@ pub fn create_node_from_settings(
 
 /// Parse crypto configuration from settings, falling back to defaults.
 fn parse_crypto_config(settings: &Config) -> node_lib::crypto::CryptoConfig {
-    let cipher = settings
-        .get_string("cipher")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_default();
-    let kdf = settings
-        .get_string("kdf")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_default();
-    let dh_group = settings
-        .get_string("dh_group")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_default();
+    let cipher = match settings.get_string("cipher") {
+        Ok(raw) => match raw.parse() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                tracing::warn!(
+                    %raw,
+                    %err,
+                    "Invalid cipher in configuration, falling back to default"
+                );
+                Default::default()
+            }
+        },
+        Err(_) => Default::default(),
+    };
+
+    let kdf = match settings.get_string("kdf") {
+        Ok(raw) => match raw.parse() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                tracing::warn!(
+                    %raw,
+                    %err,
+                    "Invalid kdf in configuration, falling back to default"
+                );
+                Default::default()
+            }
+        },
+        Err(_) => Default::default(),
+    };
+
+    let dh_group = match settings.get_string("dh_group") {
+        Ok(raw) => match raw.parse() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                tracing::warn!(
+                    %raw,
+                    %err,
+                    "Invalid dh_group in configuration, falling back to default"
+                );
+                Default::default()
+            }
+        },
+        Err(_) => Default::default(),
+    };
     node_lib::crypto::CryptoConfig {
         cipher,
         kdf,
