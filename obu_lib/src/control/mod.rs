@@ -92,7 +92,7 @@ impl Obu {
             cached_candidates = obu.args.obu_params.cached_candidates,
             encryption = obu.args.obu_params.enable_encryption,
             cipher = %obu.crypto_config.cipher,
-            encryption = obu.args.obu_params.enable_encryption,
+            dh_enabled = obu.args.obu_params.enable_encryption,
             dh_group = %obu.crypto_config.dh_group,
             kdf = %obu.crypto_config.kdf,
             dh_rekey_interval_ms = obu.args.obu_params.dh_rekey_interval_ms,
