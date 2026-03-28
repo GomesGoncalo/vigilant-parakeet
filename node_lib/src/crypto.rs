@@ -9,7 +9,7 @@ use sha2::{Sha256, Sha384, Sha512};
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
 
 /// HKDF info string for deriving keys from DH shared secrets.
-const HKDF_INFO: &[u8] = b"vigilant-parakeet-dh-aes256gcm";
+const HKDF_INFO: &[u8] = b"vigilant-parakeet-dh";
 
 // ── Configurable cipher suite enums ────────────────────────────────
 
