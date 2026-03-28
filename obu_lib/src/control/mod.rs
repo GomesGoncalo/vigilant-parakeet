@@ -359,12 +359,10 @@ impl Obu {
                             let payload_data = if enable_encryption {
                                 // Always use server_virtual_mac() — the key is
                                 // negotiated with the server, not the RSU.
-                                let dh_key = {
-                                    let dh_store_guard = dh_store
-                                        .read()
-                                        .expect("dh key store read lock poisoned");
-                                    dh_store_guard.get_key(server_virtual_mac())
-                                };
+                                let dh_store_guard = dh_store
+                                    .read()
+                                    .expect("dh key store read lock poisoned");
+                                let dh_key = dh_store_guard.get_key(server_virtual_mac());
                                 let Some(key) = dh_key else {
                                     tracing::debug!(
                                         size = y.len(),
@@ -525,7 +523,7 @@ impl Obu {
     fn handle_key_exchange_init(
         &self,
         ke_init: &KeyExchangeInit<'_>,
-        msg: &Message<'_>,
+        _msg: &Message<'_>,
     ) -> Result<Option<Vec<ReplyType>>> {
         // OBUs forward KeyExchangeInit up the tree toward the server.
         let routing = self
