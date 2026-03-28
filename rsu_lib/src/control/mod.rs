@@ -235,30 +235,33 @@ impl Rsu {
             }
             PacketType::Control(Control::KeyExchangeInit(ke_init)) => {
                 // Relay KeyExchangeInit from OBU to server via cloud protocol.
-                // Use the VANET message `from()` as the authoritative OBU MAC,
-                // not the payload's ke_init.sender() which could be spoofed.
+                // Use the originating OBU MAC from the payload (ke_init.sender())
+                // as the authoritative identifier, since KeyExchangeInit may be
+                // forwarded hop-by-hop and msg.from() only reflects the last hop.
                 if self.args.rsu_params.server_ip.is_some() {
-                    let obu_mac = match msg.from() {
+                    let obu_mac = ke_init.sender();
+
+                    // Optionally use the VANET frame source only for diagnostics
+                    // and anti-spoofing heuristics, but do not change the
+                    // authoritative OBU MAC or drop the message based on it.
+                    match msg.from() {
                         Ok(from_mac) => {
-                            let claimed = ke_init.sender();
-                            if from_mac != claimed {
+                            if from_mac != obu_mac {
                                 tracing::warn!(
                                     from = %from_mac,
-                                    claimed = %claimed,
-                                    "Mismatching OBU MAC in KeyExchangeInit; using frame source"
+                                    claimed = %obu_mac,
+                                    "Mismatching OBU MAC in KeyExchangeInit; using payload sender()"
                                 );
                             }
-                            from_mac
                         }
                         Err(e) => {
                             tracing::warn!(
                                 error = %e,
-                                "Failed to parse source MAC in KeyExchangeInit; dropping message"
+                                obu = %obu_mac,
+                                "Failed to parse source MAC in KeyExchangeInit frame; proceeding with payload sender()"
                             );
-                            // Do not trust spoofable ke_init.sender() when the frame source MAC is invalid.
-                            return Ok(None);
                         }
-                    };
+                    }
                     let ke_bytes: Vec<u8> = ke_init.into();
                     let fwd = KeyExchangeForward::new(obu_mac, self.device.mac_address(), ke_bytes);
                     if let Err(e) = self.cloud_socket.send(&fwd.to_bytes()).await {
