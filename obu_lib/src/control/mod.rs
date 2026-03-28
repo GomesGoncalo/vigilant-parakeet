@@ -537,10 +537,9 @@ impl Obu {
             return Ok(None);
         };
 
-        let from = msg.from().unwrap_or(self.device.mac_address());
         let init = KeyExchangeInit::new(ke_init.key_id(), ke_init.public_key(), ke_init.sender());
         let fwd = Message::new(
-            from,
+            self.device.mac_address(),
             upstream.mac,
             PacketType::Control(Control::KeyExchangeInit(init)),
         );
