@@ -1,4 +1,104 @@
-# node_lib crate — architecture (detailed)
+# node_lib crate — architecture
+
+Purpose: shared building blocks used by `obu_lib`, `rsu_lib`, `server_lib`, and `simulator`.
+Provides wire protocol types, cryptography, data-path helpers, the `Node` trait, a buffer pool, and test infrastructure.
+
+## Module map
+
+```mermaid
+flowchart TB
+  subgraph node_lib
+    TR["Node trait (lib.rs)"]
+    AR["args:: (NodeType, Args, NodeParameters)"]
+    MS["messages:: (Heartbeat, HeartbeatReply, Data, KeyExchange)"]
+    CR["crypto:: (X25519, HKDF, AES-256-GCM, AES-128-GCM, ChaCha20)"]
+    DA["data:: (obu, rsu — data path helpers)"]
+    CU["control:: (routing_utils, route, client_cache, node, batch)"]
+    MET["metrics:: (feature-gated atomic counters)"]
+    BP["buffer_pool:: (reusable byte buffers)"]
+    BU["builder:: (NodeBuilder helper)"]
+    TH["test_helpers:: (hub, util)"]
+  end
+
+  CU --> MS
+  CU --> MET
+  CR --> MS
+  DA --> MS
+  CU --> Common["common (device, tun)"]
+  ObuLib["obu_lib"] --> CU
+  ObuLib --> CR
+  RsuLib["rsu_lib"] --> CU
+  ServerLib["server_lib"] --> CR
+```
+
+## Responsibilities
+
+### `args`
+- `NodeType` enum: `Rsu | Obu | Server`
+- `Args` / `NodeParameters`: generic CLI args used by the `node` binary and parsed by the simulator's node_factory.
+
+### `messages`
+Wire-level encoders/decoders (all implement `TryFrom<&[u8]>` + `Into<Vec<u8>>`):
+- `Heartbeat` — periodic beacon from RSU (MAC, seq_id, hop_count)
+- `HeartbeatReply` — reply from OBU/relay back toward RSU
+- `Data::{Upstream, Downstream}` — payload wrappers
+- `KeyExchangeInit` / `KeyExchangeReply` — 42-byte DH handshake messages
+- `PacketType` / `Message` — outer container with type discriminant
+
+### `crypto`
+Full configurable cipher suite:
+- DH: X25519 (`DhKeypair`, `generate_ephemeral_keypair`)
+- KDF: HKDF-SHA256/384/512 (`derive_key`, `derive_key_from_shared_secret`)
+- Symmetric: AES-256-GCM (default), AES-128-GCM, ChaCha20-Poly1305
+- Wire overhead: 28 bytes (12 nonce + 16 tag)
+- `CryptoConfig` bundles all three choices; `SymmetricCipher`, `KdfAlgorithm`, `DhGroup` are all `FromStr`/`Display`
+
+### `data`
+Data-path processing split by node type:
+- `data::obu` — OBU-side TAP frame handling
+- `data::rsu` — RSU-side frame forwarding helpers
+
+### `control`
+Shared routing utilities consumed by `obu_lib` and `rsu_lib`:
+- `route` — `Route` data structure
+- `routing_utils` — common selection helpers
+- `client_cache` — MAC address mapping cache
+- `node` — `ReplyType::{WireFlat, TapFlat}` and debug helpers
+- `batch` — batched frame processing
+
+### `metrics`
+Feature-gated (`--features stats`) atomic counters: `loop_detected_count`, `cache_select_count`, `cache_clear_count`. Zero-cost when disabled.
+
+### `buffer_pool`
+Reusable fixed-size byte buffer pool to reduce allocation pressure on the hot packet path.
+
+### `Node` trait
+```rust
+pub trait Node: Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+```
+Implemented by `obu_lib::Obu`, `rsu_lib::Rsu`, and `server_lib::Server` for uniform handling in the simulator.
+
+### `test_helpers`
+Always compiled (no feature gate needed for integration tests):
+- `hub::Hub` — in-process programmable switch with per-link latency/loss injection and watch hooks
+- `util::mk_shim_pair()` — creates paired virtual TUN channels for non-privileged tests
+
+## Testing
+
+```sh
+cargo test -p node_lib                          # unit + integration
+cargo test -p node_lib --features stats         # includes metric counter tests
+RUST_LOG=trace cargo test -p node_lib -- <name> -- --nocapture
+```
+
+Integration test files (in `node_lib/tests/`):
+- `integration_flow`, `integration_topology`, `integration_two_hop`
+- `integration_encryption`, `integration_broadcast_encryption`
+- `integration_failover_send_error`, `integration_loop_repro`
+- `integration_latency_measurement_mocked_time`
+- `routing_integration`
 
 Purpose: shared building blocks used by the concrete node crates (`obu_lib` and `rsu_lib`) and the simulator.
 This crate focuses on cross-cutting logic and types: message formats, crypto helpers, metrics, and

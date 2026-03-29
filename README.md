@@ -49,15 +49,17 @@ namespaces) and the `visualization` UI (browser-based dashboard).
 
 ## Project structure
 
-- `common/` — shared data types and utilities used across crates.
-- `node_lib/` — shared building blocks (messages, crypto, metrics, routing utils).
-- `obu_lib/` — OBU node implementation and CLI args.
-- `rsu_lib/` — RSU node implementation and CLI args.
-- `node/` — binary crate exposing subcommands `node obu` and `node rsu`.
-- `simulator/` — orchestrates multiple nodes in network namespaces and exposes an HTTP control API.
-- `visualization/` — front-end app to inspect network topology and live stats.
+- `common/` — shared OS-level abstractions: `Tun` trait (with test shim), `Device`, `NetworkInterface`, `ChannelParameters`, optional `stats`.
+- `node_lib/` — shared protocol building blocks: wire messages, crypto (X25519/HKDF/AEAD), data-path helpers, `Node` trait, buffer pool, test infrastructure.
+- `obu_lib/` — OBU node: control plane, routing (N-best upstream caching, failover), DH key store, TAP session.
+- `rsu_lib/` — RSU node: heartbeat emission, routing reply tracking, client cache, opaque upstream forwarding to server via UDP. **No TAP device.**
+- `server_lib/` — Server node: UDP cloud endpoint, OBU registry, per-OBU DH key management, payload decryption, virtual TAP injection.
+- `node/` — binary crate with three subcommands: `node obu`, `node rsu`, `node server`.
+- `simulator/` — orchestrates multiple nodes in network namespaces, applies per-link `tc netem` rules, and exposes an HTTP control API and optional TUI.
+- `visualization/` — Yew/WASM browser app polling the simulator HTTP API.
+- `scripts_tools/` — experiment data analysis CLI: `parse-band`, `build-summary`, `merge-latency`, `ns-addrs`, `generate-pairs`, `validate-configs`, `autofix-configs`.
 
-See top-level `Cargo.toml` for the workspace and crate manifests.
+See `ARCHITECTURE.md` for the three-tier network model (VANET / cloud UDP / virtual TAP) and `server_lib/ARCHITECTURE.md` for the cloud protocol wire format.
 
 ## Prerequisites
 

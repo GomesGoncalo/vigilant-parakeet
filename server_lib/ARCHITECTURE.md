@@ -1,8 +1,121 @@
-# Server Library Architecture
+# server_lib crate — architecture
 
-## Overview
+Purpose: the server-side endpoint in the three-tier vehicular network. Receives upstream data from RSUs over UDP, maintains per-OBU DH-derived keys, decrypts payloads, and injects them into a virtual TAP device. Sends downstream traffic back to OBUs through their associated RSU.
 
-The `server_lib` crate provides a simple UDP server implementation for receiving traffic from RSU nodes via standard networking. Unlike OBU/RSU nodes that use the custom vehicular routing protocol, Server nodes operate using normal UDP sockets.
+```mermaid
+flowchart TB
+  subgraph server_lib
+    SV["server::Server (state machine)"]
+    CP["cloud_protocol:: (binary UDP wire format)"]
+    RG["registry:: (RegistrationMessage)"]
+    AR["args:: (ServerArgs, ServerParameters)"]
+    BU["builder:: (ServerBuilder)"]
+  end
+
+  RSU["rsu_lib (RSU)"] -->|UDP UpstreamForward/KeyExchangeForward| SV
+  SV -->|UDP DownstreamForward/KeyExchangeResponse| RSU
+  SV -->|decrypted frames| TAP["virtual TAP (overlay L2)"]
+  TAP -->|reads downstream frames| SV
+  SV --> NLCrypto["node_lib::crypto (DhKeypair, derive_key, decrypt_with_config)"]
+```
+
+## Server struct
+
+```rust
+pub struct Server {
+    ip: Ipv4Addr,                                  // cloud interface IP
+    port: u16,                                     // UDP listen port
+    socket: Arc<Mutex<Option<Arc<UdpSocket>>>>,
+    registry: Arc<RwLock<HashMap<MacAddress, Vec<MacAddress>>>>,
+    // RSU VANET MAC → [associated OBU VANET MACs]
+    obu_routes: Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
+    // virtual TAP MAC → (OBU VANET MAC, RSU UDP addr)
+    tun: Option<SharedTun>,                        // virtual TAP device
+    enable_encryption: bool,
+    key_ttl_ms: u64,
+    dh_keys: Arc<RwLock<DhKeyStore>>,             // per-OBU symmetric keys
+    crypto_config: CryptoConfig,
+}
+
+struct ObuRoute {
+    vanet_mac: MacAddress,   // OBU's VANET MAC (for DownstreamForward routing)
+    rsu_addr: SocketAddr,    // RSU UDP address to send downstream replies through
+}
+```
+
+## Cloud protocol (`cloud_protocol.rs`)
+
+Binary UDP protocol with magic prefix `[0xAB, 0xCD]` and a 1-byte type discriminant.
+
+| Direction | Type byte | Message | Description |
+|---|---|---|---|
+| RSU → Server | `0x02` | `UpstreamForward` | OBU payload (may be encrypted) + RSU MAC + OBU source MAC |
+| Server → RSU | `0x03` | `DownstreamForward` | Server payload + OBU dest MAC + origin MAC |
+| RSU → Server | `0x04` | `KeyExchangeForward` | OBU's `KeyExchangeInit` forwarded by RSU + RSU MAC |
+| Server → RSU | `0x05` | `KeyExchangeResponse` | Server's `KeyExchangeReply` + OBU dest MAC |
+
+`CloudMessage` is the top-level enum wrapping all four variants, parsed by `try_from_bytes`.
+
+### Wire layouts
+
+```
+UpstreamForward:    [0xAB 0xCD] [0x02] [RSU_MAC 6B] [OBU_SRC_MAC 6B] [PAYLOAD ...]
+DownstreamForward:  [0xAB 0xCD] [0x03] [OBU_DST_MAC 6B] [ORIGIN_MAC 6B] [PAYLOAD ...]
+KeyExchangeForward: [0xAB 0xCD] [0x04] [RSU_MAC 6B] [CONTROL_PAYLOAD ...]
+KeyExchangeResponse:[0xAB 0xCD] [0x05] [OBU_DST_MAC 6B] [RESPONSE_PAYLOAD ...]
+```
+
+## RSU registration (`registry.rs`)
+
+RSUs periodically send a `RegistrationMessage` to the server:
+```
+[0xAB 0xCD] [0x01] [RSU_MAC 6B] [OBU_COUNT 2B big-endian] [OBU_MAC_0 6B] ...
+```
+The server stores `RSU_MAC → [OBU_MACs]` in `registry`, used for downstream routing decisions.
+
+## ServerParameters
+
+| Field | Default | Purpose |
+|---|---|---|
+| `port` | 8080 | UDP listen port |
+| `enable_encryption` | false | Enable DH key exchange + AEAD decryption |
+| `key_ttl_ms` | 86 400 000 (24 h) | Per-OBU key expiry |
+| `cipher` | aes-256-gcm | Symmetric cipher (must match OBU config) |
+| `kdf` | hkdf-sha256 | KDF (must match OBU config) |
+| `dh_group` | x25519 | DH group |
+
+## Data flow (encryption enabled)
+
+```
+1. OBU encrypts frame with AEAD key derived from DH shared secret
+2. OBU → RSU: Data::Upstream (VANET, encrypted payload)
+3. RSU wraps in UpstreamForward UDP → Server
+4. Server decrypts with stored ObuKey
+5. Server writes plaintext to virtual TAP
+
+6. Application writes response to virtual TAP
+7. Server reads frame from TAP, looks up OBU route by dest MAC
+8. Server encrypts, wraps in DownstreamForward UDP → RSU
+9. RSU constructs Data::Downstream, sends on VANET to OBU
+10. OBU decrypts from TAP
+```
+
+## Network interfaces (per Server)
+
+| Interface | Network | Purpose |
+|---|---|---|
+| `virtual` TAP | overlay L2 | Decapsulated traffic to/from OBUs |
+| `cloud` TAP | 172.x.x.x | Infrastructure: UDP socket for RSU communication |
+
+## APIs
+
+- `create(args) -> Arc<Server>` — create and start server
+- `Server::new(ip, port, name).with_tun(tun).with_encryption(true)...` — builder-style construction
+- `Server::start()` — binds UDP socket and spawns background Tokio tasks
+
+## See also
+- `rsu_lib/ARCHITECTURE.md` — the RSU forwarding side
+- `node_lib/ARCHITECTURE.md` — shared crypto (`DhKeypair`, `derive_key`, `decrypt_with_config`)
 
 ## Components
 
