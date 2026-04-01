@@ -103,15 +103,27 @@ When an OBU receives a `Heartbeat`:
 
 + *Direct RSU entries* (zero hops) are preferred unconditionally.
 
-+ Among multi-hop candidates, a composite score is computed:
++ Among multi-hop candidates, a composite numeric score is computed and the next-hop with the lowest score is selected.
 
-  $ s = alpha dot t_"avg" + (1 - alpha) dot h $
+  The implemented metric is:
 
-  where $t_"avg"$ is mean observed RTT, $h$ is advertised hop count, and
-  $alpha = 0.7$. Ties broken by MAC lexicographic order.
+  $ s = \alpha \cdot t_{avg} + (1 - \alpha) \cdot h $
 
-+ The *cached upstream* is preferred when within a ~10% hysteresis band to
-  prevent route flapping.
+  where:
+  - $t_{avg}$ is the mean observed round-trip time (RTT) to that candidate (measured via Heartbeat/Reply timing),
+  - $h$ is the advertised hop-count reported by the candidate,
+  - $\alpha$ is a tunable weight (default $0.7$), biasing toward latency over hops.
+
+  The algorithm normalises both components to comparable units before combining: $t_{avg}$ is scaled to the same range as hop counts using a per-run observed RTT range, preventing domination by absolute milliseconds. Ties are broken by MAC lexicographic order.
+
++ The *cached upstream* (the currently selected upstream) is retained when its score remains within a hysteresis band (default 10%) of a newly computed best candidate. This hysteresis prevents frequent route flipping due to transient RTT variance.
+
++ Implementation details:
+  - `get_route_to(Some(target))` is pure and computes scores from read-only heartbeat state.
+  - `select_and_cache_upstream()` performs the single write to update the cached upstream and stores an N-best ordered list (default N=3) for fast failover.
+  - Failover promotes the head of the N-best list if the active upstream fails or exhibits timeouts. Each candidate includes timestamped measurements so stale entries age out.
+
+  This hybrid approach provides RTT sensitivity while keeping the metric simple and computationally cheap for resource-constrained OBUs.
 
 === N-Best Candidate Caching
 
