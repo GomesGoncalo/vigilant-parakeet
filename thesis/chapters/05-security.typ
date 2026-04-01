@@ -233,7 +233,7 @@ as a simple state machine (@fig-dh-state):
     node((2,0), [Pending], name: <pending>),
     node((2,2), [Established], name: <established>),
     edge(<none>, <pending>, "->", [initiate\_exchange()], label-side: center),
-    edge(<pending>, <established>, "->", [complete\_exchange()\ (key\_id match)], label-side: right),
+    edge(<pending>, <established>, "->", [complete\_exchange()\ (key\_id match)], bend: 20deg, label-side: right),
     edge(<established>, <none>, "->",
       [is\_key\_expired() → true\ or remove\_pending() (max retries)],
       bend: -40deg, label-side: left),
