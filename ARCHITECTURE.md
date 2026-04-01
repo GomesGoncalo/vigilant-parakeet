@@ -24,7 +24,7 @@ flowchart LR
 
 ## Crates
 
-- `simulator/` — simulation runtime: creates network namespaces, builds OBU/RSU/Server nodes via `node_factory`, applies per-link `tc netem` rules, exposes HTTP API and optional TUI.
+- `simulator/` — simulation runtime: creates network namespaces, builds OBU/RSU/Server nodes via `node_factory`, simulates per-link latency/loss/jitter in userspace via `Channel`, exposes HTTP API and optional TUI.
 - `node/` — thin binary with CLI subcommands: `node rsu`, `node obu`, `node server`.
 - `obu_lib/` — OBU node: control plane, routing (heartbeat/reply, N-best upstream caching, failover), DH key store, TAP session handling.
 - `rsu_lib/` — RSU node: heartbeat emission, routing reply tracking, client cache, opaque upstream forwarding to server over UDP.

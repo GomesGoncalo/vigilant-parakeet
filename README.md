@@ -55,7 +55,7 @@ namespaces) and the `visualization` UI (browser-based dashboard).
 - `rsu_lib/` — RSU node: heartbeat emission, routing reply tracking, client cache, opaque upstream forwarding to server via UDP. **No TAP device.**
 - `server_lib/` — Server node: UDP cloud endpoint, OBU registry, per-OBU DH key management, payload decryption, virtual TAP injection.
 - `node/` — binary crate with three subcommands: `node obu`, `node rsu`, `node server`.
-- `simulator/` — orchestrates multiple nodes in network namespaces, applies per-link `tc netem` rules, and exposes an HTTP control API and optional TUI.
+- `simulator/` — orchestrates multiple nodes in network namespaces, simulates per-link latency/loss/jitter in userspace via `Channel`, and exposes an HTTP control API and optional TUI.
 - `visualization/` — Yew/WASM browser app polling the simulator HTTP API.
 - `scripts_tools/` — experiment data analysis CLI: `parse-band`, `build-summary`, `merge-latency`, `ns-addrs`, `generate-pairs`, `validate-configs`, `autofix-configs`.
 

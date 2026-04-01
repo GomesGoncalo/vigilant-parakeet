@@ -1,4 +1,6 @@
-// ── Chapter 3 — Architecture <architecture> ──────────────────────────────────
+// ── Chapter 3 — Architecture <architecture> ──────────────────────────────
+#import "@preview/fletcher:0.5.7" as fletcher: diagram, node, edge
+#import "@preview/chronos:0.2.1"
 
 = Architecture <architecture>
 
@@ -14,21 +16,33 @@ encapsulated in `obu_lib`, `rsu_lib`, and `server_lib`; orchestration and
 analysis tooling sit in `simulator` and `scripts_tools`.
 
 #figure(
-  ```
-  simulator  ──► node_factory ──┬──► obu_lib
-       │                        ├──► rsu_lib
-       │                        └──► server_lib
-       │                                │
-  node (binary) ──┬──► obu_lib          │
-                  ├──► rsu_lib          │
-                  └──► server_lib       │
-                                        │
-             obu_lib, rsu_lib, server_lib
-                  └──────► node_lib ──► common
-
-  visualization ──► simulator HTTP API
-  scripts_tools    (experiment data analysis)
-  ```,
+  diagram(
+    node-stroke: 0.5pt,
+    spacing: (18mm, 10mm),
+    node((0,0), [`simulator`]),
+    node((0,2), [`node`]),
+    node((0,4), [`visualization`]),
+    node((0,5), [`scripts_tools`]),
+    node((1,0), [`node_factory`]),
+    node((1,4), [Simulator\ HTTP API]),
+    node((2,0), [`obu_lib`]),
+    node((2,1), [`rsu_lib`]),
+    node((2,2), [`server_lib`]),
+    node((3,1), [`node_lib`]),
+    node((4,1), [`common`]),
+    edge((0,0), (1,0), "->"),
+    edge((1,0), (2,0), "->"),
+    edge((1,0), (2,1), "->"),
+    edge((1,0), (2,2), "->"),
+    edge((0,2), (2,0), "->"),
+    edge((0,2), (2,1), "->"),
+    edge((0,2), (2,2), "->"),
+    edge((2,0), (3,1), "->"),
+    edge((2,1), (3,1), "->"),
+    edge((2,2), (3,1), "->"),
+    edge((3,1), (4,1), "->"),
+    edge((0,4), (1,4), "->"),
+  ),
   caption: [Cargo workspace dependency graph],
 ) <fig-workspace-crates>
 
@@ -39,28 +53,32 @@ wireless VANET communication, infrastructure forwarding, and application-layer
 connectivity (@fig-three-tier).
 
 #figure(
-  ```
-  ┌───────────────────────────────────────────────┐
-  │  Tier 1 — VANET medium  (10.x.x.x)           │
-  │  OBU ──wireless──► RSU                        │
-  │  Heartbeat, HeartbeatReply, Data, KeyExchange  │
-  └──────────────────────┬────────────────────────┘
-                         │ UDP cloud protocol
-                         ▼
-  ┌───────────────────────────────────────────────┐
-  │  Tier 2 — Cloud / infrastructure  (172.x.x.x) │
-  │  RSU ──UDP──► Server                          │
-  │  UpstreamForward, DownstreamForward,           │
-  │  KeyExchangeForward, KeyExchangeResponse       │
-  └──────────────────────┬────────────────────────┘
-                         │ decapsulate + decrypt
-                         ▼
-  ┌───────────────────────────────────────────────┐
-  │  Tier 3 — Virtual TAP  (overlay L2)           │
-  │  OBU virtual TAP ◄──── Server virtual TAP     │
-  │  Decrypted IPv4/IPv6 payload                   │
-  └───────────────────────────────────────────────┘
-  ```,
+  diagram(
+    node-stroke: 0.5pt,
+    node-inset: 10pt,
+    spacing: (0mm, 8mm),
+    node((0,0),
+      align(center)[*Tier 1 — VANET medium*  (10.x.x.x)\
+      OBU $arrow.r$ RSU\
+      Heartbeat, HeartbeatReply, Data, KeyExchange],
+      width: 100mm,
+    ),
+    edge((0,0), (0,1), "->", [UDP cloud protocol], label-side: center),
+    node((0,1),
+      align(center)[*Tier 2 — Cloud / infrastructure*  (172.x.x.x)\
+      RSU $arrow.r$ Server\
+      UpstreamForward, DownstreamForward,\
+      KeyExchangeForward, KeyExchangeResponse],
+      width: 100mm,
+    ),
+    edge((0,1), (0,2), "->", [decapsulate + decrypt], label-side: center),
+    node((0,2),
+      align(center)[*Tier 3 — Virtual TAP*  (overlay L2)\
+      OBU virtual TAP $arrow.l$ Server virtual TAP\
+      Decrypted IPv4/IPv6 payload],
+      width: 100mm,
+    ),
+  ),
   caption: [Three-tier network architecture],
 ) <fig-three-tier>
 
@@ -134,7 +152,7 @@ Three CLI subcommands: `node obu`, `node rsu`, `node server`. Each delegates dir
 - Reads a YAML configuration describing nodes and topology.
 - Creates one Linux network namespace per node.
 - Builds nodes via `node_factory::create_node_from_settings()`.
-- Applies per-link `tc netem` latency/loss rules.
+- Applies per-link latency, loss, and jitter via in-process `Channel` objects.
 - Exposes HTTP API (port 3030, feature: `webview`) and TUI dashboard (feature: `tui`).
 - TUI has seven tabs: Metrics, Logs, Nodes, Topology, Channels, Upstreams, Registry.
 

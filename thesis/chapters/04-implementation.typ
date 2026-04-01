@@ -139,7 +139,7 @@ illustrates how the three tiers interact (see figure).
     _par("Server")
     _seq("OBU", "OBU", comment: "1. encrypt(payload)")
     _seq("OBU", "RSU", comment: "Data::Upstream")
-    _seq("RSU", "Server", comment: "UpstreamForward (0x02)") }
+    _seq("RSU", "Server", comment: "UpstreamForward (0x02)")
     _seq("Server", "Server", comment: "decrypt/TAP/encrypt")
     _seq("Server", "RSU", comment: "DownstreamForward (0x03)")
     _seq("RSU", "OBU", comment: "Data::Downstream")

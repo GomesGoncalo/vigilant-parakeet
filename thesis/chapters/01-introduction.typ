@@ -48,6 +48,13 @@ The primary contributions of this work are:
 - *A heartbeat-based routing protocol* with latency-aware metric computation,
   N-best upstream candidate caching, and fast failover.
 
+- *An end-to-end security architecture* providing encrypted OBU–server
+  communication via X25519 Diffie-Hellman key exchange, HKDF-derived session
+  keys, and AEAD payload encryption with a configurable cipher suite (AES-256-GCM,
+  AES-128-GCM, ChaCha20-Poly1305). An optional Ed25519 authentication layer
+  protects the key exchange itself, supporting both Trust-on-First-Use (TOFU)
+  and pre-registered PKI deployment modes.
+
 - *An in-process test hub* (`node_lib::test_helpers::hub::Hub`) enabling
   deterministic, reproducible integration testing without root privileges or
   physical network devices.
@@ -71,8 +78,9 @@ The remainder of this thesis is organised as follows.
 - @implementation details the implementation of the routing protocol, the
   simulator, the test infrastructure, and the visualisation layer.
 
-- @security reviews the security architecture: DH key exchange, key
-  derivation, configurable cipher suite, and the DH key store lifecycle.
+- @security presents the security architecture: threat model, DH key exchange,
+  HKDF key derivation, configurable AEAD cipher suite, DH key store lifecycle,
+  and the Ed25519 authentication layer with its TOFU and PKI trust models.
 
 - @evaluation presents the experimental setup and results.
 

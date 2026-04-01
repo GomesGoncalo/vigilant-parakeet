@@ -323,7 +323,7 @@ dropped.
 === Authenticated Handshake Flow
 
 #figure(
-  center(scale(70%, reflow: true, chronos.diagram({
+  scale(70%, reflow: true, chronos.diagram({
     import chronos: *
     _par("OBU")
     _par("RSU", display-name: "RSU (relay)")

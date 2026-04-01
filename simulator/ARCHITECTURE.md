@@ -1,6 +1,6 @@
 # simulator crate — architecture
 
-Purpose: orchestrates a multi-node simulation using Linux network namespaces. Builds OBU, RSU, and Server nodes, applies per-link latency/loss rules, and exposes an HTTP API and optional TUI.
+Purpose: orchestrates a multi-node simulation using Linux network namespaces. Builds OBU, RSU, and Server nodes, applies per-link latency/loss rules entirely in userspace, and exposes an HTTP API and optional TUI.
 
 ```mermaid
 flowchart LR
@@ -10,7 +10,7 @@ flowchart LR
   NF -->|OBU| ObuLib["obu_lib"]
   NF -->|RSU| RsuLib["rsu_lib"]
   NF -->|Server| ServerLib["server_lib"]
-  Simulator -->|tc netem| CH["channel.rs"]
+  Simulator -->|userspace latency+loss| CH["channel.rs"]
   Simulator -->|feature: webview| WV["webview.rs (HTTP :3030)"]
   Simulator -->|feature: tui| TUI["tui/ (ratatui dashboard)"]
   WV --> Visualization["visualization (WASM browser UI)"]
@@ -26,7 +26,7 @@ flowchart LR
 | `node_interfaces` | Organises per-node TAP interfaces into `NodeInterfaces` |
 | `interface_builder` | Fluent builder for creating TAP devices with IP/MTU/netmask |
 | `namespace` | `NamespaceManager` + `NamespaceWrapper`: create/enter/destroy network namespaces |
-| `channel` | `Channel`: per-link latency/loss simulation via `tc netem` |
+| `channel` | `Channel`: per-link latency/loss/jitter simulation in userspace via Tokio sleep + probabilistic drop |
 | `topology` | Reads topology YAML; maps `node → {neighbour: ChannelParameters}` |
 | `metrics` | `SimulatorMetrics`: per-node and aggregate counters |
 | `webview` | `warp`-based HTTP server on port 3030 (feature: `webview`) |
@@ -84,7 +84,7 @@ pub struct Simulator {
 | Endpoint | Method | Description |
 |---|---|---|
 | `/metrics` | GET | JSON: per-node counters (packets sent/recv/dropped/delayed) |
-| `/channel/<a>/<b>/` | POST | Update `tc netem` latency/loss between nodes at runtime |
+| `/channel/<a>/<b>/` | POST | Update per-link latency/loss/jitter parameters at runtime (takes effect immediately via `Channel::set_params`) |
 | `/node_info` | GET | Node topology and upstream state (consumed by visualization) |
 
 ## TUI tabs (feature: `tui`)
