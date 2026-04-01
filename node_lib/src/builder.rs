@@ -23,6 +23,7 @@ pub struct NodeBuilder {
     pub hello_history: u32,
     pub cached_candidates: u32,
     pub enable_encryption: bool,
+    pub enable_dh_signatures: bool,
     pub dh_rekey_interval_ms: u64,
     pub dh_key_lifetime_ms: u64,
     pub dh_reply_timeout_ms: u64,
@@ -48,6 +49,7 @@ impl NodeBuilder {
             hello_history: 10,
             cached_candidates: 3,
             enable_encryption: false,
+            enable_dh_signatures: false,
             dh_rekey_interval_ms: 43_200_000,
             dh_key_lifetime_ms: 86_400_000,
             dh_reply_timeout_ms: 5_000,
@@ -93,6 +95,12 @@ impl NodeBuilder {
     /// Enable or disable encryption (default: false)
     pub fn with_encryption(mut self, enabled: bool) -> Self {
         self.enable_encryption = enabled;
+        self
+    }
+
+    /// Enable or disable DH message signing (default: false)
+    pub fn with_dh_signatures(mut self, enabled: bool) -> Self {
+        self.enable_dh_signatures = enabled;
         self
     }
 

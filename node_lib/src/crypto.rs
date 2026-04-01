@@ -4,6 +4,7 @@ use aes_gcm::{
     Aes128Gcm, Aes256Gcm, Key, Nonce,
 };
 use chacha20poly1305::ChaCha20Poly1305;
+use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use sha2::{Sha256, Sha384, Sha512};
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
@@ -159,6 +160,67 @@ pub fn generate_ephemeral_keypair() -> (EphemeralSecret, PublicKey) {
     let secret = EphemeralSecret::random_from_rng(OsRng);
     let public = PublicKey::from(&secret);
     (secret, public)
+}
+
+// ── Ed25519 signing for DH messages ───────────────────────────────
+
+/// Ed25519 signing keypair for authenticating DH key exchange messages.
+///
+/// Each node generates a random identity keypair at startup. The verifying
+/// (public) key is embedded in signed KE messages so the receiver can verify
+/// without prior key distribution (trust-on-first-use model).
+pub struct SigningKeypair {
+    inner: ed25519_dalek::SigningKey,
+}
+
+impl SigningKeypair {
+    /// Generate a new random Ed25519 signing keypair.
+    pub fn generate() -> Self {
+        Self {
+            inner: ed25519_dalek::SigningKey::generate(&mut OsRng),
+        }
+    }
+
+    /// Reconstruct a `SigningKeypair` from a 32-byte seed.
+    /// The same seed always produces the same keypair, enabling persistent identities.
+    pub fn from_seed(seed: [u8; 32]) -> Self {
+        Self {
+            inner: ed25519_dalek::SigningKey::from_bytes(&seed),
+        }
+    }
+
+    /// Return the 32-byte seed that can be used to reconstruct this keypair via `from_seed`.
+    pub fn seed_bytes(&self) -> [u8; 32] {
+        self.inner.to_bytes()
+    }
+
+    /// Sign `message` and return the 64-byte Ed25519 signature.
+    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
+        self.inner.sign(message).to_bytes()
+    }
+
+    /// Return the 32-byte verifying (public) key bytes.
+    pub fn verifying_key_bytes(&self) -> [u8; 32] {
+        self.inner.verifying_key().to_bytes()
+    }
+}
+
+/// Verify an Ed25519 signature over a DH key exchange message.
+///
+/// `message` is the bytes that were signed (the 42-byte base KE payload).
+/// `signing_pubkey_bytes` is the 32-byte Ed25519 verifying key.
+/// `signature_bytes` is the 64-byte signature.
+pub fn verify_dh_signature(
+    message: &[u8],
+    signing_pubkey_bytes: &[u8; 32],
+    signature_bytes: &[u8; 64],
+) -> Result<(), NodeError> {
+    let verifying_key = VerifyingKey::from_bytes(signing_pubkey_bytes)
+        .map_err(|e| NodeError::SignatureError(format!("invalid signing public key: {e}")))?;
+    let signature = Signature::from_bytes(signature_bytes);
+    verifying_key
+        .verify(message, &signature)
+        .map_err(|e| NodeError::SignatureError(format!("signature verification failed: {e}")))
 }
 
 // ── Key derivation ─────────────────────────────────────────────────
@@ -586,5 +648,54 @@ mod tests {
         assert_eq!(cfg.cipher, SymmetricCipher::Aes256Gcm);
         assert_eq!(cfg.kdf, KdfAlgorithm::HkdfSha256);
         assert_eq!(cfg.dh_group, DhGroup::X25519);
+    }
+
+    // ── Signing tests ────────────────────────────────────────────────
+
+    #[test]
+    fn signing_keypair_generates_distinct_keys() {
+        let kp1 = SigningKeypair::generate();
+        let kp2 = SigningKeypair::generate();
+        assert_ne!(kp1.verifying_key_bytes(), kp2.verifying_key_bytes());
+    }
+
+    #[test]
+    fn sign_and_verify_roundtrip() {
+        let kp = SigningKeypair::generate();
+        let message = b"key_id + dh_public + sender";
+        let sig = kp.sign(message);
+        let pubkey = kp.verifying_key_bytes();
+        assert!(verify_dh_signature(message, &pubkey, &sig).is_ok());
+    }
+
+    #[test]
+    fn verify_wrong_key_fails() {
+        let signer = SigningKeypair::generate();
+        let other = SigningKeypair::generate();
+        let message = b"some dh payload";
+        let sig = signer.sign(message);
+        let wrong_pubkey = other.verifying_key_bytes();
+        assert!(verify_dh_signature(message, &wrong_pubkey, &sig).is_err());
+    }
+
+    #[test]
+    fn verify_tampered_message_fails() {
+        let kp = SigningKeypair::generate();
+        let message = b"original dh payload";
+        let sig = kp.sign(message);
+        let pubkey = kp.verifying_key_bytes();
+        // tamper with the message
+        let tampered = b"tampered dh payload";
+        assert!(verify_dh_signature(tampered, &pubkey, &sig).is_err());
+    }
+
+    #[test]
+    fn verify_tampered_signature_fails() {
+        let kp = SigningKeypair::generate();
+        let message = b"dh payload bytes";
+        let mut sig = kp.sign(message);
+        sig[0] ^= 0xFF; // flip bits in the signature
+        let pubkey = kp.verifying_key_bytes();
+        assert!(verify_dh_signature(message, &pubkey, &sig).is_err());
     }
 }

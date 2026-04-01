@@ -28,6 +28,8 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct ObuBuilder {
     inner: NodeBuilder,
+    signing_key_seed: Option<String>,
+    server_signing_pubkey: Option<String>,
 }
 
 impl ObuBuilder {
@@ -35,6 +37,8 @@ impl ObuBuilder {
     pub fn new(bind: impl Into<String>) -> Self {
         Self {
             inner: NodeBuilder::new(bind),
+            signing_key_seed: None,
+            server_signing_pubkey: None,
         }
     }
 
@@ -47,13 +51,18 @@ impl ObuBuilder {
         inner.hello_history = args.obu_params.hello_history;
         inner.cached_candidates = args.obu_params.cached_candidates;
         inner.enable_encryption = args.obu_params.enable_encryption;
+        inner.enable_dh_signatures = args.obu_params.enable_dh_signatures;
         inner.dh_rekey_interval_ms = args.obu_params.dh_rekey_interval_ms;
         inner.dh_key_lifetime_ms = args.obu_params.dh_key_lifetime_ms;
         inner.dh_reply_timeout_ms = args.obu_params.dh_reply_timeout_ms;
         inner.cipher = args.obu_params.cipher;
         inner.kdf = args.obu_params.kdf;
         inner.dh_group = args.obu_params.dh_group;
-        Self { inner }
+        Self {
+            inner,
+            signing_key_seed: args.obu_params.signing_key_seed,
+            server_signing_pubkey: args.obu_params.server_signing_pubkey,
+        }
     }
 
     /// Set the TAP device name
@@ -194,6 +203,9 @@ impl ObuBuilder {
                 hello_history: self.inner.hello_history,
                 cached_candidates: self.inner.cached_candidates,
                 enable_encryption: self.inner.enable_encryption,
+                enable_dh_signatures: self.inner.enable_dh_signatures,
+                signing_key_seed: self.signing_key_seed.clone(),
+                server_signing_pubkey: self.server_signing_pubkey.clone(),
                 dh_rekey_interval_ms: self.inner.dh_rekey_interval_ms,
                 dh_key_lifetime_ms: self.inner.dh_key_lifetime_ms,
                 dh_reply_timeout_ms: self.inner.dh_reply_timeout_ms,
@@ -255,6 +267,9 @@ mod tests {
                 hello_history: 15,
                 cached_candidates: 4,
                 enable_encryption: true,
+                enable_dh_signatures: false,
+                signing_key_seed: None,
+                server_signing_pubkey: None,
                 dh_rekey_interval_ms: 45_000,
                 dh_key_lifetime_ms: 90_000,
                 dh_reply_timeout_ms: 3_000,

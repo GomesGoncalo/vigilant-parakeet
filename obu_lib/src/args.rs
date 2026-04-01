@@ -16,6 +16,28 @@ pub struct ObuParameters {
     #[arg(long, default_value_t = false)]
     pub enable_encryption: bool,
 
+    /// Sign DH key exchange messages with Ed25519 and verify peer signatures.
+    /// When enabled, each node generates a random identity keypair at startup.
+    /// Both sides must have this enabled for signatures to be verified.
+    #[arg(long, default_value_t = false)]
+    pub enable_dh_signatures: bool,
+
+    /// Hex-encoded 32-byte Ed25519 seed for a stable signing identity (64 hex chars).
+    /// When set alongside enable_dh_signatures, this node uses the derived keypair
+    /// instead of generating a random one at startup.  The corresponding public key
+    /// can be pre-registered in the server's dh_signing_allowlist for PKI-mode auth.
+    /// Not exposed as a CLI flag to avoid leaking seeds via process listings.
+    #[arg(skip)]
+    pub signing_key_seed: Option<String>,
+
+    /// Hex-encoded 32-byte Ed25519 verifying key of the trusted server (64 hex chars).
+    /// When set alongside enable_dh_signatures, the OBU rejects any KeyExchangeReply
+    /// whose signing public key does not match this value, preventing server
+    /// impersonation even on first contact (closes the TOFU gap on the OBU side).
+    /// Not exposed as a CLI flag to avoid accidental misconfiguration.
+    #[arg(skip)]
+    pub server_signing_pubkey: Option<String>,
+
     /// Interval in milliseconds between DH re-key exchanges
     #[arg(long, default_value_t = 43_200_000)]
     pub dh_rekey_interval_ms: u64,

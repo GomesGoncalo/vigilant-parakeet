@@ -28,6 +28,9 @@ pub enum NodeError {
     #[error("Encrypted data too short: expected at least 12 bytes for nonce, got {0}")]
     EncryptedDataTooShort(usize),
 
+    #[error("DH message signature error: {0}")]
+    SignatureError(String),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 

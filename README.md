@@ -42,6 +42,7 @@ namespaces) and the `visualization` UI (browser-based dashboard).
 - Run many instances of `node_lib` inside isolated Linux network namespaces
 - Simulate per-link latency and packet loss
 - **External tap interfaces for RSU nodes** - Connect RSUs to external servers via 172.x.x.x network (see [docs/EXTERNAL_TAP_INTERFACE.md](docs/EXTERNAL_TAP_INTERFACE.md))
+- **DH message signing** — Ed25519 digital signatures on key exchange messages authenticate the DH handshake (see [DH Signatures](#dh-message-signing) below)
 - HTTP API for runtime stats and for changing channel parameters
 - Browser visualization (in `visualization/`) to monitor traffic and change
   parameters interactively (optional `webview` feature)
@@ -285,6 +286,177 @@ trunk serve
 ```
 
 The UI can display topology, per-link parameters, and live traffic charts.
+
+## DH Message Signing
+
+`vigilant-parakeet` supports **Ed25519 digital signatures** on Diffie-Hellman key
+exchange messages, providing authentication of the DH handshake. Without signatures,
+a node cannot verify that a `KeyExchangeInit` or `KeyExchangeReply` was sent by a
+legitimate peer rather than an attacker injecting fake DH public keys.
+
+### How it works
+
+When `enable_dh_signatures: true` is configured:
+
+1. Each node (OBU or Server) generates a **random Ed25519 identity keypair** at startup
+   (or loads a stable keypair from a configured seed — see PKI mode below).
+2. Every outgoing `KeyExchangeInit` or `KeyExchangeReply` is **signed** over its
+   42-byte base payload (`key_id | dh_public_key | sender_mac`).
+3. The 32-byte Ed25519 verifying key and 64-byte signature are appended to the
+   message, extending the wire format from 42 bytes to **138 bytes**.
+4. The receiver **verifies** the signature before accepting the key exchange. Messages
+   with missing or invalid signatures are dropped with a warning log.
+5. Intermediate relay nodes (OBUs forwarding KE messages up or down the tree)
+   **preserve** signatures unchanged.
+
+#### Trust models
+
+| Mode | What it provides | What it does not prevent |
+|------|-----------------|--------------------------|
+| **TOFU** (default) | Blocks key-substitution MitM on subsequent contacts | First-contact impersonation (attacker with own keypair) |
+| **PKI** (allowlist) | Also blocks first-contact impersonation | Nothing — full authentication |
+
+The default mode is TOFU. Enable PKI mode by pre-registering OBU public keys on the
+server (see below).
+
+### Enabling DH signatures on an OBU node — TOFU mode (`n2.yaml`)
+
+```yaml
+node_type: Obu
+hello_history: 10
+ip: 10.0.0.2
+enable_encryption: true       # required — signatures only apply to DH messages
+enable_dh_signatures: true    # sign outgoing KE messages, verify incoming ones
+```
+
+At startup the node logs its signing public key:
+
+```
+INFO signing_pubkey=aabbcc... DH signing enabled — register this public key in the server's dh_signing_allowlist to enforce PKI authentication
+```
+
+### Enabling DH signatures on a Server node — TOFU mode (`server.yaml`)
+
+```yaml
+node_type: Server
+virtual_ip: 10.0.0.50
+cloud_ip: 172.16.0.50
+port: 8080
+enable_encryption: true       # required
+enable_dh_signatures: true    # sign KE replies, verify incoming KE inits
+```
+
+The server logs its signing public key at startup so you can register it on OBUs:
+
+```
+INFO signing_pubkey=e5f6a7b8... DH signing enabled on server
+```
+
+To get a stable, repeatable public key across restarts, configure a fixed seed (see PKI mode).
+
+### PKI mode — pre-registering OBU identities
+
+To close the first-contact impersonation gap, give each OBU a **stable keypair** (via
+a persistent seed) and register the corresponding public key on the server.
+
+**Step 1 — generate a keypair for each node** using the built-in keygen command:
+
+```sh
+keygen
+# Ed25519 signing keypair for DH authentication
+#
+# Seed (signing_key_seed in node YAML — keep secret):
+#   a1b2c3d4...64hexchars
+#
+# Verifying key (for dh_signing_allowlist on server, or server_signing_pubkey on OBU):
+#   e5f6a7b8...64hexchars
+```
+
+`keygen` uses a cryptographically secure RNG (`OsRng`). The seed is secret — treat
+it like a private key. The verifying key is what you distribute to peers.
+
+**Step 2 — pin the VANET MAC address** of each OBU so it matches the allowlist entry.
+The allowlist is keyed by VANET MAC; since the simulator assigns MACs randomly at
+startup you must fix them in config (`n2.yaml`):
+
+```yaml
+node_type: Obu
+hello_history: 10
+ip: 10.0.0.2
+enable_encryption: true
+enable_dh_signatures: true
+vanet_mac: "AA:BB:CC:DD:EE:FF"              # fixed MAC for the VANET interface
+signing_key_seed: "a1b2c3d4...64hexchars"   # stable 32-byte seed, hex-encoded
+server_signing_pubkey: "e5f6a7b8...64hexchars"  # server's verifying key (optional)
+```
+
+`vanet_mac` is applied via `ip link set <iface> address <mac> up` after the TAP is
+created, so it requires the same privileges as the rest of the simulator (root /
+`CAP_NET_ADMIN`).
+
+**Step 3 — give the server a stable identity** (`server.yaml`):
+
+Run `keygen` once for the server too, then set its seed in config:
+
+```yaml
+node_type: Server
+virtual_ip: 10.0.0.50
+cloud_ip: 172.16.0.50
+port: 8080
+enable_encryption: true
+enable_dh_signatures: true
+signing_key_seed: "e5f6a7b8...64hexchars"   # stable seed — keep secret
+```
+
+The server derives the same keypair every restart and logs its verifying key at startup.
+OBUs can then pin that key via `server_signing_pubkey`.
+
+**Step 4 — register OBU public keys on the server** (`server.yaml`):
+
+```yaml
+node_type: Server
+virtual_ip: 10.0.0.50
+cloud_ip: 172.16.0.50
+port: 8080
+enable_encryption: true
+enable_dh_signatures: true
+dh_signing_allowlist:
+  "AA:BB:CC:DD:EE:FF": "aabbcc...64hexchars"   # OBU n2's verifying key
+  "11:22:33:44:55:66": "112233...64hexchars"   # OBU n3's verifying key
+```
+
+When `dh_signing_allowlist` is non-empty, the server rejects any
+`KeyExchangeInit` whose `signing_pubkey` does not match the pre-registered key for
+that OBU MAC address. OBUs not in the allowlist cannot complete key exchange.
+
+**Optional — pin the server's identity on each OBU** (`n2.yaml`):
+
+```yaml
+server_signing_pubkey: "e5f6a7b8...64hexchars"
+```
+
+When set, the OBU rejects any `KeyExchangeReply` whose signing key does not match,
+preventing a rogue server from completing the exchange even on first contact.
+
+### Mixed deployments
+
+Signatures are **optional per-node**. An OBU with `enable_dh_signatures: true`
+will drop any unsigned `KeyExchangeReply` from the server. A Server with
+`enable_dh_signatures: true` will drop any unsigned `KeyExchangeInit` from an
+OBU. Therefore, for end-to-end signature enforcement both the OBU and the Server
+must have `enable_dh_signatures: true`.
+
+Nodes with `enable_dh_signatures: false` (the default) continue to work exactly
+as before — unsigned, 42-byte KE messages.
+
+### Wire format summary
+
+| Mode     | Size (bytes) | Contents |
+|----------|-------------|----------|
+| Unsigned | 42          | `key_id (4) \| dh_pubkey (32) \| sender (6)` |
+| Signed   | 138         | `key_id (4) \| dh_pubkey (32) \| sender (6) \| ed25519_verifying_key (32) \| ed25519_signature (64)` |
+
+The signature covers the first 42 bytes (the base payload).
 
 ## Development tips
 

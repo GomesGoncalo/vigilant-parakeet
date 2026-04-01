@@ -1,0 +1,13 @@
+[package]
+name = "keygen"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Generate Ed25519 signing keypairs for DH message authentication"
+
+[[bin]]
+name = "keygen"
+path = "src/main.rs"
+
+[dependencies]
+node_lib = { path = "../node_lib/" }

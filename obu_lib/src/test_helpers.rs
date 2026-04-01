@@ -21,6 +21,9 @@ pub fn mk_test_obu_args() -> ObuArgs {
             hello_history: 2,
             cached_candidates: 3,
             enable_encryption: false,
+            enable_dh_signatures: false,
+            signing_key_seed: None,
+            server_signing_pubkey: None,
             dh_rekey_interval_ms: 60_000,
             dh_key_lifetime_ms: 120_000,
             dh_reply_timeout_ms: 5_000,
@@ -42,6 +45,9 @@ pub fn mk_test_obu_args_with_history(hello_history: u32) -> ObuArgs {
             hello_history,
             cached_candidates: 3,
             enable_encryption: false,
+            enable_dh_signatures: false,
+            signing_key_seed: None,
+            server_signing_pubkey: None,
             dh_rekey_interval_ms: 60_000,
             dh_key_lifetime_ms: 120_000,
             dh_reply_timeout_ms: 5_000,
@@ -63,6 +69,9 @@ pub fn mk_test_obu_args_encrypted() -> ObuArgs {
             hello_history: 2,
             cached_candidates: 3,
             enable_encryption: true,
+            enable_dh_signatures: false,
+            signing_key_seed: None,
+            server_signing_pubkey: None,
             dh_rekey_interval_ms: 60_000,
             dh_key_lifetime_ms: 120_000,
             dh_reply_timeout_ms: 5_000,
@@ -84,6 +93,9 @@ pub fn mk_test_obu_args_dh() -> ObuArgs {
             hello_history: 2,
             cached_candidates: 3,
             enable_encryption: true,
+            enable_dh_signatures: false,
+            signing_key_seed: None,
+            server_signing_pubkey: None,
             dh_rekey_interval_ms: 5_000,
             dh_key_lifetime_ms: 10_000,
             dh_reply_timeout_ms: 2_000,
@@ -111,6 +123,9 @@ pub fn mk_obu_args_encrypted() -> ObuArgs {
             hello_history: 10,
             cached_candidates: 3,
             enable_encryption: true,
+            enable_dh_signatures: false,
+            signing_key_seed: None,
+            server_signing_pubkey: None,
             dh_rekey_interval_ms: 60_000,
             dh_key_lifetime_ms: 120_000,
             dh_reply_timeout_ms: 5_000,
@@ -132,6 +147,33 @@ pub fn mk_obu_args_dh() -> ObuArgs {
             hello_history: 10,
             cached_candidates: 3,
             enable_encryption: true,
+            enable_dh_signatures: false,
+            signing_key_seed: None,
+            server_signing_pubkey: None,
+            dh_rekey_interval_ms: 1_000,
+            dh_key_lifetime_ms: 10_000,
+            dh_reply_timeout_ms: 2_000,
+            cipher: node_lib::crypto::SymmetricCipher::default(),
+            kdf: node_lib::crypto::KdfAlgorithm::default(),
+            dh_group: node_lib::crypto::DhGroup::default(),
+        },
+    }
+}
+
+/// Create ObuArgs with encryption and DH signatures enabled for integration tests.
+pub fn mk_obu_args_dh_signed() -> ObuArgs {
+    ObuArgs {
+        bind: String::from("unused"),
+        tap_name: None,
+        ip: None,
+        mtu: 1500,
+        obu_params: ObuParameters {
+            hello_history: 10,
+            cached_candidates: 3,
+            enable_encryption: true,
+            enable_dh_signatures: true,
+            signing_key_seed: None,
+            server_signing_pubkey: None,
             dh_rekey_interval_ms: 1_000,
             dh_key_lifetime_ms: 10_000,
             dh_reply_timeout_ms: 2_000,
@@ -152,6 +194,7 @@ mod tests {
         assert_eq!(args.obu_params.hello_history, 2);
         assert_eq!(args.obu_params.cached_candidates, 3);
         assert!(!args.obu_params.enable_encryption);
+        assert!(!args.obu_params.enable_dh_signatures);
     }
 
     #[test]

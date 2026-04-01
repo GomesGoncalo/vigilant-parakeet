@@ -1,6 +1,8 @@
 use anyhow::Result;
 use config::Config;
+use mac_address::MacAddress;
 use server_lib::Server;
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -62,6 +64,8 @@ pub fn create_node_from_settings(
             .build_tap()?;
 
         let enable_encryption = settings.get_bool("enable_encryption").unwrap_or(false);
+        let enable_dh_signatures_server =
+            settings.get_bool("enable_dh_signatures").unwrap_or(false);
         let crypto_config = parse_crypto_config(settings);
         let key_ttl_ms = settings
             .get_int("key_ttl_ms")
@@ -69,13 +73,24 @@ pub fn create_node_from_settings(
             .and_then(|v| u64::try_from(v).ok())
             .unwrap_or(86_400_000);
 
-        let server = Arc::new(
-            Server::new(cloud_ip, port, node_name)
-                .with_tun(virtual_tun.clone())
-                .with_encryption(enable_encryption)
-                .with_key_ttl_ms(key_ttl_ms)
-                .with_crypto_config(crypto_config),
-        );
+        // Parse PKI allowlist: dh_signing_allowlist = { "MAC" = "hex_pubkey" }
+        let dh_signing_allowlist = parse_dh_signing_allowlist(settings);
+
+        let signing_key_seed_server = settings.get_string("signing_key_seed").ok();
+
+        let mut server = Server::new(cloud_ip, port, node_name)
+            .with_tun(virtual_tun.clone())
+            .with_encryption(enable_encryption)
+            .with_key_ttl_ms(key_ttl_ms)
+            .with_crypto_config(crypto_config)
+            .with_dh_signatures(enable_dh_signatures_server);
+        if let Some(ref seed) = signing_key_seed_server {
+            server = server.with_signing_key_seed(seed)?;
+        }
+        if !dh_signing_allowlist.is_empty() {
+            server = server.with_dh_signing_allowlist(dh_signing_allowlist);
+        }
+        let server = Arc::new(server);
 
         // Start the server immediately in the namespace context using block_in_place
         // This ensures the socket binds within the correct network namespace
@@ -128,8 +143,22 @@ pub fn create_node_from_settings(
     let mtu: i32 = 1400;
     let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
 
-    // Create VANET interface (the wireless medium where control/data messages flow)
-    let vanet_tun = InterfaceBuilder::new("vanet").build_tap()?;
+    // Create VANET interface (the wireless medium where control/data messages flow).
+    // A fixed MAC can be set via `vanet_mac` in the node YAML so it matches entries
+    // in a server's dh_signing_allowlist (the allowlist is keyed by VANET MAC).
+    let vanet_mac = settings
+        .get_string("vanet_mac")
+        .ok()
+        .and_then(|s| parse_mac(&s));
+    let vanet_tun = {
+        let b = InterfaceBuilder::new("vanet");
+        let b = if let Some(mac) = vanet_mac {
+            b.with_mac(mac)
+        } else {
+            b
+        };
+        b.build_tap()?
+    };
 
     // Create Device bound to VANET interface
     let dev = Arc::new(Device::new(vanet_tun.name())?);
@@ -162,6 +191,10 @@ pub fn create_node_from_settings(
             .build_tap()?;
 
         // Build ObuArgs
+        let enable_dh_signatures = settings.get_bool("enable_dh_signatures").unwrap_or(false);
+        let signing_key_seed = settings.get_string("signing_key_seed").ok();
+        let server_signing_pubkey = settings.get_string("server_signing_pubkey").ok();
+
         let obu_args = obu_lib::ObuArgs {
             bind: vanet_tun.name().to_string(),
             tap_name: Some("virtual".to_string()),
@@ -171,6 +204,9 @@ pub fn create_node_from_settings(
                 hello_history,
                 cached_candidates,
                 enable_encryption,
+                enable_dh_signatures,
+                signing_key_seed,
+                server_signing_pubkey,
                 dh_rekey_interval_ms,
                 dh_key_lifetime_ms,
                 dh_reply_timeout_ms,
@@ -244,6 +280,66 @@ pub fn create_node_from_settings(
         let interfaces = NodeInterfaces::rsu(vanet_tun, cloud_tun, Some(external_ip));
         Ok(NodeCreationResult::new(dev, interfaces, node))
     }
+}
+
+/// Parse a colon-separated MAC address string into a 6-byte array.
+fn parse_mac(s: &str) -> Option<[u8; 6]> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 6 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = parts
+        .iter()
+        .map(|p| u8::from_str_radix(p, 16).ok())
+        .collect();
+    bytes.and_then(|b| <[u8; 6]>::try_from(b).ok())
+}
+
+/// Parse the dh_signing_allowlist table from settings.
+///
+/// Expected YAML format:
+/// ```yaml
+/// dh_signing_allowlist:
+///   "AA:BB:CC:DD:EE:FF": "aabbcc...64hexchars"
+/// ```
+fn parse_dh_signing_allowlist(settings: &Config) -> HashMap<MacAddress, [u8; 32]> {
+    let raw: HashMap<String, config::Value> = match settings.get_table("dh_signing_allowlist") {
+        Ok(m) => m,
+        Err(_) => return HashMap::new(),
+    };
+    let mut out = HashMap::new();
+    for (mac_str, pubkey_val) in raw {
+        let mac = match mac_str.parse::<MacAddress>() {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(mac = %mac_str, error = %e, "Invalid MAC in dh_signing_allowlist, skipping");
+                continue;
+            }
+        };
+        let hex = match pubkey_val.into_string() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(mac = %mac_str, error = %e, "Invalid pubkey value in dh_signing_allowlist, skipping");
+                continue;
+            }
+        };
+        if hex.len() != 64 {
+            tracing::warn!(mac = %mac_str, "dh_signing_allowlist pubkey must be 64 hex chars, skipping");
+            continue;
+        }
+        let bytes: Option<Vec<u8>> = (0..32)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok())
+            .collect();
+        match bytes.and_then(|b| <[u8; 32]>::try_from(b).ok()) {
+            Some(arr) => {
+                out.insert(mac, arr);
+            }
+            None => {
+                tracing::warn!(mac = %mac_str, "Failed to decode dh_signing_allowlist pubkey hex, skipping");
+            }
+        }
+    }
+    out
 }
 
 /// Parse crypto configuration from settings, falling back to defaults.
