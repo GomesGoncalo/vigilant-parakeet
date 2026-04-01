@@ -76,12 +76,17 @@ pub fn create_node_from_settings(
         // Parse PKI allowlist: dh_signing_allowlist = { "MAC" = "hex_pubkey" }
         let dh_signing_allowlist = parse_dh_signing_allowlist(settings);
 
+        let signing_key_seed_server = settings.get_string("signing_key_seed").ok();
+
         let mut server = Server::new(cloud_ip, port, node_name)
             .with_tun(virtual_tun.clone())
             .with_encryption(enable_encryption)
             .with_key_ttl_ms(key_ttl_ms)
             .with_crypto_config(crypto_config)
             .with_dh_signatures(enable_dh_signatures_server);
+        if let Some(ref seed) = signing_key_seed_server {
+            server = server.with_signing_key_seed(seed)?;
+        }
         if !dh_signing_allowlist.is_empty() {
             server = server.with_dh_signing_allowlist(dh_signing_allowlist);
         }

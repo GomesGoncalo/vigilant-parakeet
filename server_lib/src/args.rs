@@ -18,6 +18,14 @@ pub struct ServerParameters {
     #[arg(long, default_value_t = false)]
     pub enable_dh_signatures: bool,
 
+    /// Hex-encoded 32-byte Ed25519 seed for a stable server signing identity (64 hex chars).
+    /// When set alongside enable_dh_signatures, the server uses the derived keypair
+    /// instead of generating a random one at startup.  The corresponding verifying key
+    /// should be set as server_signing_pubkey on each OBU for mutual PKI authentication.
+    /// Not exposed as a CLI flag to avoid leaking seeds via process listings.
+    #[arg(skip)]
+    pub signing_key_seed: Option<String>,
+
     /// Pre-registered OBU signing keys for PKI-mode authentication (MAC → hex pubkey).
     /// When non-empty and enable_dh_signatures is set, any KeyExchangeInit whose
     /// signing public key does not match the registered key for that OBU MAC is rejected.

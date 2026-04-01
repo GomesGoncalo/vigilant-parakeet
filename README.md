@@ -346,6 +346,14 @@ enable_encryption: true       # required
 enable_dh_signatures: true    # sign KE replies, verify incoming KE inits
 ```
 
+The server logs its signing public key at startup so you can register it on OBUs:
+
+```
+INFO signing_pubkey=e5f6a7b8... DH signing enabled on server
+```
+
+To get a stable, repeatable public key across restarts, configure a fixed seed (see PKI mode).
+
 ### PKI mode — pre-registering OBU identities
 
 To close the first-contact impersonation gap, give each OBU a **stable keypair** (via
@@ -386,7 +394,24 @@ server_signing_pubkey: "e5f6a7b8...64hexchars"  # server's verifying key (option
 created, so it requires the same privileges as the rest of the simulator (root /
 `CAP_NET_ADMIN`).
 
-**Step 3 — register OBU public keys on the server** (`server.yaml`):
+**Step 3 — give the server a stable identity** (`server.yaml`):
+
+Run `node keygen` once for the server too, then set its seed in config:
+
+```yaml
+node_type: Server
+virtual_ip: 10.0.0.50
+cloud_ip: 172.16.0.50
+port: 8080
+enable_encryption: true
+enable_dh_signatures: true
+signing_key_seed: "e5f6a7b8...64hexchars"   # stable seed — keep secret
+```
+
+The server derives the same keypair every restart and logs its verifying key at startup.
+OBUs can then pin that key via `server_signing_pubkey`.
+
+**Step 4 — register OBU public keys on the server** (`server.yaml`):
 
 ```yaml
 node_type: Server

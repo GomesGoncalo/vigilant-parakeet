@@ -119,6 +119,7 @@ mod tests {
                 port: 7777,
                 enable_encryption: true,
                 enable_dh_signatures: false,
+                signing_key_seed: None,
                 dh_signing_allowlist: Default::default(),
                 key_ttl_ms: 86_400_000,
                 cipher: node_lib::crypto::SymmetricCipher::default(),

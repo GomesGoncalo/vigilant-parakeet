@@ -14,6 +14,16 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time::Instant;
 use tracing::Instrument;
 
+fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..32)
+        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
+        .collect();
+    bytes.and_then(|b| b.try_into().ok())
+}
+
 /// Shared reference to a Tun device.
 pub type SharedTun = Arc<Tun>;
 
@@ -142,6 +152,8 @@ impl Server {
     }
 
     /// Enable or disable DH message signing and verification.
+    /// Generates a random ephemeral keypair when enabled.
+    /// Call `with_signing_key_seed` afterwards to use a stable keypair instead.
     pub fn with_dh_signatures(mut self, enabled: bool) -> Self {
         self.enable_dh_signatures = enabled;
         if enabled {
@@ -150,6 +162,17 @@ impl Server {
             self.signing_keypair = None;
         }
         self
+    }
+
+    /// Load the signing keypair from a 32-byte hex-encoded seed instead of generating
+    /// a random one.  Must be called after `with_dh_signatures(true)`.
+    /// The same seed always produces the same keypair, giving the server a stable
+    /// identity across restarts so OBUs can pin it via `server_signing_pubkey`.
+    pub fn with_signing_key_seed(mut self, hex_seed: &str) -> anyhow::Result<Self> {
+        let seed = decode_hex_32(hex_seed)
+            .ok_or_else(|| anyhow::anyhow!("signing_key_seed must be exactly 64 hex characters"))?;
+        self.signing_keypair = Some(Arc::new(SigningKeypair::from_seed(seed)));
+        Ok(self)
     }
 
     /// Set the PKI allowlist mapping OBU VANET MAC → expected Ed25519 verifying key bytes.
