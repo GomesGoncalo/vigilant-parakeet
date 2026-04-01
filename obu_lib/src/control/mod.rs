@@ -693,6 +693,39 @@ impl Obu {
             }
         }
 
+        // PKI: if a pinned server public key is configured, reject replies
+        // from any server whose signing key doesn't match.
+        if let Some(ref expected_hex) = self.args.obu_params.server_signing_pubkey {
+            match (ke_reply.signing_pubkey(), decode_hex_32(expected_hex)) {
+                (Some(spk), Some(expected)) if spk == expected => {
+                    tracing::debug!(
+                        key_id = ke_reply.key_id(),
+                        "KeyExchangeReply signing key matches pinned server pubkey"
+                    );
+                }
+                (Some(_), Some(_)) => {
+                    tracing::warn!(
+                        key_id = ke_reply.key_id(),
+                        "KeyExchangeReply signing key does not match pinned server pubkey, dropping"
+                    );
+                    return Ok(None);
+                }
+                (None, _) => {
+                    tracing::warn!(
+                        key_id = ke_reply.key_id(),
+                        "KeyExchangeReply is unsigned but server_signing_pubkey is configured, dropping"
+                    );
+                    return Ok(None);
+                }
+                (_, None) => {
+                    tracing::warn!(
+                        "server_signing_pubkey is not valid 64-char hex, cannot verify reply — dropping"
+                    );
+                    return Ok(None);
+                }
+            }
+        }
+
         // Complete the DH exchange.
         let key_id = ke_reply.key_id();
         let peer_pub = ke_reply.public_key();

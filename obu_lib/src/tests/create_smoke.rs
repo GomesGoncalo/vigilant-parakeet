@@ -22,6 +22,7 @@ mod create_smoke {
                 enable_encryption: false,
                 enable_dh_signatures: false,
                 signing_key_seed: None,
+                server_signing_pubkey: None,
                 dh_rekey_interval_ms: 60_000,
                 dh_key_lifetime_ms: 120_000,
                 dh_reply_timeout_ms: 5_000,

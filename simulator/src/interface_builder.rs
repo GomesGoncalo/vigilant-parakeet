@@ -32,6 +32,7 @@ pub struct InterfaceBuilder {
     ip: Option<Ipv4Addr>,
     mtu: Option<u16>,
     netmask: Option<Ipv4Addr>,
+    mac: Option<[u8; 6]>,
 }
 
 impl InterfaceBuilder {
@@ -42,6 +43,7 @@ impl InterfaceBuilder {
             ip: None,
             mtu: None,
             netmask: None,
+            mac: None,
         }
     }
 
@@ -54,6 +56,17 @@ impl InterfaceBuilder {
     /// Set the MTU for this interface
     pub fn with_mtu(mut self, mtu: u16) -> Self {
         self.mtu = Some(mtu);
+        self
+    }
+
+    /// Set a fixed MAC address for this interface.
+    ///
+    /// The MAC is applied via `ip link set <name> address <mac> up` after the TAP
+    /// device is created.  This is required when using the PKI allowlist, because
+    /// the allowlist maps MAC addresses to expected signing keys — the MAC must be
+    /// stable and known at configuration time.
+    pub fn with_mac(mut self, mac: [u8; 6]) -> Self {
+        self.mac = Some(mac);
         self
     }
 
@@ -100,6 +113,27 @@ impl InterfaceBuilder {
                 )
             })?;
 
+            // If a fixed MAC was requested, apply it now and re-up the interface.
+            // `ip link set` briefly takes the interface down when changing the address.
+            if let Some(mac) = self.mac {
+                let mac_str = format!(
+                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                );
+                let status = std::process::Command::new("ip")
+                    .args(["link", "set", &self.name, "address", &mac_str, "up"])
+                    .status()
+                    .map_err(|e| anyhow::anyhow!("Failed to set MAC on {}: {}", self.name, e))?;
+                if !status.success() {
+                    anyhow::bail!(
+                        "ip link set {} address {} up failed with exit code {:?}",
+                        self.name,
+                        mac_str,
+                        status.code()
+                    );
+                }
+            }
+
             Ok(Arc::new(Tun::new_real(real_tun)))
         }
 
@@ -118,6 +152,7 @@ impl Clone for InterfaceBuilder {
             ip: self.ip,
             mtu: self.mtu,
             netmask: self.netmask,
+            mac: self.mac,
         }
     }
 }

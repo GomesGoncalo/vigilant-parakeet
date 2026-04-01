@@ -351,14 +351,25 @@ enable_dh_signatures: true    # sign KE replies, verify incoming KE inits
 To close the first-contact impersonation gap, give each OBU a **stable keypair** (via
 a persistent seed) and register the corresponding public key on the server.
 
-**Step 1 — generate a seed for each OBU** (any source of 32 random bytes, hex-encoded):
+**Step 1 — generate a keypair for each node** using the built-in keygen command:
 
 ```sh
-openssl rand -hex 32
-# example output: a1b2c3d4...64hexchars
+node keygen
+# Ed25519 signing keypair for DH authentication
+#
+# Seed (signing_key_seed in node YAML — keep secret):
+#   a1b2c3d4...64hexchars
+#
+# Verifying key (for dh_signing_allowlist on server, or server_signing_pubkey on OBU):
+#   e5f6a7b8...64hexchars
 ```
 
-**Step 2 — configure the OBU with its seed** (`n2.yaml`):
+`node keygen` uses a cryptographically secure RNG (`OsRng`). The seed is secret — treat
+it like a private key. The verifying key is what you distribute to peers.
+
+**Step 2 — pin the VANET MAC address** of each OBU so it matches the allowlist entry.
+The allowlist is keyed by VANET MAC; since the simulator assigns MACs randomly at
+startup you must fix them in config (`n2.yaml`):
 
 ```yaml
 node_type: Obu
@@ -366,11 +377,14 @@ hello_history: 10
 ip: 10.0.0.2
 enable_encryption: true
 enable_dh_signatures: true
+vanet_mac: "AA:BB:CC:DD:EE:FF"              # fixed MAC for the VANET interface
 signing_key_seed: "a1b2c3d4...64hexchars"   # stable 32-byte seed, hex-encoded
+server_signing_pubkey: "e5f6a7b8...64hexchars"  # server's verifying key (optional)
 ```
 
-The OBU will always derive the same Ed25519 keypair from this seed and log its
-public key at startup.
+`vanet_mac` is applied via `ip link set <iface> address <mac> up` after the TAP is
+created, so it requires the same privileges as the rest of the simulator (root /
+`CAP_NET_ADMIN`).
 
 **Step 3 — register OBU public keys on the server** (`server.yaml`):
 
@@ -389,6 +403,15 @@ dh_signing_allowlist:
 When `dh_signing_allowlist` is non-empty, the server rejects any
 `KeyExchangeInit` whose `signing_pubkey` does not match the pre-registered key for
 that OBU MAC address. OBUs not in the allowlist cannot complete key exchange.
+
+**Optional — pin the server's identity on each OBU** (`n2.yaml`):
+
+```yaml
+server_signing_pubkey: "e5f6a7b8...64hexchars"
+```
+
+When set, the OBU rejects any `KeyExchangeReply` whose signing key does not match,
+preventing a rogue server from completing the exchange even on first contact.
 
 ### Mixed deployments
 

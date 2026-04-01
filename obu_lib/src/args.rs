@@ -30,6 +30,14 @@ pub struct ObuParameters {
     #[arg(skip)]
     pub signing_key_seed: Option<String>,
 
+    /// Hex-encoded 32-byte Ed25519 verifying key of the trusted server (64 hex chars).
+    /// When set alongside enable_dh_signatures, the OBU rejects any KeyExchangeReply
+    /// whose signing public key does not match this value, preventing server
+    /// impersonation even on first contact (closes the TOFU gap on the OBU side).
+    /// Not exposed as a CLI flag to avoid accidental misconfiguration.
+    #[arg(skip)]
+    pub server_signing_pubkey: Option<String>,
+
     /// Interval in milliseconds between DH re-key exchanges
     #[arg(long, default_value_t = 43_200_000)]
     pub dh_rekey_interval_ms: u64,

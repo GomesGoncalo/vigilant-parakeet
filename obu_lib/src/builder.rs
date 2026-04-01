@@ -28,6 +28,8 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct ObuBuilder {
     inner: NodeBuilder,
+    signing_key_seed: Option<String>,
+    server_signing_pubkey: Option<String>,
 }
 
 impl ObuBuilder {
@@ -35,6 +37,8 @@ impl ObuBuilder {
     pub fn new(bind: impl Into<String>) -> Self {
         Self {
             inner: NodeBuilder::new(bind),
+            signing_key_seed: None,
+            server_signing_pubkey: None,
         }
     }
 
@@ -54,7 +58,11 @@ impl ObuBuilder {
         inner.cipher = args.obu_params.cipher;
         inner.kdf = args.obu_params.kdf;
         inner.dh_group = args.obu_params.dh_group;
-        Self { inner }
+        Self {
+            inner,
+            signing_key_seed: args.obu_params.signing_key_seed,
+            server_signing_pubkey: args.obu_params.server_signing_pubkey,
+        }
     }
 
     /// Set the TAP device name
@@ -196,7 +204,8 @@ impl ObuBuilder {
                 cached_candidates: self.inner.cached_candidates,
                 enable_encryption: self.inner.enable_encryption,
                 enable_dh_signatures: self.inner.enable_dh_signatures,
-                signing_key_seed: None,
+                signing_key_seed: self.signing_key_seed.clone(),
+                server_signing_pubkey: self.server_signing_pubkey.clone(),
                 dh_rekey_interval_ms: self.inner.dh_rekey_interval_ms,
                 dh_key_lifetime_ms: self.inner.dh_key_lifetime_ms,
                 dh_reply_timeout_ms: self.inner.dh_reply_timeout_ms,
@@ -260,6 +269,7 @@ mod tests {
                 enable_encryption: true,
                 enable_dh_signatures: false,
                 signing_key_seed: None,
+                server_signing_pubkey: None,
                 dh_rekey_interval_ms: 45_000,
                 dh_key_lifetime_ms: 90_000,
                 dh_reply_timeout_ms: 3_000,

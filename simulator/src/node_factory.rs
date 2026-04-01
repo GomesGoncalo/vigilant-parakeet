@@ -138,8 +138,22 @@ pub fn create_node_from_settings(
     let mtu: i32 = 1400;
     let hello_history: u32 = settings.get_int("hello_history")?.try_into()?;
 
-    // Create VANET interface (the wireless medium where control/data messages flow)
-    let vanet_tun = InterfaceBuilder::new("vanet").build_tap()?;
+    // Create VANET interface (the wireless medium where control/data messages flow).
+    // A fixed MAC can be set via `vanet_mac` in the node YAML so it matches entries
+    // in a server's dh_signing_allowlist (the allowlist is keyed by VANET MAC).
+    let vanet_mac = settings
+        .get_string("vanet_mac")
+        .ok()
+        .and_then(|s| parse_mac(&s));
+    let vanet_tun = {
+        let b = InterfaceBuilder::new("vanet");
+        let b = if let Some(mac) = vanet_mac {
+            b.with_mac(mac)
+        } else {
+            b
+        };
+        b.build_tap()?
+    };
 
     // Create Device bound to VANET interface
     let dev = Arc::new(Device::new(vanet_tun.name())?);
@@ -174,6 +188,7 @@ pub fn create_node_from_settings(
         // Build ObuArgs
         let enable_dh_signatures = settings.get_bool("enable_dh_signatures").unwrap_or(false);
         let signing_key_seed = settings.get_string("signing_key_seed").ok();
+        let server_signing_pubkey = settings.get_string("server_signing_pubkey").ok();
 
         let obu_args = obu_lib::ObuArgs {
             bind: vanet_tun.name().to_string(),
@@ -186,6 +201,7 @@ pub fn create_node_from_settings(
                 enable_encryption,
                 enable_dh_signatures,
                 signing_key_seed,
+                server_signing_pubkey,
                 dh_rekey_interval_ms,
                 dh_key_lifetime_ms,
                 dh_reply_timeout_ms,
@@ -259,6 +275,19 @@ pub fn create_node_from_settings(
         let interfaces = NodeInterfaces::rsu(vanet_tun, cloud_tun, Some(external_ip));
         Ok(NodeCreationResult::new(dev, interfaces, node))
     }
+}
+
+/// Parse a colon-separated MAC address string into a 6-byte array.
+fn parse_mac(s: &str) -> Option<[u8; 6]> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 6 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = parts
+        .iter()
+        .map(|p| u8::from_str_radix(p, 16).ok())
+        .collect();
+    bytes.and_then(|b| <[u8; 6]>::try_from(b).ok())
 }
 
 /// Parse the dh_signing_allowlist table from settings.
