@@ -229,7 +229,7 @@ as a simple state machine (@fig-dh-state):
   diagram(
     node-stroke: 0.5pt,
     spacing: (25mm, 20mm),
-    node((0,0), [None], name: <none>),
+    node((0,-1), [None], name: <none>),
     node((2,0), [Pending], name: <pending>),
     node((2,2), [Established], name: <established>),
     edge(<none>, <pending>, "->", [initiate\_exchange()], label-side: center),
