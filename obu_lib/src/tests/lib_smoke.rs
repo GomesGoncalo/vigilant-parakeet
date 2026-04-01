@@ -14,6 +14,7 @@ mod tests {
                 hello_history: 1,
                 cached_candidates: 1,
                 enable_encryption: false,
+                enable_dh_signatures: false,
                 dh_rekey_interval_ms: 60_000,
                 dh_key_lifetime_ms: 120_000,
                 dh_reply_timeout_ms: 5_000,

@@ -42,6 +42,7 @@ namespaces) and the `visualization` UI (browser-based dashboard).
 - Run many instances of `node_lib` inside isolated Linux network namespaces
 - Simulate per-link latency and packet loss
 - **External tap interfaces for RSU nodes** - Connect RSUs to external servers via 172.x.x.x network (see [docs/EXTERNAL_TAP_INTERFACE.md](docs/EXTERNAL_TAP_INTERFACE.md))
+- **DH message signing** — Ed25519 digital signatures on key exchange messages authenticate the DH handshake (see [DH Signatures](#dh-message-signing) below)
 - HTTP API for runtime stats and for changing channel parameters
 - Browser visualization (in `visualization/`) to monitor traffic and change
   parameters interactively (optional `webview` feature)
@@ -285,6 +286,71 @@ trunk serve
 ```
 
 The UI can display topology, per-link parameters, and live traffic charts.
+
+## DH Message Signing
+
+`vigilant-parakeet` supports **Ed25519 digital signatures** on Diffie-Hellman key
+exchange messages, providing authentication of the DH handshake. Without signatures,
+a node cannot verify that a `KeyExchangeInit` or `KeyExchangeReply` was sent by a
+legitimate peer rather than an attacker injecting fake DH public keys.
+
+### How it works
+
+When `enable_dh_signatures: true` is configured:
+
+1. Each node (OBU or Server) generates a **random Ed25519 identity keypair** at startup.
+2. Every outgoing `KeyExchangeInit` or `KeyExchangeReply` is **signed** over its
+   42-byte base payload (`key_id | dh_public_key | sender_mac`).
+3. The 32-byte Ed25519 verifying key and 64-byte signature are appended to the
+   message, extending the wire format from 42 bytes to **138 bytes**.
+4. The receiver **verifies** the signature before accepting the key exchange. Messages
+   with missing or invalid signatures are dropped with a warning log.
+5. Intermediate relay nodes (OBUs forwarding KE messages up or down the tree)
+   **preserve** signatures unchanged.
+
+This is a **trust-on-first-use** model — no PKI or pre-shared certificates are
+required. Each signature is self-contained in the message.
+
+### Enabling DH signatures on an OBU node (`n2.yaml`)
+
+```yaml
+node_type: Obu
+hello_history: 10
+ip: 10.0.0.2
+enable_encryption: true       # required — signatures only apply to DH messages
+enable_dh_signatures: true    # sign outgoing KE messages, verify incoming ones
+```
+
+### Enabling DH signatures on a Server node (`server.yaml`)
+
+```yaml
+node_type: Server
+virtual_ip: 10.0.0.50
+cloud_ip: 172.16.0.50
+port: 8080
+enable_encryption: true       # required
+enable_dh_signatures: true    # sign KE replies, verify incoming KE inits
+```
+
+### Mixed deployments
+
+Signatures are **optional per-node**. An OBU with `enable_dh_signatures: true`
+will drop any unsigned `KeyExchangeReply` from the server. A Server with
+`enable_dh_signatures: true` will drop any unsigned `KeyExchangeInit` from an
+OBU. Therefore, for end-to-end signature enforcement both the OBU and the Server
+must have `enable_dh_signatures: true`.
+
+Nodes with `enable_dh_signatures: false` (the default) continue to work exactly
+as before — unsigned, 42-byte KE messages.
+
+### Wire format summary
+
+| Mode     | Size (bytes) | Contents |
+|----------|-------------|----------|
+| Unsigned | 42          | `key_id (4) \| dh_pubkey (32) \| sender (6)` |
+| Signed   | 138         | `key_id (4) \| dh_pubkey (32) \| sender (6) \| ed25519_verifying_key (32) \| ed25519_signature (64)` |
+
+The signature covers the first 42 bytes (the base payload).
 
 ## Development tips
 

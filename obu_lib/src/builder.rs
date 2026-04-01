@@ -47,6 +47,7 @@ impl ObuBuilder {
         inner.hello_history = args.obu_params.hello_history;
         inner.cached_candidates = args.obu_params.cached_candidates;
         inner.enable_encryption = args.obu_params.enable_encryption;
+        inner.enable_dh_signatures = args.obu_params.enable_dh_signatures;
         inner.dh_rekey_interval_ms = args.obu_params.dh_rekey_interval_ms;
         inner.dh_key_lifetime_ms = args.obu_params.dh_key_lifetime_ms;
         inner.dh_reply_timeout_ms = args.obu_params.dh_reply_timeout_ms;
@@ -194,6 +195,7 @@ impl ObuBuilder {
                 hello_history: self.inner.hello_history,
                 cached_candidates: self.inner.cached_candidates,
                 enable_encryption: self.inner.enable_encryption,
+                enable_dh_signatures: self.inner.enable_dh_signatures,
                 dh_rekey_interval_ms: self.inner.dh_rekey_interval_ms,
                 dh_key_lifetime_ms: self.inner.dh_key_lifetime_ms,
                 dh_reply_timeout_ms: self.inner.dh_reply_timeout_ms,
@@ -255,6 +257,7 @@ mod tests {
                 hello_history: 15,
                 cached_candidates: 4,
                 enable_encryption: true,
+                enable_dh_signatures: false,
                 dh_rekey_interval_ms: 45_000,
                 dh_key_lifetime_ms: 90_000,
                 dh_reply_timeout_ms: 3_000,

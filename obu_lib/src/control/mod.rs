@@ -15,7 +15,7 @@ use common::{device::Device, network_interface::NetworkInterface};
 use dh_key_store::DhKeyStore;
 use mac_address::MacAddress;
 use node::ReplyType;
-use node_lib::crypto::CryptoConfig;
+use node_lib::crypto::{CryptoConfig, SigningKeypair};
 use node_lib::messages::{
     control::{
         key_exchange::{KeyExchangeInit, KeyExchangeReply},
@@ -52,6 +52,9 @@ pub struct Obu {
     node_name: String,
     dh_key_store: SharedKeyStore,
     crypto_config: CryptoConfig,
+    /// Ed25519 identity keypair used to sign outgoing DH messages.
+    /// Present only when `enable_dh_signatures` is `true`.
+    signing_keypair: Option<Arc<SigningKeypair>>,
 }
 
 impl Obu {
@@ -72,6 +75,12 @@ impl Obu {
             dh_group: args.obu_params.dh_group,
         };
 
+        let signing_keypair = if args.obu_params.enable_dh_signatures {
+            Some(Arc::new(SigningKeypair::generate()))
+        } else {
+            None
+        };
+
         let dh_key_store = Arc::new(RwLock::new(DhKeyStore::new(crypto_config)));
         let obu = Arc::new(Self {
             args,
@@ -82,6 +91,7 @@ impl Obu {
             node_name,
             dh_key_store,
             crypto_config,
+            signing_keypair,
         });
 
         tracing::info!(
@@ -222,7 +232,15 @@ impl Obu {
                                 };
 
                                 let our_mac = obu.device.mac_address();
-                                let init_msg = KeyExchangeInit::new(key_id, pub_key, our_mac);
+                                let init_msg = if let Some(ref kp) = obu.signing_keypair {
+                                    let unsigned = KeyExchangeInit::new(key_id, pub_key, our_mac);
+                                    let base = unsigned.base_payload();
+                                    let sig = kp.sign(&base);
+                                    let spk = kp.verifying_key_bytes();
+                                    KeyExchangeInit::new_signed(key_id, pub_key, our_mac, spk, sig)
+                                } else {
+                                    KeyExchangeInit::new(key_id, pub_key, our_mac)
+                                };
                                 // Send to upstream RSU — it will relay to server
                                 let msg = Message::new(
                                     our_mac,
@@ -534,7 +552,17 @@ impl Obu {
             return Ok(None);
         };
 
-        let init = KeyExchangeInit::new(ke_init.key_id(), ke_init.public_key(), ke_init.sender());
+        // Preserve any attached signature when forwarding — the server needs it.
+        let init = match (ke_init.signing_pubkey(), ke_init.signature()) {
+            (Some(spk), Some(sig)) => KeyExchangeInit::new_signed(
+                ke_init.key_id(),
+                ke_init.public_key(),
+                ke_init.sender(),
+                spk,
+                sig,
+            ),
+            _ => KeyExchangeInit::new(ke_init.key_id(), ke_init.public_key(), ke_init.sender()),
+        };
         let fwd = Message::new(
             self.device.mac_address(),
             upstream.mac,
@@ -544,6 +572,7 @@ impl Obu {
         tracing::debug!(
             obu = %ke_init.sender(),
             via = %upstream.mac,
+            signed = ke_init.is_signed(),
             "Forwarding KeyExchangeInit up the tree"
         );
         Ok(Some(vec![ReplyType::WireFlat(wire)]))
@@ -578,8 +607,21 @@ impl Obu {
                 return Ok(None);
             };
 
-            let reply =
-                KeyExchangeReply::new(ke_reply.key_id(), ke_reply.public_key(), ke_reply.sender());
+            // Preserve any attached signature when forwarding.
+            let reply = match (ke_reply.signing_pubkey(), ke_reply.signature()) {
+                (Some(spk), Some(sig)) => KeyExchangeReply::new_signed(
+                    ke_reply.key_id(),
+                    ke_reply.public_key(),
+                    ke_reply.sender(),
+                    spk,
+                    sig,
+                ),
+                _ => KeyExchangeReply::new(
+                    ke_reply.key_id(),
+                    ke_reply.public_key(),
+                    ke_reply.sender(),
+                ),
+            };
             let fwd = Message::new(
                 self.device.mac_address(),
                 next_hop.mac,
@@ -589,12 +631,41 @@ impl Obu {
             tracing::debug!(
                 dest = %dest,
                 via = %next_hop.mac,
+                signed = ke_reply.is_signed(),
                 "Forwarding KeyExchangeReply down the tree"
             );
             return Ok(Some(vec![ReplyType::WireFlat(wire)]));
         }
 
-        // It's for us — complete the DH exchange.
+        // It's for us — verify the server's signature before completing the exchange.
+        if self.args.obu_params.enable_dh_signatures {
+            match (ke_reply.signing_pubkey(), ke_reply.signature()) {
+                (Some(spk), Some(sig)) => {
+                    let base = ke_reply.base_payload();
+                    if let Err(e) = node_lib::crypto::verify_dh_signature(&base, &spk, &sig) {
+                        tracing::warn!(
+                            error = %e,
+                            key_id = ke_reply.key_id(),
+                            "KeyExchangeReply has invalid signature, dropping"
+                        );
+                        return Ok(None);
+                    }
+                    tracing::debug!(
+                        key_id = ke_reply.key_id(),
+                        "KeyExchangeReply signature verified"
+                    );
+                }
+                _ => {
+                    tracing::warn!(
+                        key_id = ke_reply.key_id(),
+                        "KeyExchangeReply is unsigned but enable_dh_signatures is set, dropping"
+                    );
+                    return Ok(None);
+                }
+            }
+        }
+
+        // Complete the DH exchange.
         let key_id = ke_reply.key_id();
         let peer_pub = ke_reply.public_key();
 

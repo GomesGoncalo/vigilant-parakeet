@@ -5,7 +5,7 @@ use crate::registry::RegistrationMessage;
 use anyhow::Result;
 use common::tun::Tun;
 use mac_address::MacAddress;
-use node_lib::crypto::{CryptoConfig, DhKeypair};
+use node_lib::crypto::{CryptoConfig, DhKeypair, SigningKeypair};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -85,6 +85,10 @@ pub struct Server {
     crypto_config: CryptoConfig,
     /// Node name for tracing/logging identification.
     node_name: String,
+    /// Whether to sign DH replies and verify incoming DH message signatures.
+    enable_dh_signatures: bool,
+    /// Ed25519 identity keypair for signing DH replies (present when `enable_dh_signatures`).
+    signing_keypair: Option<Arc<SigningKeypair>>,
 }
 
 impl Server {
@@ -103,6 +107,8 @@ impl Server {
             dh_keys: Arc::new(RwLock::new(HashMap::new())),
             crypto_config: CryptoConfig::default(),
             node_name,
+            enable_dh_signatures: false,
+            signing_keypair: None,
         }
     }
 
@@ -127,6 +133,17 @@ impl Server {
     /// Set the crypto configuration for key derivation.
     pub fn with_crypto_config(mut self, config: CryptoConfig) -> Self {
         self.crypto_config = config;
+        self
+    }
+
+    /// Enable or disable DH message signing and verification.
+    pub fn with_dh_signatures(mut self, enabled: bool) -> Self {
+        self.enable_dh_signatures = enabled;
+        if enabled {
+            self.signing_keypair = Some(Arc::new(SigningKeypair::generate()));
+        } else {
+            self.signing_keypair = None;
+        }
         self
     }
 
@@ -157,6 +174,8 @@ impl Server {
         let obu_routes = self.obu_routes.clone();
         let tun_for_recv = self.tun.clone();
         let enable_encryption = self.enable_encryption;
+        let enable_dh_signatures = self.enable_dh_signatures;
+        let signing_keypair = self.signing_keypair.clone();
         let dh_keys = self.dh_keys.clone();
         let crypto_config = self.crypto_config;
         let name_for_recv = node_name.clone();
@@ -171,6 +190,8 @@ impl Server {
                     obu_routes,
                     tun_for_recv,
                     enable_encryption,
+                    enable_dh_signatures,
+                    signing_keypair,
                     dh_keys,
                     crypto_config,
                     key_ttl_ms_recv,
@@ -220,6 +241,8 @@ impl Server {
         obu_routes: Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
         tun: Option<SharedTun>,
         enable_encryption: bool,
+        enable_dh_signatures: bool,
+        signing_keypair: Option<Arc<SigningKeypair>>,
         dh_keys: Arc<RwLock<DhKeyStore>>,
         crypto_config: CryptoConfig,
         key_ttl_ms: u64,
@@ -255,6 +278,8 @@ impl Server {
                                     &dh_keys,
                                     crypto_config,
                                     &socket,
+                                    enable_dh_signatures,
+                                    signing_keypair.as_deref(),
                                 )
                                 .await;
                             } else {
@@ -684,12 +709,15 @@ impl Server {
     /// Handle a KeyExchangeForward from an RSU: generate our keypair,
     /// compute the shared secret, store the per-OBU key, and send a
     /// KeyExchangeResponse back to the RSU.
+    #[allow(clippy::too_many_arguments)]
     async fn handle_key_exchange_forward(
         ke_fwd: &crate::cloud_protocol::KeyExchangeForward,
         src_addr: SocketAddr,
         dh_keys: &Arc<RwLock<DhKeyStore>>,
         crypto_config: CryptoConfig,
         socket: &Arc<UdpSocket>,
+        enable_dh_signatures: bool,
+        signing_keypair: Option<&SigningKeypair>,
     ) {
         // Parse the KeyExchangeInit payload
         let ke_init = match node_lib::messages::control::key_exchange::KeyExchangeInit::try_from(
@@ -705,6 +733,34 @@ impl Server {
                 return;
             }
         };
+
+        // Verify the OBU's signature if signatures are required.
+        if enable_dh_signatures {
+            match (ke_init.signing_pubkey(), ke_init.signature()) {
+                (Some(spk), Some(sig)) => {
+                    let base = ke_init.base_payload();
+                    if let Err(e) = node_lib::crypto::verify_dh_signature(&base, &spk, &sig) {
+                        tracing::warn!(
+                            obu = %ke_fwd.obu_mac,
+                            error = %e,
+                            "KeyExchangeInit has invalid signature, dropping"
+                        );
+                        return;
+                    }
+                    tracing::debug!(
+                        obu = %ke_fwd.obu_mac,
+                        "KeyExchangeInit signature verified"
+                    );
+                }
+                _ => {
+                    tracing::warn!(
+                        obu = %ke_fwd.obu_mac,
+                        "KeyExchangeInit is unsigned but enable_dh_signatures is set, dropping"
+                    );
+                    return;
+                }
+            }
+        }
 
         let key_id = ke_init.key_id();
         let peer_pub_bytes = ke_init.public_key();
@@ -770,14 +826,33 @@ impl Server {
             "DH key exchange completed with OBU, session key established"
         );
 
-        // Build the KeyExchangeReply payload (42 bytes: key_id + public_key + sender)
+        // Build the KeyExchangeReply payload.
         // Set sender = obu_mac so relay OBUs know who the final recipient is and
         // forward the reply hop-by-hop rather than consuming it themselves.
-        let ke_reply = node_lib::messages::control::key_exchange::KeyExchangeReply::new(
-            key_id,
-            our_public,
-            ke_fwd.obu_mac,
-        );
+        // Sign the reply if signatures are enabled.
+        let ke_reply = if let Some(kp) = signing_keypair {
+            let unsigned = node_lib::messages::control::key_exchange::KeyExchangeReply::new(
+                key_id,
+                our_public,
+                ke_fwd.obu_mac,
+            );
+            let base = unsigned.base_payload();
+            let sig = kp.sign(&base);
+            let spk = kp.verifying_key_bytes();
+            node_lib::messages::control::key_exchange::KeyExchangeReply::new_signed(
+                key_id,
+                our_public,
+                ke_fwd.obu_mac,
+                spk,
+                sig,
+            )
+        } else {
+            node_lib::messages::control::key_exchange::KeyExchangeReply::new(
+                key_id,
+                our_public,
+                ke_fwd.obu_mac,
+            )
+        };
         let reply_bytes: Vec<u8> = (&ke_reply).into();
 
         // Send KeyExchangeResponse back to the RSU

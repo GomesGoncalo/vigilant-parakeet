@@ -62,6 +62,8 @@ pub fn create_node_from_settings(
             .build_tap()?;
 
         let enable_encryption = settings.get_bool("enable_encryption").unwrap_or(false);
+        let enable_dh_signatures_server =
+            settings.get_bool("enable_dh_signatures").unwrap_or(false);
         let crypto_config = parse_crypto_config(settings);
         let key_ttl_ms = settings
             .get_int("key_ttl_ms")
@@ -74,7 +76,8 @@ pub fn create_node_from_settings(
                 .with_tun(virtual_tun.clone())
                 .with_encryption(enable_encryption)
                 .with_key_ttl_ms(key_ttl_ms)
-                .with_crypto_config(crypto_config),
+                .with_crypto_config(crypto_config)
+                .with_dh_signatures(enable_dh_signatures_server),
         );
 
         // Start the server immediately in the namespace context using block_in_place
@@ -162,6 +165,8 @@ pub fn create_node_from_settings(
             .build_tap()?;
 
         // Build ObuArgs
+        let enable_dh_signatures = settings.get_bool("enable_dh_signatures").unwrap_or(false);
+
         let obu_args = obu_lib::ObuArgs {
             bind: vanet_tun.name().to_string(),
             tap_name: Some("virtual".to_string()),
@@ -171,6 +176,7 @@ pub fn create_node_from_settings(
                 hello_history,
                 cached_candidates,
                 enable_encryption,
+                enable_dh_signatures,
                 dh_rekey_interval_ms,
                 dh_key_lifetime_ms,
                 dh_reply_timeout_ms,

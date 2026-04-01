@@ -16,6 +16,12 @@ pub struct ObuParameters {
     #[arg(long, default_value_t = false)]
     pub enable_encryption: bool,
 
+    /// Sign DH key exchange messages with Ed25519 and verify peer signatures.
+    /// When enabled, each node generates a random identity keypair at startup.
+    /// Both sides must have this enabled for signatures to be verified.
+    #[arg(long, default_value_t = false)]
+    pub enable_dh_signatures: bool,
+
     /// Interval in milliseconds between DH re-key exchanges
     #[arg(long, default_value_t = 43_200_000)]
     pub dh_rekey_interval_ms: u64,

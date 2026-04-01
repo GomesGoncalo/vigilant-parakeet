@@ -12,6 +12,11 @@ pub struct ServerParameters {
     #[arg(long, default_value_t = false)]
     pub enable_encryption: bool,
 
+    /// Sign DH key exchange replies with Ed25519 and verify incoming signatures.
+    /// Must be enabled on all participating nodes for end-to-end signature checking.
+    #[arg(long, default_value_t = false)]
+    pub enable_dh_signatures: bool,
+
     /// Maximum lifetime of a DH-derived key in milliseconds before the server
     /// considers it expired and drops traffic until the OBU re-keys
     #[arg(long, default_value_t = 86_400_000)]
