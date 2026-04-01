@@ -143,11 +143,11 @@ impl DownstreamForward {
     }
 }
 
-/// Minimum byte length of a KeyExchangeForward message.
+/// Minimum byte length of a KeyExchangeForward message (unsigned payload).
 /// Layout: MAGIC(2) + TYPE(1) + OBU_MAC(6) + RSU_MAC(6) + KE_PAYLOAD(42) = 57
 pub const KEY_EXCHANGE_FWD_MIN_LEN: usize = 57;
 
-/// Minimum byte length of a KeyExchangeResponse message.
+/// Minimum byte length of a KeyExchangeResponse message (unsigned payload).
 /// Layout: MAGIC(2) + TYPE(1) + OBU_DEST_MAC(6) + KE_PAYLOAD(42) = 51
 pub const KEY_EXCHANGE_RSP_MIN_LEN: usize = 51;
 
@@ -171,15 +171,19 @@ pub struct KeyExchangeForward {
     pub payload: Vec<u8>,
 }
 
-/// Expected key exchange payload size (key_id 4B + public_key 32B + sender 6B).
+/// Expected key exchange payload size for unsigned messages (key_id 4B + public_key 32B + sender 6B).
 pub const KE_PAYLOAD_LEN: usize = 42;
+
+/// Expected key exchange payload size for signed messages (base 42B + verifying_key 32B + signature 64B).
+pub const KE_SIGNED_PAYLOAD_LEN: usize = 138;
 
 impl KeyExchangeForward {
     pub fn new(obu_mac: MacAddress, rsu_mac: MacAddress, payload: Vec<u8>) -> Result<Self> {
-        if payload.len() != KE_PAYLOAD_LEN {
+        if payload.len() != KE_PAYLOAD_LEN && payload.len() != KE_SIGNED_PAYLOAD_LEN {
             bail!(
-                "KeyExchangeForward payload must be exactly {} bytes, got {}",
+                "KeyExchangeForward payload must be {} or {} bytes, got {}",
                 KE_PAYLOAD_LEN,
+                KE_SIGNED_PAYLOAD_LEN,
                 payload.len()
             );
         }
@@ -208,7 +212,7 @@ impl KeyExchangeForward {
             return None;
         }
         let payload = &data[15..];
-        if payload.len() != KE_PAYLOAD_LEN {
+        if payload.len() != KE_PAYLOAD_LEN && payload.len() != KE_SIGNED_PAYLOAD_LEN {
             return None;
         }
         let obu_bytes: [u8; 6] = data[3..9].try_into().ok()?;
@@ -241,10 +245,11 @@ pub struct KeyExchangeResponse {
 
 impl KeyExchangeResponse {
     pub fn new(obu_dest_mac: MacAddress, payload: Vec<u8>) -> Result<Self> {
-        if payload.len() != KE_PAYLOAD_LEN {
+        if payload.len() != KE_PAYLOAD_LEN && payload.len() != KE_SIGNED_PAYLOAD_LEN {
             bail!(
-                "KeyExchangeResponse payload must be exactly {} bytes, got {}",
+                "KeyExchangeResponse payload must be {} or {} bytes, got {}",
                 KE_PAYLOAD_LEN,
+                KE_SIGNED_PAYLOAD_LEN,
                 payload.len()
             );
         }
@@ -271,7 +276,7 @@ impl KeyExchangeResponse {
             return None;
         }
         let payload = &data[9..];
-        if payload.len() != KE_PAYLOAD_LEN {
+        if payload.len() != KE_PAYLOAD_LEN && payload.len() != KE_SIGNED_PAYLOAD_LEN {
             return None;
         }
         let dest_bytes: [u8; 6] = data[3..9].try_into().ok()?;
@@ -456,6 +461,18 @@ mod tests {
     }
 
     #[test]
+    fn key_exchange_forward_signed_roundtrip() {
+        let obu: MacAddress = [1u8; 6].into();
+        let rsu: MacAddress = [2u8; 6].into();
+        let payload = vec![0xAB; 138];
+        let msg = KeyExchangeForward::new(obu, rsu, payload.clone()).unwrap();
+        let bytes = msg.to_bytes();
+        assert_eq!(bytes.len(), 15 + 138);
+        let parsed = KeyExchangeForward::try_from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+    }
+
+    #[test]
     fn key_exchange_forward_too_short() {
         assert!(KeyExchangeForward::try_from_bytes(&[0xAB, 0xCD, 0x04]).is_none());
     }
@@ -467,6 +484,17 @@ mod tests {
         let msg = KeyExchangeResponse::new(dest, payload.clone()).unwrap();
         let bytes = msg.to_bytes();
         assert_eq!(bytes.len(), KEY_EXCHANGE_RSP_MIN_LEN);
+        let parsed = KeyExchangeResponse::try_from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+    }
+
+    #[test]
+    fn key_exchange_response_signed_roundtrip() {
+        let dest: MacAddress = [3u8; 6].into();
+        let payload = vec![0xCD; 138];
+        let msg = KeyExchangeResponse::new(dest, payload.clone()).unwrap();
+        let bytes = msg.to_bytes();
+        assert_eq!(bytes.len(), 9 + 138);
         let parsed = KeyExchangeResponse::try_from_bytes(&bytes).unwrap();
         assert_eq!(parsed, msg);
     }
