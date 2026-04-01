@@ -362,7 +362,7 @@ a persistent seed) and register the corresponding public key on the server.
 **Step 1 — generate a keypair for each node** using the built-in keygen command:
 
 ```sh
-node keygen
+keygen
 # Ed25519 signing keypair for DH authentication
 #
 # Seed (signing_key_seed in node YAML — keep secret):
@@ -372,7 +372,7 @@ node keygen
 #   e5f6a7b8...64hexchars
 ```
 
-`node keygen` uses a cryptographically secure RNG (`OsRng`). The seed is secret — treat
+`keygen` uses a cryptographically secure RNG (`OsRng`). The seed is secret — treat
 it like a private key. The verifying key is what you distribute to peers.
 
 **Step 2 — pin the VANET MAC address** of each OBU so it matches the allowlist entry.
@@ -396,7 +396,7 @@ created, so it requires the same privileges as the rest of the simulator (root /
 
 **Step 3 — give the server a stable identity** (`server.yaml`):
 
-Run `node keygen` once for the server too, then set its seed in config:
+Run `keygen` once for the server too, then set its seed in config:
 
 ```yaml
 node_type: Server
