@@ -107,14 +107,14 @@ When an OBU receives a `Heartbeat`:
 
   The implemented metric is:
 
-  $ s = \alpha \cdot t_{avg} + (1 - \alpha) \cdot h $
+  s = α · t_avg + (1 - α) · h
 
   where:
-  - $t_{avg}$ is the mean observed round-trip time (RTT) to that candidate (measured via Heartbeat/Reply timing),
-  - $h$ is the advertised hop-count reported by the candidate,
-  - $\alpha$ is a tunable weight (default $0.7$), biasing toward latency over hops.
+  - t_avg is the mean observed round-trip time (RTT) to that candidate (measured via Heartbeat/Reply timing),
+  - h is the advertised hop-count reported by the candidate,
+  - α is a tunable weight (default 0.7), biasing toward latency over hops.
 
-  The algorithm normalises both components to comparable units before combining: $t_{avg}$ is scaled to the same range as hop counts using a per-run observed RTT range, preventing domination by absolute milliseconds. Ties are broken by MAC lexicographic order.
+  The algorithm normalises both components to comparable units before combining: t_avg is scaled to the same range as hop counts using a per-run observed RTT range, preventing domination by absolute milliseconds. Ties are broken by MAC lexicographic order.
 
 + The *cached upstream* (the currently selected upstream) is retained when its score remains within a hysteresis band (default 10%) of a newly computed best candidate. This hysteresis prevents frequent route flipping due to transient RTT variance.
 
