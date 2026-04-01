@@ -139,6 +139,21 @@ impl Routing {
 
         let sender = hbr.sender();
         let reply_id = hbr.id();
+
+        // Reject IDs not present in our sent history before touching the replay
+        // window. Without this guard an attacker could forge a reply with
+        // id=u32::MAX, advance last_seq to u32::MAX, and cause all subsequent
+        // legitimate replies from that sender to fall outside the window.
+        let sent_idx = self.sent.iter().position(|(id, _, _)| *id == reply_id);
+        let Some(sent_idx) = sent_idx else {
+            tracing::debug!(
+                reply_id,
+                %sender,
+                "Ignoring outdated heartbeat reply"
+            );
+            return Ok(None);
+        };
+
         if !self
             .replay_windows
             .entry(sender)
@@ -153,45 +168,35 @@ impl Routing {
             return Ok(None);
         }
 
-        let old_route = self.get_route_to(Some(hbr.sender()));
+        let old_route = self.get_route_to(Some(sender));
 
-        // Find the heartbeat entry with matching ID
-        let map = self
-            .sent
-            .iter_mut()
-            .find(|(id, _, _)| *id == hbr.id())
-            .map(|(_, _, m)| m);
+        // Extract all hbr fields before the mutable borrow of self.sent.
+        let hops = hbr.hops();
+        let duration = hbr.duration();
+        let from_mac = msg.from()?;
 
-        let Some(map) = map else {
-            tracing::debug!(
-                reply_id = hbr.id(),
-                sender = %hbr.sender(),
-                "Ignoring outdated heartbeat reply"
-            );
-            return Ok(None);
-        };
-
-        let latency = Instant::now().duration_since(self.boot) - hbr.duration();
-        match map.entry(hbr.sender()) {
-            Entry::Occupied(mut entry) => {
-                let value: &mut Vec<Target> = entry.get_mut();
-
-                value.push(Target {
-                    hops: hbr.hops(),
-                    mac: msg.from()?,
-                    latency,
-                });
+        {
+            let (_, _, map) = &mut self.sent[sent_idx];
+            let latency = Instant::now().duration_since(self.boot) - duration;
+            match map.entry(sender) {
+                Entry::Occupied(mut entry) => {
+                    entry.get_mut().push(Target {
+                        hops,
+                        mac: from_mac,
+                        latency,
+                    });
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(vec![Target {
+                        hops,
+                        mac: from_mac,
+                        latency,
+                    }]);
+                }
             }
-            Entry::Vacant(entry) => {
-                entry.insert(vec![Target {
-                    hops: hbr.hops(),
-                    mac: msg.from()?,
-                    latency,
-                }]);
-            }
-        };
+        } // mutable borrow of self.sent released here
 
-        let new_route = self.get_route_to(Some(hbr.sender()));
+        let new_route = self.get_route_to(Some(sender));
         let Some(ref new_route) = new_route else {
             return Ok(None);
         };
@@ -201,7 +206,7 @@ impl Routing {
                 tracing::event!(
                     Level::INFO,
                     from = %address,
-                    to = %hbr.sender(),
+                    to = %sender,
                     through = %new_route,
                     hops = new_route.hops,
                     "Route discovered",
@@ -212,7 +217,7 @@ impl Routing {
                     tracing::event!(
                         Level::INFO,
                         from = %address,
-                        to = %hbr.sender(),
+                        to = %sender,
                         through = %new_route,
                         was_through = %old_route,
                         old_hops = old_route.hops,
@@ -577,6 +582,37 @@ mod replay_integration_tests {
         // Routes for both senders still exist
         assert!(routing.get_route_to(Some(sender_a)).is_some());
         assert!(routing.get_route_to(Some(sender_b)).is_some());
+    }
+
+    #[test]
+    fn forged_large_id_does_not_poison_replay_window() {
+        // An attacker injects a reply with id=u32::MAX. This ID is not in
+        // `sent`, so it must be rejected without advancing last_seq. If it
+        // were accepted, all subsequent legitimate replies (with small IDs)
+        // would fall outside the window and be silently dropped.
+        let mut routing = Routing::new(&make_args(3)).expect("routing built");
+        let rsu_mac: MacAddress = [1u8; 6].into();
+        let sender: MacAddress = [50u8; 6].into();
+        let from: MacAddress = [51u8; 6].into();
+
+        let _ = routing.send_heartbeat(rsu_mac); // id=0
+
+        // Inject a forged reply with id=u32::MAX (not in sent history)
+        let forged_wire = make_reply_wire(u32::MAX, sender, from);
+        let msg = Message::try_from(&forged_wire[..]).expect("parse");
+        let r = routing.handle_heartbeat_reply(&msg, rsu_mac).unwrap();
+        assert!(r.is_none());
+
+        // Legitimate reply for id=0 must still be accepted
+        let wire0 = make_reply_wire(0, sender, from);
+        let msg = Message::try_from(&wire0[..]).expect("parse");
+        routing
+            .handle_heartbeat_reply(&msg, rsu_mac)
+            .expect("should not error");
+        assert!(
+            routing.get_route_to(Some(sender)).is_some(),
+            "route must be present after legitimate reply"
+        );
     }
 
     #[test]
