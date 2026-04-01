@@ -22,12 +22,63 @@ struct Target {
     latency: Duration,
 }
 
+/// Sliding-receive-window replay detector (IPsec AH style), tracked per sender.
+///
+/// Maintains the highest accepted sequence number and a 64-bit bitmask of
+/// recently accepted values. A sequence number is accepted if and only if it
+/// is strictly greater than `last_seq - WIDTH` and has not been accepted before.
+#[derive(Debug, Default)]
+struct ReplayWindow {
+    last_seq: u32,
+    /// Bit `i` is set when sequence `last_seq - i` has been accepted.
+    window: u64,
+    initialized: bool,
+}
+
+impl ReplayWindow {
+    const WIDTH: u32 = 64;
+
+    /// Returns `true` and records `seq` if it is fresh; returns `false` if it
+    /// is a replay or falls outside the window (too old).
+    fn check_and_update(&mut self, seq: u32) -> bool {
+        if !self.initialized {
+            self.last_seq = seq;
+            self.window = 1;
+            self.initialized = true;
+            return true;
+        }
+
+        if seq > self.last_seq {
+            let advance = seq - self.last_seq;
+            self.window = if advance >= Self::WIDTH {
+                1
+            } else {
+                (self.window << advance) | 1
+            };
+            self.last_seq = seq;
+            true
+        } else {
+            let diff = self.last_seq - seq;
+            if diff >= Self::WIDTH {
+                return false; // outside window — too old
+            }
+            let bit = 1u64 << diff;
+            if self.window & bit != 0 {
+                return false; // already seen — replay
+            }
+            self.window |= bit;
+            true
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Routing {
     hb_seq: u32,
     boot: Instant,
     sent: VecDeque<(u32, Duration, HashMap<MacAddress, Vec<Target>>)>,
     max_history: usize,
+    replay_windows: HashMap<MacAddress, ReplayWindow>,
 }
 
 impl Routing {
@@ -41,6 +92,7 @@ impl Routing {
             boot: Instant::now(),
             sent: VecDeque::with_capacity(max_history),
             max_history,
+            replay_windows: HashMap::default(),
         })
     }
 
@@ -54,6 +106,7 @@ impl Routing {
         // Handle sequence wraparound: if the first entry has a higher seq than current, clear all
         if self.sent.front().is_some_and(|(x, _, _)| x > &message.id()) {
             self.sent.clear();
+            self.replay_windows.clear();
         }
 
         // Maintain fixed-size history with O(1) pop_front
@@ -83,6 +136,22 @@ impl Routing {
         let PacketType::Control(Control::HeartbeatReply(hbr)) = msg.get_packet_type() else {
             bail!("only heartbeat reply messages accepted");
         };
+
+        let sender = hbr.sender();
+        let reply_id = hbr.id();
+        if !self
+            .replay_windows
+            .entry(sender)
+            .or_default()
+            .check_and_update(reply_id)
+        {
+            tracing::debug!(
+                reply_id,
+                %sender,
+                "Dropping replayed heartbeat reply"
+            );
+            return Ok(None);
+        }
 
         let old_route = self.get_route_to(Some(hbr.sender()));
 
@@ -345,5 +414,195 @@ mod more_tests {
 
         let unknown: MacAddress = [9u8; 6].into();
         assert!(routing.get_route_to(Some(unknown)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod replay_window_tests {
+    use super::ReplayWindow;
+
+    #[test]
+    fn fresh_sequence_accepted() {
+        let mut w = ReplayWindow::default();
+        assert!(w.check_and_update(1));
+    }
+
+    #[test]
+    fn same_sequence_rejected_as_replay() {
+        let mut w = ReplayWindow::default();
+        assert!(w.check_and_update(5));
+        assert!(!w.check_and_update(5));
+    }
+
+    #[test]
+    fn monotonically_increasing_sequences_accepted() {
+        let mut w = ReplayWindow::default();
+        for seq in 0..10 {
+            assert!(w.check_and_update(seq), "seq {seq} should be accepted");
+        }
+    }
+
+    #[test]
+    fn out_of_order_within_window_accepted_once() {
+        let mut w = ReplayWindow::default();
+        assert!(w.check_and_update(10));
+        assert!(w.check_and_update(8)); // within window, not seen yet
+        assert!(!w.check_and_update(8)); // same — replay
+        assert!(w.check_and_update(9)); // another within-window fresh value
+    }
+
+    #[test]
+    fn sequence_outside_window_rejected() {
+        let mut w = ReplayWindow::default();
+        assert!(w.check_and_update(100));
+        // 100 - 64 = 36 is just at the boundary (diff == WIDTH), rejected
+        assert!(!w.check_and_update(36));
+        // 37 is still within window (diff == 63)
+        assert!(w.check_and_update(37));
+    }
+
+    #[test]
+    fn large_advance_clears_window() {
+        let mut w = ReplayWindow::default();
+        assert!(w.check_and_update(1));
+        assert!(w.check_and_update(2));
+        // Jump far ahead — old entries fall out of window
+        assert!(w.check_and_update(200));
+        // seq=1 is now outside window
+        assert!(!w.check_and_update(1));
+    }
+
+    #[test]
+    fn sequence_zero_is_valid_first_entry() {
+        let mut w = ReplayWindow::default();
+        assert!(w.check_and_update(0));
+        assert!(!w.check_and_update(0));
+        assert!(w.check_and_update(1));
+    }
+}
+
+#[cfg(test)]
+mod replay_integration_tests {
+    use super::Routing;
+    use crate::args::{RsuArgs, RsuParameters};
+    use mac_address::MacAddress;
+    use node_lib::messages::control::heartbeat::{Heartbeat, HeartbeatReply};
+    use node_lib::messages::{control::Control, message::Message, packet_type::PacketType};
+    use std::time::Duration;
+
+    fn make_args(hello_history: u32) -> RsuArgs {
+        RsuArgs {
+            bind: String::default(),
+            mtu: 1500,
+            cloud_ip: None,
+            rsu_params: RsuParameters {
+                hello_history,
+                hello_periodicity: 1000,
+                cached_candidates: 3,
+                server_ip: None,
+                server_port: 8080,
+            },
+        }
+    }
+
+    /// Serialises a HeartbeatReply to wire bytes so tests can round-trip through
+    /// `Message::try_from` without lifetime complications.
+    fn make_reply_wire(hb_id: u32, sender: MacAddress, from: MacAddress) -> Vec<u8> {
+        let hb = Heartbeat::new(Duration::from_millis(0), hb_id, [1u8; 6].into());
+        let hbr = HeartbeatReply::from_sender(&hb, sender);
+        let msg = Message::new(
+            from,
+            [255u8; 6].into(),
+            PacketType::Control(Control::HeartbeatReply(hbr)),
+        );
+        (&msg).into()
+    }
+
+    #[test]
+    fn replayed_reply_does_not_insert_duplicate_route() {
+        let mut routing = Routing::new(&make_args(2)).expect("routing built");
+        let rsu_mac: MacAddress = [1u8; 6].into();
+        let _ = routing.send_heartbeat(rsu_mac); // heartbeat id=0
+
+        let sender: MacAddress = [200u8; 6].into();
+        let from: MacAddress = [201u8; 6].into();
+        let wire = make_reply_wire(0, sender, from);
+
+        // First delivery — accepted, route inserted
+        let msg = Message::try_from(&wire[..]).expect("parse");
+        let r1 = routing.handle_heartbeat_reply(&msg, rsu_mac).unwrap();
+        assert!(r1.is_none());
+        assert!(routing.get_route_to(Some(sender)).is_some());
+
+        // Replayed delivery — silently dropped
+        let msg = Message::try_from(&wire[..]).expect("parse");
+        let r2 = routing.handle_heartbeat_reply(&msg, rsu_mac).unwrap();
+        assert!(r2.is_none());
+
+        // Route still exists (was not removed) but no duplicate targets were added
+        assert!(routing.get_route_to(Some(sender)).is_some());
+    }
+
+    #[test]
+    fn independent_senders_tracked_separately() {
+        let mut routing = Routing::new(&make_args(2)).expect("routing built");
+        let rsu_mac: MacAddress = [1u8; 6].into();
+        let _ = routing.send_heartbeat(rsu_mac); // heartbeat id=0
+
+        let sender_a: MacAddress = [10u8; 6].into();
+        let sender_b: MacAddress = [20u8; 6].into();
+        let from: MacAddress = [99u8; 6].into();
+
+        let wire_a = make_reply_wire(0, sender_a, from);
+        let wire_b = make_reply_wire(0, sender_b, from);
+
+        // Both senders reply to heartbeat 0 — both accepted
+        let msg = Message::try_from(&wire_a[..]).expect("parse");
+        assert!(routing.handle_heartbeat_reply(&msg, rsu_mac).is_ok());
+        let msg = Message::try_from(&wire_b[..]).expect("parse");
+        assert!(routing.handle_heartbeat_reply(&msg, rsu_mac).is_ok());
+
+        // Replays from both senders are rejected
+        let msg = Message::try_from(&wire_a[..]).expect("parse");
+        assert!(routing
+            .handle_heartbeat_reply(&msg, rsu_mac)
+            .unwrap()
+            .is_none());
+        let msg = Message::try_from(&wire_b[..]).expect("parse");
+        assert!(routing
+            .handle_heartbeat_reply(&msg, rsu_mac)
+            .unwrap()
+            .is_none());
+
+        // Routes for both senders still exist
+        assert!(routing.get_route_to(Some(sender_a)).is_some());
+        assert!(routing.get_route_to(Some(sender_b)).is_some());
+    }
+
+    #[test]
+    fn advancing_heartbeat_id_accepted_per_sender() {
+        let mut routing = Routing::new(&make_args(3)).expect("routing built");
+        let rsu_mac: MacAddress = [1u8; 6].into();
+        let sender: MacAddress = [50u8; 6].into();
+        let from: MacAddress = [51u8; 6].into();
+
+        // Send two heartbeats (id=0 and id=1)
+        let _ = routing.send_heartbeat(rsu_mac);
+        let _ = routing.send_heartbeat(rsu_mac);
+
+        // Reply to heartbeat 0 — accepted
+        let wire0 = make_reply_wire(0, sender, from);
+        let msg = Message::try_from(&wire0[..]).expect("parse");
+        assert!(routing.handle_heartbeat_reply(&msg, rsu_mac).is_ok());
+
+        // Reply to heartbeat 1 — also accepted (higher id)
+        let wire1 = make_reply_wire(1, sender, from);
+        let msg = Message::try_from(&wire1[..]).expect("parse");
+        assert!(routing.handle_heartbeat_reply(&msg, rsu_mac).is_ok());
+
+        // Replay of heartbeat 0 reply — rejected (within window, already seen)
+        let msg = Message::try_from(&wire0[..]).expect("parse");
+        let replay = routing.handle_heartbeat_reply(&msg, rsu_mac).unwrap();
+        assert!(replay.is_none());
     }
 }
