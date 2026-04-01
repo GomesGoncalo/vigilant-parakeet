@@ -1,4 +1,6 @@
 // ── Chapter 4 — Implementation <implementation> ───────────────────────────────
+#import "@preview/fletcher:0.5.7" as fletcher: diagram, node, edge
+#import "@preview/chronos:0.2.1"
 
 = Implementation <implementation>
 
@@ -20,7 +22,8 @@ All VANET inter-node communication uses fixed-format binary messages in
 / `Data::{Upstream, Downstream}`: Payload wrappers carrying a (potentially
   encrypted) byte buffer with source and destination MAC addresses.
 
-/ `KeyExchangeInit` / `KeyExchangeReply`: 42-byte DH handshake messages
+/ `KeyExchangeInit` / `KeyExchangeReply`: DH handshake messages: 42 bytes
+  unsigned, or 138 bytes when carrying an Ed25519 authentication extension
   (see @security for full detail).
 
 / `Message`: Outer container with a 1-byte type discriminant followed by
@@ -31,11 +34,14 @@ All types implement `TryFrom<&[u8]>` for zero-copy deserialisation and
 
 === Heartbeat Wire Layout
 
-```
-┌──────────────────┬────────────┬────────────┐
-│  MAC addr (6 B)  │  Seq (4 B) │ Hops (2 B) │
-└──────────────────┴────────────┴────────────┘
-```
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    align: (center, center, center),
+    [`MAC addr (6 B)`], [`Seq (4 B)`], [`Hops (2 B)`],
+  ),
+  caption: [Heartbeat wire format (12 bytes, little-endian)],
+)
 
 Fields are little-endian. The MAC is the source RSU's hardware address,
 used as the primary routing table key.
@@ -45,12 +51,15 @@ used as the primary routing table key.
 RSU–Server communication uses a separate binary protocol over UDP
 (`server_lib::cloud_protocol`):
 
-```
-┌──────────────┬──────────┬── payload ──────────────────────────┐
-│ MAGIC (2 B)  │ TYPE (1B)│ fields vary by type (see below)     │
-│ 0xAB  0xCD   │          │                                     │
-└──────────────┴──────────┴─────────────────────────────────────┘
-```
+#figure(
+  table(
+    columns: (auto, auto, 1fr),
+    align: (center, center, left),
+    [`MAGIC (2 B)` \ `0xAB 0xCD`], [`TYPE (1 B)`],
+    [payload (fields vary by type — see @tab-cloud-protocol)],
+  ),
+  caption: [Cloud protocol message header],
+)
 
 #figure(
   table(
@@ -120,26 +129,22 @@ without recomputing from scratch.
 == End-to-End Data Path
 
 The full data path for an OBU sending a packet to an application server
-illustrates how the three tiers interact (@fig-data-path):
+illustrates how the three tiers interact (see figure).
 
 #figure(
-  ```
-  OBU                    RSU                    Server
-   │                      │                       │
-   │ 1. encrypt(payload)  │                       │
-   │ 2. Data::Upstream ──►│                       │
-   │   (VANET tier 1)     │ 3. UpstreamForward ──►│
-   │                      │   (UDP tier 2, 0x02)  │ 4. decrypt(payload)
-   │                      │                       │ 5. write to virtual TAP
-   │                      │                       │ 6. read reply from TAP
-   │                      │                       │ 7. encrypt(reply)
-   │                      │◄── DownstreamForward ─│
-   │                      │   (UDP tier 2, 0x03)  │
-   │◄── Data::Downstream ─│                       │
-   │   (VANET tier 1)     │                       │
-   │ 8. decrypt(reply)    │                       │
-   │ 9. write to virt TAP │                       │
-  ```,
+  scale(60%, reflow: true, chronos.diagram({
+    import chronos: *
+    _par("OBU")
+    _par("RSU")
+    _par("Server")
+    _seq("OBU", "OBU", comment: "1. encrypt(payload)")
+    _seq("OBU", "RSU", comment: "Data::Upstream")
+    _seq("RSU", "Server", comment: "UpstreamForward (0x02)") }
+    _seq("Server", "Server", comment: "decrypt/TAP/encrypt")
+    _seq("Server", "RSU", comment: "DownstreamForward (0x03)")
+    _seq("RSU", "OBU", comment: "Data::Downstream")
+    _seq("OBU", "OBU", comment: "decrypt reply; write TAP")
+  }, width: 150mm)),
   caption: [End-to-end data path across all three tiers],
 ) <fig-data-path>
 
@@ -147,13 +152,24 @@ illustrates how the three tiers interact (@fig-data-path):
 
 === Network Namespace Setup
 
-For each node the simulator:
+For each node the simulator creates an isolated network namespace using
+`netns_rs::NetNs::new("sim_ns_<name>")` and executes the node factory
+callback inside it via `nsi.run(|_| callback(...))`, giving each node its
+own independent network stack.
 
-+ Creates a namespace: `ip netns add sim_ns_<name>`.
-+ Creates a `veth` pair; moves one end into the namespace.
-+ Assigns the configured IP to the in-namespace interface.
-+ Applies `tc netem` on the host-side veth to enforce per-link
-  `latency` and `loss` from the topology YAML.
+Per-link channel conditions (latency, loss, jitter) are simulated entirely
+in userspace by `simulator::channel::Channel` — no kernel `tc netem` rules
+are involved. Each directed link is backed by a `Channel` instance that:
+
++ *Filters* incoming frames by MAC address (unicast to this node or broadcast).
++ *Drops* packets probabilistically when `rand::random::<f64>() < loss`.
++ *Enqueues* surviving packets with their arrival timestamp and forwards them
+  to the destination TUN interface after sleeping for
+  `latency ± jitter` using `tokio_timerfd::sleep`, implemented as a
+  background Tokio task.
+
+Channel parameters can be updated at runtime (taking effect immediately for
+new packets) via the HTTP API or TUI, without restarting any node.
 
 === node_factory
 
@@ -169,7 +185,7 @@ node instance inside the namespace context:
 | Endpoint | Method | Description |
 |---|---|---|
 | `GET /metrics` | — | JSON per-node counters |
-| `POST /channel/<a>/<b>/` | `{"latency":"N","loss":"P"}` | Update `tc netem` rules at runtime |
+| `POST /channel/<a>/<b>/` | `{"latency":"N","loss":"P","jitter":"J"}` | Update per-link channel parameters at runtime |
 | `GET /node_info` | — | Topology and upstream state for visualization |
 
 == Test Infrastructure <sec-test-infrastructure>
