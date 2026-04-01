@@ -1,5 +1,6 @@
 use clap::Parser;
 use node_lib::crypto::{DhGroup, KdfAlgorithm, SymmetricCipher};
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 #[derive(clap::Args, Clone, Debug)]
@@ -16,6 +17,13 @@ pub struct ServerParameters {
     /// Must be enabled on all participating nodes for end-to-end signature checking.
     #[arg(long, default_value_t = false)]
     pub enable_dh_signatures: bool,
+
+    /// Pre-registered OBU signing keys for PKI-mode authentication (MAC → hex pubkey).
+    /// When non-empty and enable_dh_signatures is set, any KeyExchangeInit whose
+    /// signing public key does not match the registered key for that OBU MAC is rejected.
+    /// Not exposed as a CLI flag; configure via simulator YAML or builder API.
+    #[arg(skip)]
+    pub dh_signing_allowlist: HashMap<String, String>,
 
     /// Maximum lifetime of a DH-derived key in milliseconds before the server
     /// considers it expired and drops traffic until the OBU re-keys

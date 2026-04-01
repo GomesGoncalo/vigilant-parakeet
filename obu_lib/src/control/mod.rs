@@ -36,6 +36,20 @@ use node_lib::{Shared, SharedDevice, SharedTun};
 
 type SharedKeyStore = Arc<RwLock<DhKeyStore>>;
 
+fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..32)
+        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
+        .collect();
+    bytes.and_then(|b| b.try_into().ok())
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Virtual MAC used to key the DH store for the server tunnel.
 /// The OBU negotiates keys with the server (not peers), so we use a
 /// fixed sentinel MAC as the store key.
@@ -76,7 +90,21 @@ impl Obu {
         };
 
         let signing_keypair = if args.obu_params.enable_dh_signatures {
-            Some(Arc::new(SigningKeypair::generate()))
+            let kp = if let Some(ref hex_seed) = args.obu_params.signing_key_seed {
+                let seed = decode_hex_32(hex_seed).ok_or_else(|| {
+                    anyhow!("signing_key_seed must be exactly 64 hex characters (32 bytes)")
+                })?;
+                SigningKeypair::from_seed(seed)
+            } else {
+                SigningKeypair::generate()
+            };
+            let pubkey_hex = encode_hex(&kp.verifying_key_bytes());
+            tracing::info!(
+                signing_pubkey = %pubkey_hex,
+                "DH signing enabled — register this public key in the server's \
+                 dh_signing_allowlist to enforce PKI authentication"
+            );
+            Some(Arc::new(kp))
         } else {
             None
         };

@@ -38,6 +38,7 @@ mod tests {
                 port: 0,
                 enable_encryption: false,
                 enable_dh_signatures: false,
+                dh_signing_allowlist: Default::default(),
                 key_ttl_ms: 86_400_000,
                 cipher: node_lib::crypto::SymmetricCipher::default(),
                 kdf: node_lib::crypto::KdfAlgorithm::default(),

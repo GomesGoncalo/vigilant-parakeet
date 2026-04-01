@@ -89,6 +89,10 @@ pub struct Server {
     enable_dh_signatures: bool,
     /// Ed25519 identity keypair for signing DH replies (present when `enable_dh_signatures`).
     signing_keypair: Option<Arc<SigningKeypair>>,
+    /// PKI allowlist: OBU VANET MAC → expected 32-byte Ed25519 verifying key.
+    /// When non-empty and enable_dh_signatures is set, only OBUs whose signing key
+    /// matches the registered entry are allowed to complete key exchange.
+    dh_signing_allowlist: HashMap<MacAddress, [u8; 32]>,
 }
 
 impl Server {
@@ -109,6 +113,7 @@ impl Server {
             node_name,
             enable_dh_signatures: false,
             signing_keypair: None,
+            dh_signing_allowlist: HashMap::new(),
         }
     }
 
@@ -147,6 +152,14 @@ impl Server {
         self
     }
 
+    /// Set the PKI allowlist mapping OBU VANET MAC → expected Ed25519 verifying key bytes.
+    /// When non-empty and DH signatures are enabled, only allowlisted OBUs may complete
+    /// key exchange (closes the TOFU first-contact impersonation gap).
+    pub fn with_dh_signing_allowlist(mut self, allowlist: HashMap<MacAddress, [u8; 32]>) -> Self {
+        self.dh_signing_allowlist = allowlist;
+        self
+    }
+
     pub async fn start(&self) -> Result<()> {
         let bind_addr = format!("{}:{}", self.ip, self.port);
         let node_name = self.node_name.clone();
@@ -159,6 +172,19 @@ impl Server {
             bind_addr = %bind_addr,
             "Starting server UDP listener"
         );
+
+        if let Some(ref kp) = self.signing_keypair {
+            let pubkey_hex: String = kp
+                .verifying_key_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            tracing::info!(
+                signing_pubkey = %pubkey_hex,
+                pki_entries = self.dh_signing_allowlist.len(),
+                "DH signing enabled on server"
+            );
+        }
 
         let socket = UdpSocket::bind(&bind_addr).await?;
         let socket = Arc::new(socket);
@@ -176,6 +202,7 @@ impl Server {
         let enable_encryption = self.enable_encryption;
         let enable_dh_signatures = self.enable_dh_signatures;
         let signing_keypair = self.signing_keypair.clone();
+        let dh_signing_allowlist = Arc::new(self.dh_signing_allowlist.clone());
         let dh_keys = self.dh_keys.clone();
         let crypto_config = self.crypto_config;
         let name_for_recv = node_name.clone();
@@ -192,6 +219,7 @@ impl Server {
                     enable_encryption,
                     enable_dh_signatures,
                     signing_keypair,
+                    dh_signing_allowlist,
                     dh_keys,
                     crypto_config,
                     key_ttl_ms_recv,
@@ -243,6 +271,7 @@ impl Server {
         enable_encryption: bool,
         enable_dh_signatures: bool,
         signing_keypair: Option<Arc<SigningKeypair>>,
+        dh_signing_allowlist: Arc<HashMap<MacAddress, [u8; 32]>>,
         dh_keys: Arc<RwLock<DhKeyStore>>,
         crypto_config: CryptoConfig,
         key_ttl_ms: u64,
@@ -280,6 +309,7 @@ impl Server {
                                     &socket,
                                     enable_dh_signatures,
                                     signing_keypair.as_deref(),
+                                    &dh_signing_allowlist,
                                 )
                                 .await;
                             } else {
@@ -718,6 +748,7 @@ impl Server {
         socket: &Arc<UdpSocket>,
         enable_dh_signatures: bool,
         signing_keypair: Option<&SigningKeypair>,
+        dh_signing_allowlist: &HashMap<MacAddress, [u8; 32]>,
     ) {
         // Parse the KeyExchangeInit payload
         let ke_init = match node_lib::messages::control::key_exchange::KeyExchangeInit::try_from(
@@ -756,6 +787,45 @@ impl Server {
                     tracing::warn!(
                         obu = %ke_fwd.obu_mac,
                         "KeyExchangeInit is unsigned but enable_dh_signatures is set, dropping"
+                    );
+                    return;
+                }
+            }
+        }
+
+        // PKI allowlist check: if configured, the OBU's signing key must match the
+        // pre-registered entry for its MAC address, closing the TOFU gap.
+        if !dh_signing_allowlist.is_empty() {
+            match (
+                ke_init.signing_pubkey(),
+                dh_signing_allowlist.get(&ke_fwd.obu_mac),
+            ) {
+                (Some(spk), Some(expected)) if spk == *expected => {
+                    tracing::debug!(
+                        obu = %ke_fwd.obu_mac,
+                        "KeyExchangeInit signing key matches PKI allowlist"
+                    );
+                }
+                (Some(_), Some(_)) => {
+                    tracing::warn!(
+                        obu = %ke_fwd.obu_mac,
+                        "KeyExchangeInit signing key does not match PKI allowlist, dropping"
+                    );
+                    return;
+                }
+                (_, None) => {
+                    tracing::warn!(
+                        obu = %ke_fwd.obu_mac,
+                        "OBU MAC not found in PKI allowlist, dropping"
+                    );
+                    return;
+                }
+                (None, Some(_)) => {
+                    // Already caught above by enable_dh_signatures unsigned check,
+                    // but be explicit for the allowlist-only case.
+                    tracing::warn!(
+                        obu = %ke_fwd.obu_mac,
+                        "KeyExchangeInit unsigned but PKI allowlist is configured, dropping"
                     );
                     return;
                 }

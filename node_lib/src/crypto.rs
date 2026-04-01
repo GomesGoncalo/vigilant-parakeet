@@ -181,6 +181,19 @@ impl SigningKeypair {
         }
     }
 
+    /// Reconstruct a `SigningKeypair` from a 32-byte seed.
+    /// The same seed always produces the same keypair, enabling persistent identities.
+    pub fn from_seed(seed: [u8; 32]) -> Self {
+        Self {
+            inner: ed25519_dalek::SigningKey::from_bytes(&seed),
+        }
+    }
+
+    /// Return the 32-byte seed that can be used to reconstruct this keypair via `from_seed`.
+    pub fn seed_bytes(&self) -> [u8; 32] {
+        self.inner.to_bytes()
+    }
+
     /// Sign `message` and return the 64-byte Ed25519 signature.
     pub fn sign(&self, message: &[u8]) -> [u8; 64] {
         self.inner.sign(message).to_bytes()

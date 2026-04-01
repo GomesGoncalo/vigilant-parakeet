@@ -298,7 +298,8 @@ legitimate peer rather than an attacker injecting fake DH public keys.
 
 When `enable_dh_signatures: true` is configured:
 
-1. Each node (OBU or Server) generates a **random Ed25519 identity keypair** at startup.
+1. Each node (OBU or Server) generates a **random Ed25519 identity keypair** at startup
+   (or loads a stable keypair from a configured seed — see PKI mode below).
 2. Every outgoing `KeyExchangeInit` or `KeyExchangeReply` is **signed** over its
    42-byte base payload (`key_id | dh_public_key | sender_mac`).
 3. The 32-byte Ed25519 verifying key and 64-byte signature are appended to the
@@ -308,10 +309,17 @@ When `enable_dh_signatures: true` is configured:
 5. Intermediate relay nodes (OBUs forwarding KE messages up or down the tree)
    **preserve** signatures unchanged.
 
-This is a **trust-on-first-use** model — no PKI or pre-shared certificates are
-required. Each signature is self-contained in the message.
+#### Trust models
 
-### Enabling DH signatures on an OBU node (`n2.yaml`)
+| Mode | What it provides | What it does not prevent |
+|------|-----------------|--------------------------|
+| **TOFU** (default) | Blocks key-substitution MitM on subsequent contacts | First-contact impersonation (attacker with own keypair) |
+| **PKI** (allowlist) | Also blocks first-contact impersonation | Nothing — full authentication |
+
+The default mode is TOFU. Enable PKI mode by pre-registering OBU public keys on the
+server (see below).
+
+### Enabling DH signatures on an OBU node — TOFU mode (`n2.yaml`)
 
 ```yaml
 node_type: Obu
@@ -321,7 +329,13 @@ enable_encryption: true       # required — signatures only apply to DH message
 enable_dh_signatures: true    # sign outgoing KE messages, verify incoming ones
 ```
 
-### Enabling DH signatures on a Server node (`server.yaml`)
+At startup the node logs its signing public key:
+
+```
+INFO signing_pubkey=aabbcc... DH signing enabled — register this public key in the server's dh_signing_allowlist to enforce PKI authentication
+```
+
+### Enabling DH signatures on a Server node — TOFU mode (`server.yaml`)
 
 ```yaml
 node_type: Server
@@ -331,6 +345,50 @@ port: 8080
 enable_encryption: true       # required
 enable_dh_signatures: true    # sign KE replies, verify incoming KE inits
 ```
+
+### PKI mode — pre-registering OBU identities
+
+To close the first-contact impersonation gap, give each OBU a **stable keypair** (via
+a persistent seed) and register the corresponding public key on the server.
+
+**Step 1 — generate a seed for each OBU** (any source of 32 random bytes, hex-encoded):
+
+```sh
+openssl rand -hex 32
+# example output: a1b2c3d4...64hexchars
+```
+
+**Step 2 — configure the OBU with its seed** (`n2.yaml`):
+
+```yaml
+node_type: Obu
+hello_history: 10
+ip: 10.0.0.2
+enable_encryption: true
+enable_dh_signatures: true
+signing_key_seed: "a1b2c3d4...64hexchars"   # stable 32-byte seed, hex-encoded
+```
+
+The OBU will always derive the same Ed25519 keypair from this seed and log its
+public key at startup.
+
+**Step 3 — register OBU public keys on the server** (`server.yaml`):
+
+```yaml
+node_type: Server
+virtual_ip: 10.0.0.50
+cloud_ip: 172.16.0.50
+port: 8080
+enable_encryption: true
+enable_dh_signatures: true
+dh_signing_allowlist:
+  "AA:BB:CC:DD:EE:FF": "aabbcc...64hexchars"   # OBU n2's verifying key
+  "11:22:33:44:55:66": "112233...64hexchars"   # OBU n3's verifying key
+```
+
+When `dh_signing_allowlist` is non-empty, the server rejects any
+`KeyExchangeInit` whose `signing_pubkey` does not match the pre-registered key for
+that OBU MAC address. OBUs not in the allowlist cannot complete key exchange.
 
 ### Mixed deployments
 

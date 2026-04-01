@@ -22,6 +22,14 @@ pub struct ObuParameters {
     #[arg(long, default_value_t = false)]
     pub enable_dh_signatures: bool,
 
+    /// Hex-encoded 32-byte Ed25519 seed for a stable signing identity (64 hex chars).
+    /// When set alongside enable_dh_signatures, this node uses the derived keypair
+    /// instead of generating a random one at startup.  The corresponding public key
+    /// can be pre-registered in the server's dh_signing_allowlist for PKI-mode auth.
+    /// Not exposed as a CLI flag to avoid leaking seeds via process listings.
+    #[arg(skip)]
+    pub signing_key_seed: Option<String>,
+
     /// Interval in milliseconds between DH re-key exchanges
     #[arg(long, default_value_t = 43_200_000)]
     pub dh_rekey_interval_ms: u64,
