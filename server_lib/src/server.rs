@@ -89,7 +89,8 @@ pub struct Server {
     node_name: String,
     /// Whether to sign DH replies and verify incoming DH message signatures.
     enable_dh_signatures: bool,
-    /// Ed25519 identity keypair for signing DH replies (present when `enable_dh_signatures`).
+    /// Identity keypair for signing DH replies using the configured signing algorithm
+    /// (present when `enable_dh_signatures`).
     signing_keypair: Option<Arc<SigningKeypair>>,
     /// PKI allowlist: OBU VANET MAC → expected verifying key bytes (Ed25519: 32B, ML-DSA-65: 1952B).
     /// When non-empty and enable_dh_signatures is set, only OBUs whose signing key
@@ -910,6 +911,26 @@ impl Server {
 
         let key_id = ke_init.key_id();
         let algo_id = ke_init.algo_id();
+
+        // Reject key exchanges that use an algorithm the server isn't configured for.
+        // An attacker could otherwise downgrade the algorithm by rewriting algo_id
+        // in a forwarded KeyExchangeInit.
+        {
+            use node_lib::messages::control::key_exchange::{KE_ALGO_ML_KEM_768, KE_ALGO_X25519};
+            let expected_algo_id = match crypto_config.dh_group {
+                node_lib::crypto::DhGroup::X25519 => KE_ALGO_X25519,
+                node_lib::crypto::DhGroup::MlKem768 => KE_ALGO_ML_KEM_768,
+            };
+            if algo_id != expected_algo_id {
+                tracing::warn!(
+                    obu = %ke_fwd.obu_mac,
+                    algo_id = algo_id,
+                    expected = expected_algo_id,
+                    "KeyExchangeInit algo_id does not match server crypto config, dropping"
+                );
+                return;
+            }
+        }
 
         // Deduplicate: if we already have a key for this OBU with the same key_id,
         // skip reprocessing (duplicate KeyExchangeInit can arrive via multiple

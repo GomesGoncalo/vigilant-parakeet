@@ -368,12 +368,6 @@ impl SigningKeypair {
     }
 }
 
-/// Verify a DH key exchange signature.
-///
-/// `algo` selects the algorithm that produced the signature.
-/// `message` is the base KE payload bytes that were signed.
-/// `signing_pubkey` — 32 bytes for Ed25519, 1952 bytes for ML-DSA-65.
-/// `signature` — 64 bytes for Ed25519, 3309 bytes for ML-DSA-65.
 /// Decode a 64-hex-character string into a 32-byte array.
 ///
 /// Returns `None` if the input is not exactly 64 hex characters.
@@ -399,6 +393,12 @@ pub fn sig_algo_from_id(id: u8) -> Option<SigningAlgorithm> {
     }
 }
 
+/// Verify a DH key exchange signature.
+///
+/// `algo` selects the algorithm that produced the signature.
+/// `message` is the base KE payload bytes that were signed.
+/// `signing_pubkey` — 32 bytes for Ed25519, 1952 bytes for ML-DSA-65.
+/// `signature` — 64 bytes for Ed25519, 3309 bytes for ML-DSA-65.
 pub fn verify_dh_signature(
     algo: SigningAlgorithm,
     message: &[u8],

@@ -740,7 +740,16 @@ impl Obu {
             return Ok(None);
         }
         if let Some(ref expected_hex) = self.args.obu_params.server_signing_pubkey {
-            let expected_bytes = decode_hex(expected_hex);
+            let expected_bytes =
+                decode_hex(expected_hex).filter(|b| b.len() == 32 || b.len() == 1952);
+            if expected_bytes.is_none() && !expected_hex.is_empty() {
+                tracing::warn!(
+                    key_id = ke_reply.key_id(),
+                    "server_signing_pubkey is invalid hex or has wrong length \
+                     (expected 32B Ed25519 or 1952B ML-DSA-65), dropping reply"
+                );
+                return Ok(None);
+            }
             match (ke_reply.signing_pubkey(), expected_bytes) {
                 (Some(spk), Some(ref expected)) if spk == expected.as_slice() => {
                     tracing::debug!(
