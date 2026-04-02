@@ -154,6 +154,7 @@ async fn test_latency_measurement_with_mocked_time() {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     };
     let mut obu_routing = Routing::new(&obu_args, &boot).expect("OBU routing built");

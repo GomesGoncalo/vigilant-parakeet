@@ -213,6 +213,7 @@ pub fn create_node_from_settings(
                 cipher: crypto_config.cipher,
                 kdf: crypto_config.kdf,
                 dh_group: crypto_config.dh_group,
+                signing_algorithm: crypto_config.signing_algorithm,
             },
         };
 
@@ -300,9 +301,11 @@ fn parse_mac(s: &str) -> Option<[u8; 6]> {
 /// Expected YAML format:
 /// ```yaml
 /// dh_signing_allowlist:
-///   "AA:BB:CC:DD:EE:FF": "aabbcc...64hexchars"
+///   "AA:BB:CC:DD:EE:FF": "aabbcc...hexchars"
 /// ```
-fn parse_dh_signing_allowlist(settings: &Config) -> HashMap<MacAddress, [u8; 32]> {
+///
+/// Accepts Ed25519 (64 hex chars = 32 bytes) or ML-DSA-65 (3904 hex chars = 1952 bytes).
+fn parse_dh_signing_allowlist(settings: &Config) -> HashMap<MacAddress, Vec<u8>> {
     let raw: HashMap<String, config::Value> = match settings.get_table("dh_signing_allowlist") {
         Ok(m) => m,
         Err(_) => return HashMap::new(),
@@ -323,16 +326,16 @@ fn parse_dh_signing_allowlist(settings: &Config) -> HashMap<MacAddress, [u8; 32]
                 continue;
             }
         };
-        if hex.len() != 64 {
-            tracing::warn!(mac = %mac_str, "dh_signing_allowlist pubkey must be 64 hex chars, skipping");
+        if hex.len() % 2 != 0 {
+            tracing::warn!(mac = %mac_str, "dh_signing_allowlist pubkey hex length must be even, skipping");
             continue;
         }
-        let bytes: Option<Vec<u8>> = (0..32)
+        let bytes: Option<Vec<u8>> = (0..hex.len() / 2)
             .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok())
             .collect();
-        match bytes.and_then(|b| <[u8; 32]>::try_from(b).ok()) {
-            Some(arr) => {
-                out.insert(mac, arr);
+        match bytes {
+            Some(b) => {
+                out.insert(mac, b);
             }
             None => {
                 tracing::warn!(mac = %mac_str, "Failed to decode dh_signing_allowlist pubkey hex, skipping");
@@ -388,10 +391,27 @@ fn parse_crypto_config(settings: &Config) -> node_lib::crypto::CryptoConfig {
         },
         Err(_) => Default::default(),
     };
+
+    let signing_algorithm = match settings.get_string("signing_algorithm") {
+        Ok(raw) => match raw.parse() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                tracing::warn!(
+                    %raw,
+                    %err,
+                    "Invalid signing_algorithm in configuration, falling back to default"
+                );
+                Default::default()
+            }
+        },
+        Err(_) => Default::default(),
+    };
+
     node_lib::crypto::CryptoConfig {
         cipher,
         kdf,
         dh_group,
+        signing_algorithm,
     }
 }
 

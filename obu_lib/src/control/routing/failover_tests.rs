@@ -32,6 +32,7 @@ fn failover_rebuilds_candidates_from_latency() {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     };
 
@@ -108,6 +109,7 @@ fn select_and_cache_upstream_backfills_by_hops() {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     };
 
@@ -177,6 +179,7 @@ fn test_set_cached_candidates_clears_and_sets() {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     };
 
@@ -217,6 +220,7 @@ fn failover_backfills_from_hops_when_no_latency() {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     };
 

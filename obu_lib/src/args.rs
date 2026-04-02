@@ -1,5 +1,5 @@
 use clap::Parser;
-use node_lib::crypto::{DhGroup, KdfAlgorithm, SymmetricCipher};
+use node_lib::crypto::{DhGroup, KdfAlgorithm, SigningAlgorithm, SymmetricCipher};
 use std::net::Ipv4Addr;
 
 #[derive(clap::Args, Clone, Debug)]
@@ -58,9 +58,13 @@ pub struct ObuParameters {
     #[arg(long, default_value_t = KdfAlgorithm::default())]
     pub kdf: KdfAlgorithm,
 
-    /// DH group for key exchange: x25519
+    /// DH group for key exchange: x25519, ml-kem-768
     #[arg(long, default_value_t = DhGroup::default())]
     pub dh_group: DhGroup,
+
+    /// Signing algorithm for DH message authentication: ed25519, ml-dsa-65
+    #[arg(long, default_value_t = SigningAlgorithm::default())]
+    pub signing_algorithm: SigningAlgorithm,
 }
 
 #[derive(Parser, Debug, Clone)]

@@ -58,6 +58,7 @@ impl ObuBuilder {
         inner.cipher = args.obu_params.cipher;
         inner.kdf = args.obu_params.kdf;
         inner.dh_group = args.obu_params.dh_group;
+        inner.signing_algorithm = args.obu_params.signing_algorithm;
         Self {
             inner,
             signing_key_seed: args.obu_params.signing_key_seed,
@@ -137,6 +138,12 @@ impl ObuBuilder {
         self
     }
 
+    /// Set the signing algorithm (default: Ed25519)
+    pub fn with_signing_algorithm(mut self, algo: node_lib::crypto::SigningAlgorithm) -> Self {
+        self.inner = self.inner.with_signing_algorithm(algo);
+        self
+    }
+
     /// Set the node name for tracing/logging identification
     pub fn with_node_name(mut self, name: impl Into<String>) -> Self {
         self.inner = self.inner.with_node_name(name);
@@ -212,6 +219,7 @@ impl ObuBuilder {
                 cipher: self.inner.cipher,
                 kdf: self.inner.kdf,
                 dh_group: self.inner.dh_group,
+                signing_algorithm: self.inner.signing_algorithm,
             },
         }
     }
@@ -276,6 +284,7 @@ mod tests {
                 cipher: node_lib::crypto::SymmetricCipher::default(),
                 kdf: node_lib::crypto::KdfAlgorithm::default(),
                 dh_group: node_lib::crypto::DhGroup::default(),
+                signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
             },
         };
 
