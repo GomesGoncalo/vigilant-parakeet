@@ -66,9 +66,11 @@ Several limitations should be acknowledged:
   certificate revocation lists (CRLs), or online revocation checking.
 
 - *Control-plane messages unauthenticated*: Heartbeat and HeartbeatReply
-  messages carry no HMAC or signature. An adversary on any VANET link can
-  inject or replay control messages to manipulate routing tables without
-  cryptographic detection, as described in @l3-security-vehicular.
+  messages carry no HMAC or signature. While HeartbeatReply replay is
+  detected at the RSU via a sliding receive window (@sec-routing-protocol),
+  an adversary can still *inject* fresh-looking control messages or
+  manipulate routing tables through crafted (rather than replayed) messages
+  without cryptographic detection, as described in @l3-security-vehicular.
 
 
 == Future Work
@@ -91,11 +93,6 @@ Several directions are identified for future research and development:
   Quantifying the authentication latency penalty and its interaction with the
   routing hysteresis band would allow the routing-security trade-off to be
   evaluated empirically against the attacks described in @l3-security-vehicular.
-
-/ Replay protection: Add sequence-number-based replay detection to the
-  control plane. HeartbeatReply messages are currently accepted regardless of
-  recency; a sliding receive window (as in IPsec AH) would prevent replayed
-  messages from being used to maintain stale routing entries.
 
 / Certificate-based PKI: Replace the static YAML allowlist with a full X.509
   or ETSI ITS @ieee-1609-2 certificate infrastructure, enabling dynamic OBU

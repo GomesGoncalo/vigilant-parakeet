@@ -138,6 +138,46 @@ without recomputing from scratch.
   a `HeartbeatReply` back to sender.
 - *Sender-loop guard*: if `next_upstream == message.sender()`, drop.
 
+=== Replay Detection
+
+HeartbeatReply messages carry the original Heartbeat sequence number back to
+the RSU so that the RSU can compute round-trip latency and update routing
+metrics. Without replay protection, an attacker that captures a legitimate
+HeartbeatReply can re-inject it later to make the RSU believe a routing path
+is fresher or lower-latency than it really is, maintaining stale routing
+entries and manipulating route selection.
+
+vigilant-parakeet implements a *per-sender sliding receive window* on
+HeartbeatReply sequence numbers at the RSU (`rsu_lib::control::routing::ReplayWindow`),
+following the same design as IPsec AH @ipsec-ah:
+
+- Each `(RSU, sender MAC)` pair has its own independent `ReplayWindow`.
+- The window state is a `(last_seq: u32, window: u64)` pair. `last_seq` is
+  the highest accepted sequence number; `window` is a 64-bit bitmask where
+  bit $i$ is set when sequence number `last_seq - i` has been accepted.
+- The window width is 64 sequence numbers. A reply with sequence number `seq`
+  is accepted if and only if `seq > last_seq - 64` and `seq` has not been
+  accepted before.
+- On acceptance of a new highest sequence number, the bitmask is left-shifted
+  by the advance and bit 0 is set for the new entry.
+- Replies with `seq <= last_seq - 64` (outside the window) are silently dropped.
+- Replies with a `seq` already recorded in the bitmask are silently dropped as
+  duplicates.
+
+A subtle additional guard prevents a *window-poisoning attack*: before
+`check_and_update` is called, the RSU verifies that `seq` appears in its own
+sent-heartbeat history. Without this guard, an attacker could forge a reply
+with `seq = u32::MAX`, advance `last_seq` to `u32::MAX`, and cause all
+subsequent legitimate replies from that sender to fall outside the window,
+effectively denying routing updates from a benign OBU. The sequence wraparound
+case (`u32` overflow) is handled by clearing all window state when the RSU
+detects that its own sequence counter has wrapped.
+
+The `ReplayWindow` is unit-tested in `rsu_lib/src/control/routing.rs` via
+`replay_window_tests` (same-sequence rejection, outside-window rejection) and
+integration-tested via `replay_integration_tests` (replayed reply does not
+insert duplicate route, forged large ID does not poison window).
+
 == End-to-End Data Path
 
 The full data path for an OBU sending a packet to an application server

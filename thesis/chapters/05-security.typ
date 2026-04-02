@@ -229,14 +229,14 @@ as a simple state machine (@fig-dh-state):
   diagram(
     node-stroke: 0.5pt,
     spacing: (25mm, 20mm),
-    node((0,-1), [None], name: <none>),
-    node((2,-3), [Pending], name: <pending>),
-    node((4,2), [Established], name: <established>),
-    edge(<none>, <pending>, "->", [initiate\_exchange()], label-side: center),
-    edge(<pending>, <established>, "->", [complete\_exchange()\ (key\_id match)], bend: 10deg, label-side: right),
+    node((0,0), [None], name: <none>),
+    node((2,-2), [Pending], name: <pending>),
+    node((2,2), [Established], name: <established>),
+    edge(<none>, <pending>, "->", [initiate\_exchange()], label-side: left),
+    edge(<pending>, <established>, "->", [complete\_exchange()\ (key\_id match)], label-side: left),
     edge(<established>, <none>, "->",
       [is\_key\_expired() → true\ or remove\_pending() (max retries)],
-      bend: -80deg, label-side: left),
+      label-side: left),
   ),
   caption: [DH key store state machine per peer],
 ) <fig-dh-state>
@@ -430,3 +430,111 @@ encryption test suite, which confirms that even invalid ciphertext is
 forwarded unchanged. The effect is that compromising an RSU does not
 expose session keys or allow payload manipulation; only the endpoints
 hold the HKDF-derived key.
+
+== Comparison to Related Security Approaches <sec-security-comparison>
+
+This section situates the vigilant-parakeet security architecture relative to
+the three main families of VANET security solutions described in @background.
+
+=== Comparison with IEEE 1609.2 / PKI-Based Approaches
+
+IEEE 1609.2 @ieee-1609-2 and the ETSI ITS AT framework address the
+*authentication* and *integrity* of broadcast control messages through a full
+certificate infrastructure. Their primary goal is to ensure that safety
+messages (CAM, DENM) cannot be injected or modified by unauthorized nodes.
+
+vigilant-parakeet's goal is different: it addresses the *confidentiality* and
+*authenticated key exchange* on the unicast OBU–server data path, for which
+IEEE 1609.2 provides no direct mechanism (certificates authenticate messages
+but do not establish session keys for encrypted bulk data transfer).
+
+The two approaches are complementary:
+
+- IEEE 1609.2 would protect *heartbeat control messages* from routing
+  manipulation attacks (the threat analysed in @l3-security-vehicular) —
+  this is identified as future work in @conclusion.
+- vigilant-parakeet's DH + AEAD layer protects *payload data* from relay
+  nodes and passive eavesdroppers — a threat IEEE 1609.2 does not address
+  for unicast application traffic.
+
+The Ed25519 authentication layer in vigilant-parakeet (@sec-dh-auth) is
+philosophically similar to IEEE 1609.2 signed messages, but lightweight:
+it operates on 42-byte base payloads rather than full Ethernet frames,
+uses a pre-provisioned key rather than a full certificate chain, and does not
+require a PKI hierarchy or certificate revocation infrastructure.
+
+=== Comparison with TESLA-Based Broadcast Authentication
+
+TESLA @tesla authenticates broadcast messages — heartbeats in this context —
+using a one-way hash chain with time-delayed key disclosure. Integrating TESLA
+into the heartbeat protocol would directly address routing table poisoning
+attacks by authenticating each heartbeat message.
+
+The key difference from vigilant-parakeet's current design is the target:
+TESLA authenticates *control-plane* broadcast messages, whereas the DH + AEAD
+layer authenticates and encrypts *data-plane* unicast payloads. The two
+mechanisms address different threat surfaces and could coexist: TESLA on
+heartbeats (future work) would remove the routing manipulation threat while the
+existing DH layer continues to protect OBU–server data.
+
+TESLA imposes an authentication delay of one disclosure interval (one heartbeat
+period), which vigilant-parakeet's existing sequence number freshness check
+already provides in a weaker form (rejecting replays beyond one period without
+cryptographic assurance of authenticity). Full TESLA deployment would require
+GPS-synchronised clocks at all OBUs to bound the bootstrapping key disclosure.
+
+=== Comparison with End-to-End Encryption Schemes
+
+Raya and Hubaux @raya-hubaux discuss several architectural options for
+end-to-end confidentiality in VANETs, including symmetric pre-shared key
+(PSK), PKI-based key encapsulation, and ephemeral DH. vigilant-parakeet
+implements the ephemeral DH option, which is the most operationally flexible:
+
+- *PSK*: requires out-of-band distribution of symmetric keys and provides no
+  forward secrecy (compromise of the long-term key exposes all past sessions).
+
+- *PKI key encapsulation*: the OBU encrypts a session key under the server's
+  public certificate. Requires certificate distribution and provides one-way
+  authentication (server is authenticated; OBU is not, without mutual
+  certificate exchange).
+
+- *Ephemeral DH (this work)*: forward secrecy is provided by construction
+  (each session uses a fresh keypair; compromise of the Ed25519 signing key
+  does not expose past session keys). Authentication is layered orthogonally via
+  Ed25519 and is independently configurable (disabled, TOFU, or PKI allowlist).
+  No certificate revocation infrastructure is needed; key rotation is implicit
+  in the re-keying interval.
+
+The primary advantage of the certificate-based approach is that it leverages an
+existing PKI infrastructure (if one is deployed for IEEE 1609.2) without
+requiring a separate key distribution mechanism. The primary advantage of the
+ephemeral DH approach is that it is self-contained: it can be deployed without
+any PKI infrastructure, using pre-provisioned 32-byte Ed25519 seeds as the
+sole out-of-band credential.
+
+=== Summary
+
+#figure(
+  table(
+    columns: (auto, 1fr, 1fr, 1fr),
+    align: (left, left, left, left),
+    [*Approach*], [*Threats addressed*], [*Overhead*], [*Infrastructure required*],
+    [IEEE 1609.2 @ieee-1609-2],
+      [Heartbeat/control forgery; broadcast integrity; Sybil (via PKI)],
+      [ECDSA-P256 per message; certificate transmission ($approx$250 B/msg)],
+      [Full PKI hierarchy; CRL distribution; enrolment CA],
+    [TESLA @tesla],
+      [Broadcast message forgery (routing poisoning)],
+      [HMAC per message; hash-chain bootstrapping; 1-period auth latency],
+      [GPS time synchronisation; hash chain bootstrapping handshake],
+    [CONFIDANT/watchdog @confidant @watchdog],
+      [Black hole / grey hole; routing misbehavior],
+      [Promiscuous mode monitoring; reputation messaging],
+      [None (local detection); reputation gossip adds control traffic],
+    [This work: DH + AEAD + Ed25519],
+      [Payload eavesdropping; payload tampering by relay; MitM on key exchange],
+      [2-message DH handshake at session setup; 28 B per encrypted frame; 96 B Ed25519 extension optional],
+      [None (no signatures) or pre-provisioned 32-byte seeds per node pair (Ed25519 PKI mode)],
+  ),
+  caption: [Comparison of VANET security approaches],
+) <tab-security-comparison>
