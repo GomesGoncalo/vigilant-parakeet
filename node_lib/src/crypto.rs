@@ -360,6 +360,18 @@ impl SigningKeypair {
 /// `message` is the base KE payload bytes that were signed.
 /// `signing_pubkey` — 32 bytes for Ed25519, 1952 bytes for ML-DSA-65.
 /// `signature` — 64 bytes for Ed25519, 3309 bytes for ML-DSA-65.
+/// Map a wire-format signature algorithm ID to a [`SigningAlgorithm`].
+///
+/// Returns `None` for unrecognised IDs — callers should drop the message.
+pub fn sig_algo_from_id(id: u8) -> Option<SigningAlgorithm> {
+    use crate::messages::control::key_exchange::{SIG_ALGO_ED25519, SIG_ALGO_ML_DSA_65};
+    match id {
+        SIG_ALGO_ED25519 => Some(SigningAlgorithm::Ed25519),
+        SIG_ALGO_ML_DSA_65 => Some(SigningAlgorithm::MlDsa65),
+        _ => None,
+    }
+}
+
 pub fn verify_dh_signature(
     algo: SigningAlgorithm,
     message: &[u8],
@@ -955,19 +967,23 @@ mod tests {
     #[test]
     fn ml_kem_768_different_pairs_dont_share_secret() {
         let (dk_seed1, ek_bytes1) = kem_768_generate();
-        let (_dk_seed2, ek_bytes2) = kem_768_generate();
-        assert_ne!(ek_bytes1, ek_bytes2);
+        let (dk_seed2, _ek_bytes2) = kem_768_generate();
+        assert_ne!(dk_seed1, dk_seed2);
 
-        // Encapsulate with key1, try to decapsulate with key2's seed — should produce different secret
-        let (ct, ss1) = kem_768_encapsulate(&ek_bytes1).expect("encapsulate");
-        let ss_wrong = kem_768_decapsulate(&dk_seed1, &ct).expect("decapsulate dk1");
-        // The correct decapsulation matches
-        assert_eq!(ss1, ss_wrong);
-        // A different keypair's seed gives a different (garbage) result
-        let (_dk2, ek2) = kem_768_generate();
-        let (ct2, ss2) = kem_768_encapsulate(&ek2).expect("encapsulate 2");
-        assert_ne!(ss1, ss2, "different keys should produce different secrets");
-        let _ = ct2; // suppress warning
+        // Encapsulate with key1
+        let (ct, ss_correct) = kem_768_encapsulate(&ek_bytes1).expect("encapsulate");
+        // Correct decapsulation: dk1 decapsulates ciphertext addressed to ek1
+        let ss_dk1 = kem_768_decapsulate(&dk_seed1, &ct).expect("decapsulate dk1");
+        assert_eq!(
+            ss_correct, ss_dk1,
+            "correct keypair must recover the shared secret"
+        );
+        // Wrong decapsulation: dk2 decapsulates the same ciphertext — must produce a different secret
+        let ss_dk2 = kem_768_decapsulate(&dk_seed2, &ct).expect("decapsulate dk2");
+        assert_ne!(
+            ss_dk1, ss_dk2,
+            "wrong decapsulation key must produce a different secret"
+        );
     }
 
     #[test]

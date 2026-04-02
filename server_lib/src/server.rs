@@ -5,7 +5,9 @@ use crate::registry::RegistrationMessage;
 use anyhow::Result;
 use common::tun::Tun;
 use mac_address::MacAddress;
-use node_lib::crypto::{CryptoConfig, DhKeypair, SigningAlgorithm, SigningKeypair};
+use node_lib::crypto::{
+    sig_algo_from_id, CryptoConfig, DhKeypair, SigningAlgorithm, SigningKeypair,
+};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -22,16 +24,6 @@ fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
         .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
         .collect();
     bytes.and_then(|b| b.try_into().ok())
-}
-
-/// Map a wire `sig_algo_id` byte to a `SigningAlgorithm`.
-fn sig_algo_to_signing_algorithm(id: u8) -> SigningAlgorithm {
-    use node_lib::messages::control::key_exchange::{SIG_ALGO_ED25519, SIG_ALGO_ML_DSA_65};
-    match id {
-        SIG_ALGO_ED25519 => SigningAlgorithm::Ed25519,
-        SIG_ALGO_ML_DSA_65 => SigningAlgorithm::MlDsa65,
-        _ => SigningAlgorithm::Ed25519,
-    }
 }
 
 /// Shared reference to a Tun device.
@@ -819,7 +811,17 @@ impl Server {
                 ke_init.signature(),
             ) {
                 (Some(sig_algo), Some(spk), Some(sig)) => {
-                    let algo = sig_algo_to_signing_algorithm(sig_algo);
+                    let algo = match sig_algo_from_id(sig_algo) {
+                        Some(a) => a,
+                        None => {
+                            tracing::warn!(
+                                obu = %ke_fwd.obu_mac,
+                                sig_algo_id = sig_algo,
+                                "KeyExchangeInit uses unknown signature algorithm, dropping"
+                            );
+                            return;
+                        }
+                    };
                     let base = ke_init.base_payload();
                     if let Err(e) = node_lib::crypto::verify_dh_signature(algo, &base, spk, sig) {
                         tracing::warn!(
@@ -846,6 +848,16 @@ impl Server {
 
         // PKI allowlist check: if configured, the OBU's signing key must match the
         // pre-registered entry for its MAC address, closing the TOFU gap.
+        // Signature verification must be enabled when an allowlist is configured;
+        // without it the key bytes in the message are unverified and can be forged.
+        if !dh_signing_allowlist.is_empty() && !enable_dh_signatures {
+            tracing::warn!(
+                obu = %ke_fwd.obu_mac,
+                "dh_signing_allowlist is configured but enable_dh_signatures is false; \
+                 dropping KeyExchangeInit to prevent allowlist bypass"
+            );
+            return;
+        }
         if !dh_signing_allowlist.is_empty() {
             match (
                 ke_init.signing_pubkey(),

@@ -15,7 +15,7 @@ use common::{device::Device, network_interface::NetworkInterface};
 use dh_key_store::DhKeyStore;
 use mac_address::MacAddress;
 use node::ReplyType;
-use node_lib::crypto::{CryptoConfig, SigningAlgorithm, SigningKeypair};
+use node_lib::crypto::{sig_algo_from_id, CryptoConfig, SigningAlgorithm, SigningKeypair};
 use node_lib::messages::{
     control::{
         key_exchange::{KeyExchangeInit, KeyExchangeReply},
@@ -54,17 +54,6 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
     (0..s.len() / 2)
         .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
         .collect()
-}
-
-/// Map a wire `sig_algo_id` byte to a `SigningAlgorithm`.
-/// Unknown IDs default to `Ed25519` to preserve backward compatibility.
-fn sig_algo_to_signing_algorithm(id: u8) -> SigningAlgorithm {
-    use node_lib::messages::control::key_exchange::{SIG_ALGO_ED25519, SIG_ALGO_ML_DSA_65};
-    match id {
-        SIG_ALGO_ED25519 => SigningAlgorithm::Ed25519,
-        SIG_ALGO_ML_DSA_65 => SigningAlgorithm::MlDsa65,
-        _ => SigningAlgorithm::Ed25519,
-    }
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -699,7 +688,17 @@ impl Obu {
                 ke_reply.signature(),
             ) {
                 (Some(sig_algo), Some(spk), Some(sig)) => {
-                    let algo = sig_algo_to_signing_algorithm(sig_algo);
+                    let algo = match sig_algo_from_id(sig_algo) {
+                        Some(a) => a,
+                        None => {
+                            tracing::warn!(
+                                sig_algo_id = sig_algo,
+                                key_id = ke_reply.key_id(),
+                                "KeyExchangeReply uses unknown signature algorithm, dropping"
+                            );
+                            return Ok(None);
+                        }
+                    };
                     let base = ke_reply.base_payload();
                     if let Err(e) = node_lib::crypto::verify_dh_signature(algo, &base, spk, sig) {
                         tracing::warn!(
@@ -726,6 +725,18 @@ impl Obu {
 
         // PKI: if a pinned server public key is configured, reject replies
         // from any server whose signing key doesn't match.
+        // Signature verification must be enabled; without it the key bytes are
+        // unverified and an attacker could include the pinned key in a forged reply.
+        if self.args.obu_params.server_signing_pubkey.is_some()
+            && !self.args.obu_params.enable_dh_signatures
+        {
+            tracing::warn!(
+                key_id = ke_reply.key_id(),
+                "server_signing_pubkey is configured but enable_dh_signatures is false; \
+                 dropping KeyExchangeReply to prevent key-pinning bypass"
+            );
+            return Ok(None);
+        }
         if let Some(ref expected_hex) = self.args.obu_params.server_signing_pubkey {
             let expected_bytes = decode_hex(expected_hex);
             match (ke_reply.signing_pubkey(), expected_bytes) {

@@ -229,7 +229,7 @@ impl<'a> KeyExchangeInit<'a> {
     }
 
     pub fn is_signed(&self) -> bool {
-        self.signing_pubkey.is_some()
+        self.sig_algo_id.is_some() && self.signing_pubkey.is_some() && self.signature.is_some()
     }
 
     /// Return the base payload bytes that were (or should be) signed.
@@ -277,30 +277,33 @@ impl<'a> TryFrom<&'a [u8]> for KeyExchangeInit<'a> {
         let (sig_algo_id, signing_pubkey, signature) = if value.len() > sender_end {
             let ext = &value[sender_end..];
             if ext.len() < 5 {
-                // Not enough bytes for sig_algo_id + spk_len + sig_len minimums
-                (None, None, None)
-            } else {
-                let sig_algo = ext[0];
-                let spk_len = u16::from_be_bytes([ext[1], ext[2]]) as usize;
-                let spk_end = 3 + spk_len;
-                if ext.len() < spk_end + 2 {
-                    (None, None, None)
-                } else {
-                    let spk = &ext[3..spk_end];
-                    let sig_len = u16::from_be_bytes([ext[spk_end], ext[spk_end + 1]]) as usize;
-                    let sig_end = spk_end + 2 + sig_len;
-                    if ext.len() < sig_end {
-                        (None, None, None)
-                    } else {
-                        let sig = &ext[spk_end + 2..sig_end];
-                        (
-                            Some(sig_algo),
-                            Some(Cow::Borrowed(spk)),
-                            Some(Cow::Borrowed(sig)),
-                        )
-                    }
-                }
+                return Err(crate::error::NodeError::InvalidMessage(
+                    "KeyExchangeInit signed extension too short".to_string(),
+                ));
             }
+            let sig_algo = ext[0];
+            let spk_len = u16::from_be_bytes([ext[1], ext[2]]) as usize;
+            let spk_end = 3 + spk_len;
+            if ext.len() < spk_end + 2 {
+                return Err(crate::error::NodeError::InvalidMessage(
+                    "KeyExchangeInit signed extension truncated before sig_len".to_string(),
+                ));
+            }
+            let spk = &ext[3..spk_end];
+            let sig_len = u16::from_be_bytes([ext[spk_end], ext[spk_end + 1]]) as usize;
+            let sig_end = spk_end + 2 + sig_len;
+            if ext.len() < sig_end {
+                return Err(crate::error::NodeError::InvalidMessage(
+                    "KeyExchangeInit signed extension truncated before end of signature"
+                        .to_string(),
+                ));
+            }
+            let sig = &ext[spk_end + 2..sig_end];
+            (
+                Some(sig_algo),
+                Some(Cow::Borrowed(spk)),
+                Some(Cow::Borrowed(sig)),
+            )
         } else {
             (None, None, None)
         };
@@ -516,7 +519,7 @@ impl<'a> KeyExchangeReply<'a> {
     }
 
     pub fn is_signed(&self) -> bool {
-        self.signing_pubkey.is_some()
+        self.sig_algo_id.is_some() && self.signing_pubkey.is_some() && self.signature.is_some()
     }
 
     /// Return the base payload bytes that were (or should be) signed.
@@ -562,29 +565,33 @@ impl<'a> TryFrom<&'a [u8]> for KeyExchangeReply<'a> {
         let (sig_algo_id, signing_pubkey, signature) = if value.len() > sender_end {
             let ext = &value[sender_end..];
             if ext.len() < 5 {
-                (None, None, None)
-            } else {
-                let sig_algo = ext[0];
-                let spk_len = u16::from_be_bytes([ext[1], ext[2]]) as usize;
-                let spk_end = 3 + spk_len;
-                if ext.len() < spk_end + 2 {
-                    (None, None, None)
-                } else {
-                    let spk = &ext[3..spk_end];
-                    let sig_len = u16::from_be_bytes([ext[spk_end], ext[spk_end + 1]]) as usize;
-                    let sig_end = spk_end + 2 + sig_len;
-                    if ext.len() < sig_end {
-                        (None, None, None)
-                    } else {
-                        let sig = &ext[spk_end + 2..sig_end];
-                        (
-                            Some(sig_algo),
-                            Some(Cow::Borrowed(spk)),
-                            Some(Cow::Borrowed(sig)),
-                        )
-                    }
-                }
+                return Err(crate::error::NodeError::InvalidMessage(
+                    "KeyExchangeReply signed extension too short".to_string(),
+                ));
             }
+            let sig_algo = ext[0];
+            let spk_len = u16::from_be_bytes([ext[1], ext[2]]) as usize;
+            let spk_end = 3 + spk_len;
+            if ext.len() < spk_end + 2 {
+                return Err(crate::error::NodeError::InvalidMessage(
+                    "KeyExchangeReply signed extension truncated before sig_len".to_string(),
+                ));
+            }
+            let spk = &ext[3..spk_end];
+            let sig_len = u16::from_be_bytes([ext[spk_end], ext[spk_end + 1]]) as usize;
+            let sig_end = spk_end + 2 + sig_len;
+            if ext.len() < sig_end {
+                return Err(crate::error::NodeError::InvalidMessage(
+                    "KeyExchangeReply signed extension truncated before end of signature"
+                        .to_string(),
+                ));
+            }
+            let sig = &ext[spk_end + 2..sig_end];
+            (
+                Some(sig_algo),
+                Some(Cow::Borrowed(spk)),
+                Some(Cow::Borrowed(sig)),
+            )
         } else {
             (None, None, None)
         };

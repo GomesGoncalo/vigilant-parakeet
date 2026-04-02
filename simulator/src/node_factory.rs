@@ -335,6 +335,15 @@ fn parse_dh_signing_allowlist(settings: &Config) -> HashMap<MacAddress, Vec<u8>>
             .collect();
         match bytes {
             Some(b) => {
+                // Validate known key lengths: Ed25519 (32 B) or ML-DSA-65 (1952 B).
+                if b.len() != 32 && b.len() != 1952 {
+                    tracing::warn!(
+                        mac = %mac_str,
+                        len = b.len(),
+                        "dh_signing_allowlist pubkey has unexpected length (expected 32 or 1952 bytes), skipping"
+                    );
+                    continue;
+                }
                 out.insert(mac, b);
             }
             None => {
