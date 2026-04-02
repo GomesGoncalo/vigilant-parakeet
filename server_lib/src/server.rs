@@ -16,16 +16,6 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time::Instant;
 use tracing::Instrument;
 
-fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
-        return None;
-    }
-    let bytes: Option<Vec<u8>> = (0..32)
-        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
-        .collect();
-    bytes.and_then(|b| b.try_into().ok())
-}
-
 /// Shared reference to a Tun device.
 pub type SharedTun = Arc<Tun>;
 
@@ -152,12 +142,17 @@ impl Server {
 
     /// Set the crypto configuration for key derivation.
     pub fn with_crypto_config(mut self, config: CryptoConfig) -> Self {
+        // Also sync signing_algorithm so that with_dh_signatures() called afterward
+        // generates a keypair with the correct algorithm without requiring an extra
+        // with_signing_algorithm() call.
+        self.signing_algorithm = config.signing_algorithm;
         self.crypto_config = config;
         self
     }
 
     /// Set the signing algorithm to use for DH message signing (default: Ed25519).
-    /// Call before `with_dh_signatures` so the keypair is generated with the right algorithm.
+    /// This is automatically set by `with_crypto_config`; call this only when
+    /// overriding the algorithm independently of the full crypto config.
     pub fn with_signing_algorithm(mut self, algo: SigningAlgorithm) -> Self {
         self.signing_algorithm = algo;
         self
@@ -177,16 +172,24 @@ impl Server {
     }
 
     /// Load the signing keypair from a 32-byte hex-encoded seed instead of generating
-    /// a random one.  Must be called after `with_dh_signatures(true)`.
-    /// The same seed always produces the same keypair, giving the server a stable
-    /// identity across restarts so OBUs can pin it via `server_signing_pubkey`.
+    /// a random one. The signing algorithm is taken from `self.signing_algorithm`
+    /// (set via `with_crypto_config` or `with_signing_algorithm`).
+    /// The same `(algorithm, seed)` pair always produces the same keypair, giving the
+    /// server a stable identity across restarts so OBUs can pin it via
+    /// `server_signing_pubkey`.
     pub fn with_signing_key_seed(mut self, hex_seed: &str) -> anyhow::Result<Self> {
-        let seed = decode_hex_32(hex_seed)
+        let seed = node_lib::crypto::decode_hex_32(hex_seed)
             .ok_or_else(|| anyhow::anyhow!("signing_key_seed must be exactly 64 hex characters"))?;
-        self.signing_keypair = Some(Arc::new(SigningKeypair::from_seed(
+        let kp = SigningKeypair::from_seed(self.signing_algorithm, seed);
+        // Sanity-check: the derived keypair's algorithm must match self.signing_algorithm.
+        // If this fires, with_signing_algorithm() was called after with_signing_key_seed(),
+        // which would silently deploy the wrong keypair.
+        debug_assert_eq!(
+            kp.signing_algorithm(),
             self.signing_algorithm,
-            seed,
-        )));
+            "signing keypair algorithm mismatch — call with_signing_algorithm before with_signing_key_seed"
+        );
+        self.signing_keypair = Some(Arc::new(kp));
         Ok(self)
     }
 
@@ -211,6 +214,18 @@ impl Server {
             "Starting server UDP listener"
         );
 
+        if !self.enable_encryption {
+            tracing::warn!(
+                "Encryption is DISABLED — all downstream traffic is sent in the clear. \
+                 Set enable_encryption = true to protect data payloads."
+            );
+        }
+        if !self.enable_dh_signatures {
+            tracing::warn!(
+                "DH signatures are DISABLED — key exchange messages are not authenticated. \
+                 Set enable_dh_signatures = true to prevent MITM key substitution."
+            );
+        }
         if let Some(ref kp) = self.signing_keypair {
             let pubkey_hex: String = kp
                 .verifying_key_bytes()

@@ -36,16 +36,6 @@ use node_lib::{Shared, SharedDevice, SharedTun};
 
 type SharedKeyStore = Arc<RwLock<DhKeyStore>>;
 
-fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
-        return None;
-    }
-    let bytes: Option<Vec<u8>> = (0..32)
-        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
-        .collect();
-    bytes.and_then(|b| b.try_into().ok())
-}
-
 /// Decode a hex string of any length into bytes. Returns `None` on invalid hex.
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
@@ -103,7 +93,7 @@ impl Obu {
         let signing_algo = args.obu_params.signing_algorithm;
         let signing_keypair = if args.obu_params.enable_dh_signatures {
             let kp = if let Some(ref hex_seed) = args.obu_params.signing_key_seed {
-                let seed = decode_hex_32(hex_seed).ok_or_else(|| {
+                let seed = node_lib::crypto::decode_hex_32(hex_seed).ok_or_else(|| {
                     anyhow!("signing_key_seed must be exactly 64 hex characters (32 bytes)")
                 })?;
                 SigningKeypair::from_seed(signing_algo, seed)
@@ -150,6 +140,18 @@ impl Obu {
             dh_reply_timeout_ms = obu.args.obu_params.dh_reply_timeout_ms,
             "OBU initialized"
         );
+        if !obu.args.obu_params.enable_encryption {
+            tracing::warn!(
+                "Encryption is DISABLED — all traffic is sent in the clear. \
+                 Set --enable-encryption to protect data payloads."
+            );
+        }
+        if !obu.args.obu_params.enable_dh_signatures {
+            tracing::warn!(
+                "DH signatures are DISABLED — key exchange messages are not authenticated. \
+                 Set --enable-dh-signatures to prevent MITM key substitution."
+            );
+        }
         obu.session_task()?;
         Obu::wire_traffic_task(obu.clone())?;
         if obu.args.obu_params.enable_encryption {
@@ -766,6 +768,26 @@ impl Obu {
                     );
                     return Ok(None);
                 }
+            }
+        }
+
+        // Validate that the reply algorithm matches what we initiated.
+        // Rejecting mismatches prevents an attacker from downgrading the algorithm
+        // by rewriting the algo_id byte in a relayed reply.
+        {
+            use node_lib::messages::control::key_exchange::{KE_ALGO_ML_KEM_768, KE_ALGO_X25519};
+            let expected_algo_id = match self.crypto_config.dh_group {
+                node_lib::crypto::DhGroup::X25519 => KE_ALGO_X25519,
+                node_lib::crypto::DhGroup::MlKem768 => KE_ALGO_ML_KEM_768,
+            };
+            if ke_reply.algo_id() != expected_algo_id {
+                tracing::warn!(
+                    key_id = ke_reply.key_id(),
+                    expected = expected_algo_id,
+                    received = ke_reply.algo_id(),
+                    "KeyExchangeReply algo_id does not match initiated algorithm, dropping"
+                );
+                return Ok(None);
             }
         }
 

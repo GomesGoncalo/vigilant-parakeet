@@ -1,18 +1,23 @@
 use mac_address::MacAddress;
 use node_lib::crypto::{
-    CryptoConfig, DhGroup, DhKeypair, ML_KEM_768_CT_LEN, ML_KEM_768_EK_LEN, ML_KEM_768_SEED_LEN,
+    CryptoConfig, DhGroup, ML_KEM_768_CT_LEN, ML_KEM_768_EK_LEN, ML_KEM_768_SEED_LEN,
 };
+use rand_core::OsRng;
 use std::collections::HashMap;
 use tokio::time::Instant;
+use x25519_dalek::{EphemeralSecret, PublicKey};
 
 /// Private: stores the OBU's side of a pending key exchange.
 enum PendingKeyMaterial {
-    /// X25519 ephemeral keypair (classical).
-    X25519(DhKeypair),
+    /// X25519 ephemeral keypair. `EphemeralSecret` enforces single-use at the
+    /// type level — `diffie_hellman` consumes it, preventing accidental reuse.
+    X25519(EphemeralSecret, PublicKey),
     /// ML-KEM-768 decapsulation key seed (64 bytes). The encapsulation key
     /// (1184 bytes) is sent in the wire message; we only keep the seed to
     /// reconstruct the decap key when the server's ciphertext arrives.
-    MlKem768Seed([u8; ML_KEM_768_SEED_LEN]),
+    /// Wrapped in `Zeroizing` so the seed bytes are wiped when the pending
+    /// exchange is removed.
+    MlKem768Seed(zeroize::Zeroizing<[u8; ML_KEM_768_SEED_LEN]>),
 }
 
 /// State of a pending key exchange initiated by this node.
@@ -67,17 +72,7 @@ impl DhKeyStore {
         let key_id = self.next_key_id;
         self.next_key_id = self.next_key_id.wrapping_add(1);
 
-        let (key_material, public_bytes) = match self.crypto_config.dh_group {
-            DhGroup::X25519 => {
-                let keypair = DhKeypair::generate();
-                let pub_bytes = keypair.public.as_bytes().to_vec();
-                (PendingKeyMaterial::X25519(keypair), pub_bytes)
-            }
-            DhGroup::MlKem768 => {
-                let (seed, ek) = node_lib::crypto::kem_768_generate();
-                (PendingKeyMaterial::MlKem768Seed(seed), ek.to_vec())
-            }
-        };
+        let (key_material, public_bytes) = Self::generate_key_material(self.crypto_config.dh_group);
 
         self.pending.insert(
             peer.bytes(),
@@ -103,17 +98,7 @@ impl DhKeyStore {
         let key_id = self.next_key_id;
         self.next_key_id = self.next_key_id.wrapping_add(1);
 
-        let (key_material, public_bytes) = match self.crypto_config.dh_group {
-            DhGroup::X25519 => {
-                let keypair = DhKeypair::generate();
-                let pub_bytes = keypair.public.as_bytes().to_vec();
-                (PendingKeyMaterial::X25519(keypair), pub_bytes)
-            }
-            DhGroup::MlKem768 => {
-                let (seed, ek) = node_lib::crypto::kem_768_generate();
-                (PendingKeyMaterial::MlKem768Seed(seed), ek.to_vec())
-            }
-        };
+        let (key_material, public_bytes) = Self::generate_key_material(self.crypto_config.dh_group);
 
         self.pending.insert(
             peer.bytes(),
@@ -126,6 +111,25 @@ impl DhKeyStore {
         );
 
         (key_id, public_bytes)
+    }
+
+    /// Generate fresh key material for an outgoing key exchange.
+    fn generate_key_material(dh_group: DhGroup) -> (PendingKeyMaterial, Vec<u8>) {
+        match dh_group {
+            DhGroup::X25519 => {
+                let secret = EphemeralSecret::random_from_rng(OsRng);
+                let public = PublicKey::from(&secret);
+                let pub_bytes = public.as_bytes().to_vec();
+                (PendingKeyMaterial::X25519(secret, public), pub_bytes)
+            }
+            DhGroup::MlKem768 => {
+                let (seed, ek) = node_lib::crypto::kem_768_generate();
+                (
+                    PendingKeyMaterial::MlKem768Seed(zeroize::Zeroizing::new(seed)),
+                    ek.to_vec(),
+                )
+            }
+        }
     }
 
     /// Complete a key exchange when we receive a reply.
@@ -141,29 +145,36 @@ impl DhKeyStore {
         key_id: u32,
         peer_response: &[u8],
     ) -> Option<(Vec<u8>, std::time::Duration)> {
-        let pending = self.pending.get(&peer.bytes())?;
-        if pending.key_id != key_id {
-            tracing::warn!(
-                expected = pending.key_id,
-                received = key_id,
-                peer = %peer,
-                "Key exchange key_id mismatch, ignoring reply"
-            );
-            return None;
+        // Check key_id before removing so we don't consume the pending exchange on mismatch.
+        {
+            let pending = self.pending.get(&peer.bytes())?;
+            if pending.key_id != key_id {
+                tracing::warn!(
+                    expected = pending.key_id,
+                    received = key_id,
+                    peer = %peer,
+                    "Key exchange key_id mismatch, ignoring reply"
+                );
+                return None;
+            }
         }
+
+        // Remove (and take ownership of) the pending exchange. For X25519,
+        // EphemeralSecret::diffie_hellman consumes the secret, enforcing single-use.
+        let pending = self.pending.remove(&peer.bytes())?;
 
         let session_duration = pending.initiated_at.elapsed();
         let retries = pending.retries;
 
-        let shared_secret_bytes: Vec<u8> = match &pending.key_material {
-            PendingKeyMaterial::X25519(keypair) => {
+        let shared_secret_bytes: Vec<u8> = match pending.key_material {
+            PendingKeyMaterial::X25519(secret, _public) => {
                 let peer_pub_bytes: [u8; 32] = peer_response.try_into().ok()?;
-                let peer_public = x25519_dalek::PublicKey::from(peer_pub_bytes);
-                keypair.diffie_hellman(&peer_public).as_bytes().to_vec()
+                let peer_public = PublicKey::from(peer_pub_bytes);
+                secret.diffie_hellman(&peer_public).as_bytes().to_vec()
             }
             PendingKeyMaterial::MlKem768Seed(seed) => {
                 let ct_bytes: &[u8; ML_KEM_768_CT_LEN] = peer_response.try_into().ok()?;
-                match node_lib::crypto::kem_768_decapsulate(seed, ct_bytes) {
+                match node_lib::crypto::kem_768_decapsulate(&seed, ct_bytes) {
                     Ok(ss) => ss.to_vec(),
                     Err(e) => {
                         tracing::error!(error = %e, "ML-KEM-768 decapsulation failed");
@@ -194,8 +205,6 @@ impl DhKeyStore {
             dh_group = %self.crypto_config.dh_group,
             "Key exchange session established"
         );
-
-        self.pending.remove(&peer.bytes());
         self.established.insert(
             peer.bytes(),
             EstablishedKey {
@@ -227,12 +236,13 @@ impl DhKeyStore {
     ) -> Option<Vec<u8>> {
         let (our_response, shared_secret_bytes) = match self.crypto_config.dh_group {
             DhGroup::X25519 => {
-                let our_keypair = DhKeypair::generate();
-                let our_public = our_keypair.public.as_bytes().to_vec();
+                let our_secret = EphemeralSecret::random_from_rng(OsRng);
+                let our_public = PublicKey::from(&our_secret);
+                let our_public_bytes = our_public.as_bytes().to_vec();
                 let peer_pub_bytes: [u8; 32] = peer_key_material.try_into().ok()?;
-                let peer_public = x25519_dalek::PublicKey::from(peer_pub_bytes);
-                let ss = our_keypair.diffie_hellman(&peer_public).as_bytes().to_vec();
-                (our_public, ss)
+                let peer_public = PublicKey::from(peer_pub_bytes);
+                let ss = our_secret.diffie_hellman(&peer_public).as_bytes().to_vec();
+                (our_public_bytes, ss)
             }
             DhGroup::MlKem768 => {
                 let ek_bytes: &[u8; ML_KEM_768_EK_LEN] = peer_key_material.try_into().ok()?;

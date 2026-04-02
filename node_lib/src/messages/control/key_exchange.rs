@@ -283,6 +283,27 @@ impl<'a> TryFrom<&'a [u8]> for KeyExchangeInit<'a> {
             }
             let sig_algo = ext[0];
             let spk_len = u16::from_be_bytes([ext[1], ext[2]]) as usize;
+            // Reject key/sig sizes that don't match the declared algorithm.
+            let (expected_spk_len, expected_sig_len) = match sig_algo {
+                SIG_ALGO_ED25519 => (
+                    crate::crypto::ED25519_VK_LEN,
+                    crate::crypto::ED25519_SIG_LEN,
+                ),
+                SIG_ALGO_ML_DSA_65 => (
+                    crate::crypto::ML_DSA_65_VK_LEN,
+                    crate::crypto::ML_DSA_65_SIG_LEN,
+                ),
+                _ => {
+                    return Err(crate::error::NodeError::InvalidMessage(format!(
+                        "KeyExchangeInit unknown sig_algo_id {sig_algo}"
+                    )));
+                }
+            };
+            if spk_len != expected_spk_len {
+                return Err(crate::error::NodeError::InvalidMessage(format!(
+                    "KeyExchangeInit spk_len {spk_len} does not match sig_algo {sig_algo} (expected {expected_spk_len})"
+                )));
+            }
             let spk_end = 3 + spk_len;
             if ext.len() < spk_end + 2 {
                 return Err(crate::error::NodeError::InvalidMessage(
@@ -291,11 +312,21 @@ impl<'a> TryFrom<&'a [u8]> for KeyExchangeInit<'a> {
             }
             let spk = &ext[3..spk_end];
             let sig_len = u16::from_be_bytes([ext[spk_end], ext[spk_end + 1]]) as usize;
+            if sig_len != expected_sig_len {
+                return Err(crate::error::NodeError::InvalidMessage(format!(
+                    "KeyExchangeInit sig_len {sig_len} does not match sig_algo {sig_algo} (expected {expected_sig_len})"
+                )));
+            }
             let sig_end = spk_end + 2 + sig_len;
             if ext.len() < sig_end {
                 return Err(crate::error::NodeError::InvalidMessage(
                     "KeyExchangeInit signed extension truncated before end of signature"
                         .to_string(),
+                ));
+            }
+            if ext.len() != sig_end {
+                return Err(crate::error::NodeError::InvalidMessage(
+                    "KeyExchangeInit has trailing bytes after signature".to_string(),
                 ));
             }
             let sig = &ext[spk_end + 2..sig_end];
@@ -571,6 +602,26 @@ impl<'a> TryFrom<&'a [u8]> for KeyExchangeReply<'a> {
             }
             let sig_algo = ext[0];
             let spk_len = u16::from_be_bytes([ext[1], ext[2]]) as usize;
+            let (expected_spk_len, expected_sig_len) = match sig_algo {
+                SIG_ALGO_ED25519 => (
+                    crate::crypto::ED25519_VK_LEN,
+                    crate::crypto::ED25519_SIG_LEN,
+                ),
+                SIG_ALGO_ML_DSA_65 => (
+                    crate::crypto::ML_DSA_65_VK_LEN,
+                    crate::crypto::ML_DSA_65_SIG_LEN,
+                ),
+                _ => {
+                    return Err(crate::error::NodeError::InvalidMessage(format!(
+                        "KeyExchangeReply unknown sig_algo_id {sig_algo}"
+                    )));
+                }
+            };
+            if spk_len != expected_spk_len {
+                return Err(crate::error::NodeError::InvalidMessage(format!(
+                    "KeyExchangeReply spk_len {spk_len} does not match sig_algo {sig_algo} (expected {expected_spk_len})"
+                )));
+            }
             let spk_end = 3 + spk_len;
             if ext.len() < spk_end + 2 {
                 return Err(crate::error::NodeError::InvalidMessage(
@@ -579,11 +630,21 @@ impl<'a> TryFrom<&'a [u8]> for KeyExchangeReply<'a> {
             }
             let spk = &ext[3..spk_end];
             let sig_len = u16::from_be_bytes([ext[spk_end], ext[spk_end + 1]]) as usize;
+            if sig_len != expected_sig_len {
+                return Err(crate::error::NodeError::InvalidMessage(format!(
+                    "KeyExchangeReply sig_len {sig_len} does not match sig_algo {sig_algo} (expected {expected_sig_len})"
+                )));
+            }
             let sig_end = spk_end + 2 + sig_len;
             if ext.len() < sig_end {
                 return Err(crate::error::NodeError::InvalidMessage(
                     "KeyExchangeReply signed extension truncated before end of signature"
                         .to_string(),
+                ));
+            }
+            if ext.len() != sig_end {
+                return Err(crate::error::NodeError::InvalidMessage(
+                    "KeyExchangeReply has trailing bytes after signature".to_string(),
                 ));
             }
             let sig = &ext[spk_end + 2..sig_end];

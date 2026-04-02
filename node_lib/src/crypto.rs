@@ -10,6 +10,7 @@ use ml_dsa::{ExpandedSigningKey, MlDsa65};
 use ml_kem::{Decapsulate, Encapsulate, EncapsulationKey, FromSeed, Kem, KeyExport, MlKem768};
 use sha2::{Sha256, Sha384, Sha512};
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
+use zeroize::Zeroizing;
 
 /// HKDF info string for deriving keys from DH shared secrets.
 const HKDF_INFO: &[u8] = b"vigilant-parakeet-dh";
@@ -190,6 +191,13 @@ pub const ML_KEM_768_SEED_LEN: usize = 64;
 /// Shared secret size (32 bytes, same as X25519).
 pub const ML_KEM_768_SS_LEN: usize = 32;
 
+// ── Ed25519 constants ──────────────────────────────────────────────────
+
+/// Ed25519 verifying key size.
+pub const ED25519_VK_LEN: usize = 32;
+/// Ed25519 signature size.
+pub const ED25519_SIG_LEN: usize = 64;
+
 // ── ML-DSA-65 constants ────────────────────────────────────────────────
 
 /// ML-DSA-65 verifying key size (sent in signed messages).
@@ -281,8 +289,11 @@ pub fn generate_ephemeral_keypair() -> (EphemeralSecret, PublicKey) {
 /// The algorithm is chosen at construction time via `SigningAlgorithm`.
 /// Both algorithms derive the keypair deterministically from a 32-byte seed,
 /// enabling persistent identities via configuration.
+///
+/// The seed field is automatically zeroed when the keypair is dropped.
 pub struct SigningKeypair {
-    seed: [u8; 32],
+    /// Raw 32-byte seed — zeroized on drop to prevent key material lingering in memory.
+    seed: Zeroizing<[u8; 32]>,
     inner: SigningKeypairInner,
 }
 
@@ -312,12 +323,15 @@ impl SigningKeypair {
                 )))
             }
         };
-        Self { seed, inner }
+        Self {
+            seed: Zeroizing::new(seed),
+            inner,
+        }
     }
 
     /// Return the 32-byte seed for reconstructing this keypair via `from_seed`.
     pub fn seed_bytes(&self) -> [u8; 32] {
-        self.seed
+        *self.seed
     }
 
     /// Return the signing algorithm used by this keypair.
@@ -360,6 +374,19 @@ impl SigningKeypair {
 /// `message` is the base KE payload bytes that were signed.
 /// `signing_pubkey` — 32 bytes for Ed25519, 1952 bytes for ML-DSA-65.
 /// `signature` — 64 bytes for Ed25519, 3309 bytes for ML-DSA-65.
+/// Decode a 64-hex-character string into a 32-byte array.
+///
+/// Returns `None` if the input is not exactly 64 hex characters.
+pub fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..32)
+        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
+        .collect();
+    bytes.and_then(|b| b.try_into().ok())
+}
+
 /// Map a wire-format signature algorithm ID to a [`SigningAlgorithm`].
 ///
 /// Returns `None` for unrecognised IDs — callers should drop the message.

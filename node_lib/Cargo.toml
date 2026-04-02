@@ -31,6 +31,7 @@ hkdf = "0.12"
 sha2 = "0.10"
 ml-kem = { version = "0.3.0-rc.1", features = ["getrandom"] }
 ml-dsa = "0.1.0-rc.8"
+zeroize = { version = "1", features = ["derive"] }
 thiserror = "*"
 bytes = "*"
 
