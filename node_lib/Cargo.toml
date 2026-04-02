@@ -29,6 +29,9 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 hkdf = "0.12"
 sha2 = "0.10"
+ml-kem = { version = "0.3.0-rc.1", features = ["deterministic"] }
+ml-dsa = "0.1.0-rc.8"
+rand_chacha = "0.3"
 thiserror = "*"
 bytes = "*"
 
