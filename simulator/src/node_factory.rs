@@ -146,12 +146,20 @@ pub fn create_node_from_settings(
     // Create VANET interface (the wireless medium where control/data messages flow).
     // A fixed MAC can be set via `vanet_mac` in the node YAML so it matches entries
     // in a server's dh_signing_allowlist (the allowlist is keyed by VANET MAC).
+    //
+    // MTU is set to node_lib::PACKET_BUFFER_SIZE (9000, jumbo frames) so that
+    // post-quantum key-exchange messages fit in a single frame without EMSGSIZE.
+    // The largest PQ frame is a signed ML-KEM-768 + ML-DSA-65 KeyExchangeInit
+    // at ~6.5 KB; standard 1500 B Ethernet MTU would reject it at the AF_PACKET
+    // layer.  Both the VANET TAP and the PACKET_BUFFER_SIZE receive buffer must
+    // agree on this value.
     let vanet_mac = settings
         .get_string("vanet_mac")
         .ok()
         .and_then(|s| parse_mac(&s));
+    let vanet_mtu = u16::try_from(node_lib::PACKET_BUFFER_SIZE).unwrap_or(u16::MAX);
     let vanet_tun = {
-        let b = InterfaceBuilder::new("vanet");
+        let b = InterfaceBuilder::new("vanet").with_mtu(vanet_mtu);
         let b = if let Some(mac) = vanet_mac {
             b.with_mac(mac)
         } else {
