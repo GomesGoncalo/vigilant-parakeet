@@ -1,3 +1,5 @@
+pub mod admin;
+
 pub mod args;
 pub use args::{ServerArgs, ServerParameters};
 
@@ -6,7 +8,8 @@ pub use builder::ServerBuilder;
 
 pub mod cloud_protocol;
 pub use cloud_protocol::{
-    CloudMessage, DownstreamForward, KeyExchangeForward, KeyExchangeResponse, UpstreamForward,
+    CloudMessage, DownstreamForward, KeyExchangeForward, KeyExchangeResponse,
+    SessionTerminatedForward, UpstreamForward,
 };
 
 pub mod registry;

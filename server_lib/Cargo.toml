@@ -13,6 +13,7 @@ mac_address = "*"
 node_lib = { path = "../node_lib" }
 common = { path = "../common" }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 [dev-dependencies]
 tokio = { version = "*", features = ["full", "test-util"] }

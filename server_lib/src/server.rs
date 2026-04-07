@@ -1,5 +1,5 @@
 use crate::cloud_protocol::{
-    CloudMessage, DownstreamForward, KeyExchangeResponse, UpstreamForward,
+    CloudMessage, DownstreamForward, KeyExchangeResponse, SessionTerminatedForward, UpstreamForward,
 };
 use crate::registry::RegistrationMessage;
 use anyhow::Result;
@@ -95,7 +95,9 @@ pub struct Server {
     /// PKI allowlist: OBU VANET MAC → expected verifying key bytes (Ed25519: 32B, ML-DSA-65: 1952B).
     /// When non-empty and enable_dh_signatures is set, only OBUs whose signing key
     /// matches the registered entry are allowed to complete key exchange.
-    dh_signing_allowlist: HashMap<MacAddress, Vec<u8>>,
+    /// Wrapped in Arc<RwLock> so the allowlist can be hot-reloaded at runtime via
+    /// `reload_allowlist()` without restarting the server.
+    dh_signing_allowlist: Arc<RwLock<HashMap<MacAddress, Vec<u8>>>>,
     /// Signing algorithm used for DH message signing (default: Ed25519).
     signing_algorithm: SigningAlgorithm,
 }
@@ -118,7 +120,7 @@ impl Server {
             node_name,
             enable_dh_signatures: false,
             signing_keypair: None,
-            dh_signing_allowlist: HashMap::new(),
+            dh_signing_allowlist: Arc::new(RwLock::new(HashMap::new())),
             signing_algorithm: SigningAlgorithm::default(),
         }
     }
@@ -198,7 +200,7 @@ impl Server {
     /// When non-empty and DH signatures are enabled, only allowlisted OBUs may complete
     /// key exchange (closes the TOFU first-contact impersonation gap).
     pub fn with_dh_signing_allowlist(mut self, allowlist: HashMap<MacAddress, Vec<u8>>) -> Self {
-        self.dh_signing_allowlist = allowlist;
+        self.dh_signing_allowlist = Arc::new(RwLock::new(allowlist));
         self
     }
 
@@ -233,9 +235,10 @@ impl Server {
                 .iter()
                 .map(|b| format!("{b:02x}"))
                 .collect();
+            let pki_entries = self.dh_signing_allowlist.read().await.len();
             tracing::info!(
                 signing_pubkey = %pubkey_hex,
-                pki_entries = self.dh_signing_allowlist.len(),
+                pki_entries,
                 "DH signing enabled on server"
             );
         }
@@ -256,7 +259,7 @@ impl Server {
         let enable_encryption = self.enable_encryption;
         let enable_dh_signatures = self.enable_dh_signatures;
         let signing_keypair = self.signing_keypair.clone();
-        let dh_signing_allowlist = Arc::new(self.dh_signing_allowlist.clone());
+        let dh_signing_allowlist = self.dh_signing_allowlist.clone();
         let dh_keys = self.dh_keys.clone();
         let crypto_config = self.crypto_config;
         let name_for_recv = node_name.clone();
@@ -325,7 +328,7 @@ impl Server {
         enable_encryption: bool,
         enable_dh_signatures: bool,
         signing_keypair: Option<Arc<SigningKeypair>>,
-        dh_signing_allowlist: Arc<HashMap<MacAddress, Vec<u8>>>,
+        dh_signing_allowlist: Arc<RwLock<HashMap<MacAddress, Vec<u8>>>>,
         dh_keys: Arc<RwLock<DhKeyStore>>,
         crypto_config: CryptoConfig,
         key_ttl_ms: u64,
@@ -372,6 +375,14 @@ impl Server {
                                     "Ignoring KeyExchangeForward — encryption is disabled"
                                 );
                             }
+                        }
+                        Some(CloudMessage::SessionTerminatedForward(_)) => {
+                            // Server never receives its own session-termination messages;
+                            // this type only flows server → RSU.
+                            tracing::warn!(
+                                src = %src_addr,
+                                "Received unexpected SessionTerminatedForward on server"
+                            );
                         }
                         Some(CloudMessage::DownstreamForward(_))
                         | Some(CloudMessage::KeyExchangeResponse(_)) => {
@@ -802,8 +813,9 @@ impl Server {
         socket: &Arc<UdpSocket>,
         enable_dh_signatures: bool,
         signing_keypair: Option<&SigningKeypair>,
-        dh_signing_allowlist: &HashMap<MacAddress, Vec<u8>>,
+        dh_signing_allowlist: &RwLock<HashMap<MacAddress, Vec<u8>>>,
     ) {
+        let allowlist = dh_signing_allowlist.read().await;
         // Parse the KeyExchangeInit payload
         let ke_init = match node_lib::messages::control::key_exchange::KeyExchangeInit::try_from(
             ke_fwd.payload.as_slice(),
@@ -866,7 +878,7 @@ impl Server {
         // pre-registered entry for its MAC address, closing the TOFU gap.
         // Signature verification must be enabled when an allowlist is configured;
         // without it the key bytes in the message are unverified and can be forged.
-        if !dh_signing_allowlist.is_empty() && !enable_dh_signatures {
+        if !allowlist.is_empty() && !enable_dh_signatures {
             tracing::warn!(
                 obu = %ke_fwd.obu_mac,
                 "dh_signing_allowlist is configured but enable_dh_signatures is false; \
@@ -874,11 +886,8 @@ impl Server {
             );
             return;
         }
-        if !dh_signing_allowlist.is_empty() {
-            match (
-                ke_init.signing_pubkey(),
-                dh_signing_allowlist.get(&ke_fwd.obu_mac),
-            ) {
+        if !allowlist.is_empty() {
+            match (ke_init.signing_pubkey(), allowlist.get(&ke_fwd.obu_mac)) {
                 (Some(spk), Some(expected)) if spk == expected.as_slice() => {
                     tracing::debug!(
                         obu = %ke_fwd.obu_mac,
@@ -908,6 +917,9 @@ impl Server {
                 }
             }
         }
+
+        // Release the allowlist lock before the expensive crypto operations below.
+        drop(allowlist);
 
         let key_id = ke_init.key_id();
         let algo_id = ke_init.algo_id();
@@ -1144,6 +1156,167 @@ impl Server {
     pub async fn bound_addr(&self) -> Option<std::net::SocketAddr> {
         let sock = self.socket.lock().await;
         sock.as_ref()?.local_addr().ok()
+    }
+
+    /// Revoke the active session for a single OBU.
+    ///
+    /// This immediately:
+    /// 1. Removes the OBU's DH key from the server's key store (all further encrypted
+    ///    traffic from that OBU will be dropped until it re-keys).
+    /// 2. Sends a `SessionTerminatedForward` to the RSU currently serving the OBU,
+    ///    which relays it as a VANET `SessionTerminated` control message so the OBU
+    ///    learns about the revocation promptly and re-initiates key exchange.
+    ///
+    /// Returns `true` if an active session was found and terminated, `false` if the
+    /// OBU had no established key (the notification is still sent if a route is known).
+    pub async fn revoke_node(&self, obu_mac: MacAddress) -> bool {
+        // Remove the DH key.
+        let had_key = {
+            let mut keys = self.dh_keys.write().await;
+            keys.remove(&obu_mac).is_some()
+        };
+
+        // Look up the RSU address from the OBU route table (keyed by virtual TAP MAC;
+        // scan by VANET MAC since that's what we have).
+        let rsu_addr = {
+            let routes = self.obu_routes.read().await;
+            routes
+                .values()
+                .find(|r| r.vanet_mac == obu_mac)
+                .map(|r| r.rsu_addr)
+        };
+
+        // Notify the RSU so the OBU can react promptly.
+        if let Some(rsu_addr) = rsu_addr {
+            // Sign the revocation if a signing keypair is available.
+            // A fresh random nonce is generated for each revocation and included in
+            // the signed payload: [CONTROL_TYPE=0x04][TARGET_OBU_MAC 6B][NONCE 16B].
+            // The nonce is opaque random bytes — it reveals nothing about the session
+            // and prevents replay: the OBU tracks seen nonces and drops duplicates.
+            use node_lib::messages::control::key_exchange::{SIG_ALGO_ED25519, SIG_ALGO_ML_DSA_65};
+            use rand_core::{OsRng, RngCore};
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let fwd = if let Some(ref kp) = self.signing_keypair {
+                let timestamp_secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let mut nonce = [0u8; 8];
+                OsRng.fill_bytes(&mut nonce);
+                let mut payload = vec![0x04u8]; // SessionTerminated control type byte
+                payload.extend_from_slice(&obu_mac.bytes());
+                payload.extend_from_slice(&timestamp_secs.to_be_bytes());
+                payload.extend_from_slice(&nonce);
+                let sig = kp.sign(&payload);
+                let algo_id = match kp.signing_algorithm() {
+                    SigningAlgorithm::Ed25519 => SIG_ALGO_ED25519,
+                    SigningAlgorithm::MlDsa65 => SIG_ALGO_ML_DSA_65,
+                };
+                SessionTerminatedForward::new_signed(obu_mac, timestamp_secs, nonce, algo_id, sig)
+            } else {
+                SessionTerminatedForward::new(obu_mac)
+            };
+            let sock = self.socket.lock().await;
+            if let Some(socket) = sock.as_ref() {
+                if let Err(e) = socket.send_to(&fwd.to_bytes(), rsu_addr).await {
+                    tracing::warn!(
+                        obu = %obu_mac,
+                        error = %e,
+                        "Failed to send SessionTerminatedForward to RSU"
+                    );
+                } else {
+                    tracing::debug!(
+                        obu = %obu_mac,
+                        rsu = %rsu_addr,
+                        "Sent SessionTerminatedForward to RSU"
+                    );
+                }
+            }
+        } else {
+            tracing::debug!(
+                obu = %obu_mac,
+                "No known RSU route for revoked OBU; session key removed server-side only"
+            );
+        }
+
+        tracing::info!(
+            obu = %obu_mac,
+            had_active_session = had_key,
+            "Revoked OBU session"
+        );
+        had_key
+    }
+
+    /// Hot-reload the PKI allowlist.
+    ///
+    /// Computes the difference between the old and new allowlists and revokes the
+    /// session of any OBU that was previously allowed but is absent from
+    /// `new_allowlist`.  New entries are added silently (they will be enforced on
+    /// the next key exchange attempt from those OBUs).
+    ///
+    /// If `new_allowlist` is empty the check is disabled — no sessions are revoked
+    /// because an empty allowlist means "allow all".
+    pub async fn reload_allowlist(&self, new_allowlist: HashMap<MacAddress, Vec<u8>>) {
+        // Determine which OBUs have been removed from the allowlist.
+        let revoked: Vec<MacAddress> = {
+            let old = self.dh_signing_allowlist.read().await;
+            if !old.is_empty() && !new_allowlist.is_empty() {
+                old.keys()
+                    .filter(|mac| !new_allowlist.contains_key(*mac))
+                    .copied()
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        };
+
+        let added = {
+            let old = self.dh_signing_allowlist.read().await;
+            new_allowlist
+                .keys()
+                .filter(|mac| !old.contains_key(*mac))
+                .count()
+        };
+
+        // Atomically swap in the new allowlist.
+        *self.dh_signing_allowlist.write().await = new_allowlist;
+
+        tracing::info!(
+            revoked = revoked.len(),
+            added = added,
+            "PKI allowlist reloaded"
+        );
+
+        // Revoke sessions for removed OBUs.
+        for mac in revoked {
+            self.revoke_node(mac).await;
+        }
+    }
+
+    /// Return a snapshot of the current PKI signing allowlist.
+    pub async fn get_dh_signing_allowlist(&self) -> HashMap<MacAddress, Vec<u8>> {
+        self.dh_signing_allowlist.read().await.clone()
+    }
+
+    /// Return a snapshot of all non-expired DH sessions.
+    /// Each entry is `(obu_vanet_mac, key_id, age_secs)`.
+    pub async fn get_sessions(&self) -> Vec<(MacAddress, u32, u64)> {
+        let store = self.dh_keys.read().await;
+        store
+            .iter()
+            .filter(|(_, k)| !k.is_expired(self.key_ttl_ms))
+            .map(|(mac, k)| (*mac, k.key_id, k.established_at.elapsed().as_secs()))
+            .collect()
+    }
+
+    /// Return a snapshot of the OBU route table.
+    /// Each entry is `(virtual_tap_mac, obu_vanet_mac, rsu_socket_addr)`.
+    pub async fn get_routes(&self) -> Vec<(MacAddress, MacAddress, std::net::SocketAddr)> {
+        let routes = self.obu_routes.read().await;
+        routes
+            .iter()
+            .map(|(tap_mac, route)| (*tap_mac, route.vanet_mac, route.rsu_addr))
+            .collect()
     }
 }
 

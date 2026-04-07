@@ -90,11 +90,24 @@ pub fn create_node_from_settings(
         if !dh_signing_allowlist.is_empty() {
             server = server.with_dh_signing_allowlist(dh_signing_allowlist);
         }
+        // Optional admin interface port (default 9000).
+        // Bind address is 127.0.0.1:<admin_port> inside the namespace.
+        // Connect with: ip netns exec <ns> nc 127.0.0.1 <admin_port>
+        let admin_port = settings
+            .get_int("admin_port")
+            .ok()
+            .and_then(|p| u16::try_from(p).ok())
+            .unwrap_or(9000);
+
         let server = Arc::new(server);
 
-        // Start the server immediately in the namespace context using block_in_place
-        // This ensures the socket binds within the correct network namespace
-        // block_in_place allows running async code in a sync context without blocking the executor
+        // Start the server (and the admin interface) inside the namespace context.
+        // block_in_place ensures all sockets are bound on the thread that has the
+        // correct network namespace set.
+        // Bind the admin socket while still inside the namespace (sync, no runtime needed).
+        let admin_addr: std::net::SocketAddr = format!("127.0.0.1:{admin_port}").parse().unwrap();
+        let admin_listener = server_lib::admin::bind(admin_addr).ok();
+
         let server_clone = server.clone();
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
@@ -105,6 +118,13 @@ pub fn create_node_from_settings(
                 Ok(())
             })
         })?;
+
+        // Spawn the admin accept loop (async, namespace no longer needed after bind).
+        if let Some(listener) = admin_listener {
+            if let Err(e) = server_lib::admin::spawn(server.clone(), listener) {
+                tracing::warn!(error = %e, "Failed to spawn server admin accept loop (non-fatal)");
+            }
+        }
 
         // Create a dummy device for compatibility (servers don't use the Device abstraction)
         #[cfg(not(feature = "test_helpers"))]
@@ -225,13 +245,25 @@ pub fn create_node_from_settings(
             },
         };
 
-        let node = SimNode::Obu(obu_lib::create_with_vdev(
-            obu_args,
-            virtual_tun.clone(),
-            dev.clone(),
-            node_name,
-        )?);
+        let obu = obu_lib::create_obu(obu_args, virtual_tun.clone(), dev.clone(), node_name)?;
 
+        // Bind the admin socket while still inside the namespace (sync, no runtime needed).
+        let admin_port = settings
+            .get_int("admin_port")
+            .ok()
+            .and_then(|p| u16::try_from(p).ok())
+            .unwrap_or(9000);
+        let admin_addr: std::net::SocketAddr = format!("127.0.0.1:{admin_port}").parse().unwrap();
+        let admin_listener = obu_lib::admin::bind(admin_addr).ok();
+
+        // Spawn the accept loop (async, namespace no longer needed after bind).
+        if let Some(listener) = admin_listener {
+            if let Err(e) = obu_lib::admin::spawn(obu.clone(), listener) {
+                tracing::warn!(error = %e, "Failed to spawn OBU admin accept loop (non-fatal)");
+            }
+        }
+
+        let node = SimNode::Obu(obu);
         let interfaces = NodeInterfaces::obu(vanet_tun, virtual_tun.clone(), Some(ip));
         Ok(NodeCreationResult::new(dev, interfaces, node))
     } else {
@@ -284,8 +316,25 @@ pub fn create_node_from_settings(
             },
         };
 
-        let node = SimNode::Rsu(rsu_lib::create_with_vdev(rsu_args, dev.clone(), node_name)?);
+        let rsu = rsu_lib::create_rsu(rsu_args, dev.clone(), node_name)?;
 
+        // Bind the admin socket while still inside the namespace (sync, no runtime needed).
+        let admin_port = settings
+            .get_int("admin_port")
+            .ok()
+            .and_then(|p| u16::try_from(p).ok())
+            .unwrap_or(9000);
+        let admin_addr: std::net::SocketAddr = format!("127.0.0.1:{admin_port}").parse().unwrap();
+        let admin_listener = rsu_lib::admin::bind(admin_addr).ok();
+
+        // Spawn the accept loop (async, namespace no longer needed after bind).
+        if let Some(listener) = admin_listener {
+            if let Err(e) = rsu_lib::admin::spawn(rsu.clone(), listener) {
+                tracing::warn!(error = %e, "Failed to spawn RSU admin accept loop (non-fatal)");
+            }
+        }
+
+        let node = SimNode::Rsu(rsu);
         let interfaces = NodeInterfaces::rsu(vanet_tun, cloud_tun, Some(external_ip));
         Ok(NodeCreationResult::new(dev, interfaces, node))
     }

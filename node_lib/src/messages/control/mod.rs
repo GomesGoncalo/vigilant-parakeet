@@ -1,9 +1,11 @@
 pub mod heartbeat;
 pub mod key_exchange;
+pub mod session_terminated;
 
 use crate::error::NodeError;
 use heartbeat::{Heartbeat, HeartbeatReply};
 use key_exchange::{KeyExchangeInit, KeyExchangeReply};
+pub use session_terminated::SessionTerminated;
 
 #[derive(Debug)]
 pub enum Control<'a> {
@@ -11,6 +13,8 @@ pub enum Control<'a> {
     HeartbeatReply(HeartbeatReply<'a>),
     KeyExchangeInit(KeyExchangeInit<'a>),
     KeyExchangeReply(KeyExchangeReply<'a>),
+    /// Session revocation notice from server: target OBU must re-key immediately.
+    SessionTerminated(SessionTerminated<'a>),
 }
 
 impl<'a> TryFrom<&'a [u8]> for Control<'a> {
@@ -27,6 +31,7 @@ impl<'a> TryFrom<&'a [u8]> for Control<'a> {
             Some(1u8) => Ok(Self::HeartbeatReply(next.try_into()?)),
             Some(2u8) => Ok(Self::KeyExchangeInit(next.try_into()?)),
             Some(3u8) => Ok(Self::KeyExchangeReply(next.try_into()?)),
+            Some(4u8) => Ok(Self::SessionTerminated(next.try_into()?)),
             _ => Err(NodeError::ParseError(
                 "Invalid control message type".to_string(),
             )),
@@ -58,6 +63,11 @@ impl<'a> From<&Control<'a>> for Vec<u8> {
                 let ke_bytes: Vec<u8> = c.into();
                 buf.extend_from_slice(&ke_bytes);
             }
+            Control::SessionTerminated(c) => {
+                buf.push(4u8);
+                let st_bytes: Vec<u8> = c.into();
+                buf.extend_from_slice(&st_bytes);
+            }
         }
         buf
     }
@@ -86,6 +96,11 @@ impl<'a> From<&Control<'a>> for Vec<Vec<u8>> {
             }
             Control::KeyExchangeReply(c) => {
                 let mut result = vec![vec![3u8]];
+                result.push(c.into());
+                result
+            }
+            Control::SessionTerminated(c) => {
+                let mut result = vec![vec![4u8]];
                 result.push(c.into());
                 result
             }

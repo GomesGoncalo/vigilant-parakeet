@@ -10,6 +10,8 @@ pub const DOWNSTREAM_TYPE: u8 = 0x03;
 pub const KEY_EXCHANGE_FWD_TYPE: u8 = 0x04;
 /// Message type byte for key exchange response (Server -> RSU).
 pub const KEY_EXCHANGE_RSP_TYPE: u8 = 0x05;
+/// Message type byte for session termination notification (Server -> RSU -> OBU).
+pub const SESSION_TERMINATED_TYPE: u8 = 0x06;
 
 /// Minimum byte length of an UpstreamForward message (no payload).
 /// Layout: MAGIC(2) + TYPE(1) + RSU_MAC(6) + OBU_SOURCE_MAC(6) = 15
@@ -283,6 +285,124 @@ impl KeyExchangeResponse {
     }
 }
 
+/// A session termination notification sent by the server to an RSU.
+///
+/// The RSU relays this as a VANET `SessionTerminated` control message to the
+/// target OBU.  The OBU clears its DH session key and immediately re-initiates
+/// key exchange.
+///
+/// Binary format:
+/// ```text
+/// Unsigned: [MAGIC 2B: 0xAB 0xCD] [TYPE 1B: 0x06] [OBU_MAC 6B]
+/// Signed:   [MAGIC 2B: 0xAB 0xCD] [TYPE 1B: 0x06] [OBU_MAC 6B]
+///           [TIMESTAMP_SECS 8B] [NONCE 8B] [SIG_ALGO_ID 1B] [SIG_LEN 2B BE] [SIGNATURE var]
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTerminatedForward {
+    /// VANET MAC of the OBU whose session was revoked.
+    pub obu_mac: MacAddress,
+    /// Unix timestamp (seconds) when the server issued the revocation.
+    pub timestamp_secs: Option<u64>,
+    /// 8-byte server-generated random nonce.
+    pub nonce: Option<[u8; 8]>,
+    /// Signature algorithm ID (optional; same constants as KeyExchange).
+    pub sig_algo_id: Option<u8>,
+    /// Raw signature over `[0x04][OBU_MAC 6B][TIMESTAMP_SECS 8B][NONCE 8B]`.
+    pub signature: Option<Vec<u8>>,
+}
+
+impl SessionTerminatedForward {
+    pub fn new(obu_mac: MacAddress) -> Self {
+        Self {
+            obu_mac,
+            timestamp_secs: None,
+            nonce: None,
+            sig_algo_id: None,
+            signature: None,
+        }
+    }
+
+    pub fn new_signed(
+        obu_mac: MacAddress,
+        timestamp_secs: u64,
+        nonce: [u8; 8],
+        sig_algo_id: u8,
+        signature: Vec<u8>,
+    ) -> Self {
+        Self {
+            obu_mac,
+            timestamp_secs: Some(timestamp_secs),
+            nonce: Some(nonce),
+            sig_algo_id: Some(sig_algo_id),
+            signature: Some(signature),
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(9);
+        buf.extend_from_slice(&registry::MAGIC);
+        buf.push(SESSION_TERMINATED_TYPE);
+        buf.extend_from_slice(&self.obu_mac.bytes());
+        if let (Some(ts), Some(nonce), Some(algo_id), Some(sig)) = (
+            self.timestamp_secs,
+            self.nonce,
+            self.sig_algo_id,
+            self.signature.as_deref(),
+        ) {
+            buf.extend_from_slice(&ts.to_be_bytes());
+            buf.extend_from_slice(&nonce);
+            buf.push(algo_id);
+            let sig_len = sig.len() as u16;
+            buf.extend_from_slice(&sig_len.to_be_bytes());
+            buf.extend_from_slice(sig);
+        }
+        buf
+    }
+
+    pub fn try_from_bytes(data: &[u8]) -> Option<Self> {
+        if data.len() < 9 {
+            return None;
+        }
+        if data[0..2] != registry::MAGIC || data[2] != SESSION_TERMINATED_TYPE {
+            return None;
+        }
+        let obu_bytes: [u8; 6] = data[3..9].try_into().ok()?;
+        let obu_mac = MacAddress::new(obu_bytes);
+
+        // Optional signed extension:
+        // [TIMESTAMP 8B][NONCE 8B][SIG_ALGO_ID 1B][SIG_LEN 2B BE][SIG var]
+        // Minimum total: 9 + 8 + 8 + 1 + 2 = 28 bytes
+        if data.len() > 9 {
+            if data.len() < 28 {
+                return None;
+            }
+            let timestamp_secs = u64::from_be_bytes(data[9..17].try_into().ok()?);
+            let nonce: [u8; 8] = data[17..25].try_into().ok()?;
+            let sig_algo_id = data[25];
+            let sig_len = u16::from_be_bytes([data[26], data[27]]) as usize;
+            if data.len() < 28 + sig_len {
+                return None;
+            }
+            let signature = data[28..28 + sig_len].to_vec();
+            return Some(Self {
+                obu_mac,
+                timestamp_secs: Some(timestamp_secs),
+                nonce: Some(nonce),
+                sig_algo_id: Some(sig_algo_id),
+                signature: Some(signature),
+            });
+        }
+
+        Some(Self {
+            obu_mac,
+            timestamp_secs: None,
+            nonce: None,
+            sig_algo_id: None,
+            signature: None,
+        })
+    }
+}
+
 /// Unified cloud protocol message enum.
 ///
 /// All messages between RSU and Server share the `[0xAB, 0xCD]` magic prefix
@@ -294,6 +414,7 @@ pub enum CloudMessage {
     DownstreamForward(DownstreamForward),
     KeyExchangeForward(KeyExchangeForward),
     KeyExchangeResponse(KeyExchangeResponse),
+    SessionTerminatedForward(SessionTerminatedForward),
 }
 
 impl CloudMessage {
@@ -304,6 +425,7 @@ impl CloudMessage {
             CloudMessage::DownstreamForward(msg) => msg.to_bytes(),
             CloudMessage::KeyExchangeForward(msg) => msg.to_bytes(),
             CloudMessage::KeyExchangeResponse(msg) => msg.to_bytes(),
+            CloudMessage::SessionTerminatedForward(msg) => msg.to_bytes(),
         }
     }
 
@@ -332,6 +454,8 @@ impl CloudMessage {
             KEY_EXCHANGE_RSP_TYPE => {
                 KeyExchangeResponse::try_from_bytes(data).map(CloudMessage::KeyExchangeResponse)
             }
+            SESSION_TERMINATED_TYPE => SessionTerminatedForward::try_from_bytes(data)
+                .map(CloudMessage::SessionTerminatedForward),
             _ => None,
         }
     }
@@ -519,5 +643,29 @@ mod tests {
         let bytes = rsp.to_bytes();
         let parsed = CloudMessage::try_from_bytes(&bytes).unwrap();
         assert_eq!(parsed, CloudMessage::KeyExchangeResponse(rsp));
+    }
+
+    #[test]
+    fn session_terminated_forward_roundtrip() {
+        let obu: MacAddress = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF].into();
+        let msg = SessionTerminatedForward::new(obu);
+        let bytes = msg.to_bytes();
+        assert_eq!(bytes.len(), 9);
+        let parsed = SessionTerminatedForward::try_from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.obu_mac, obu);
+    }
+
+    #[test]
+    fn cloud_message_dispatches_session_terminated_forward() {
+        let obu: MacAddress = [5u8; 6].into();
+        let msg = SessionTerminatedForward::new(obu);
+        let bytes = msg.to_bytes();
+        let parsed = CloudMessage::try_from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, CloudMessage::SessionTerminatedForward(msg));
+    }
+
+    #[test]
+    fn session_terminated_forward_too_short() {
+        assert!(SessionTerminatedForward::try_from_bytes(&[0xAB, 0xCD, 0x06]).is_none());
     }
 }

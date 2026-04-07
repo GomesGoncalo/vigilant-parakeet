@@ -19,6 +19,7 @@ use node_lib::crypto::{sig_algo_from_id, CryptoConfig, SigningAlgorithm, Signing
 use node_lib::messages::{
     control::{
         key_exchange::{KeyExchangeInit, KeyExchangeReply},
+        session_terminated::SessionTerminated,
         Control,
     },
     data::{Data, ToUpstream},
@@ -27,7 +28,9 @@ use node_lib::messages::{
 };
 use routing::Routing;
 use session::Session;
-use std::sync::{Arc, RwLock};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, RwLock};
+use tokio::sync::Notify;
 use tokio::time::{Duration, Instant};
 use tracing::Instrument;
 
@@ -35,6 +38,7 @@ use tracing::Instrument;
 use node_lib::{Shared, SharedDevice, SharedTun};
 
 type SharedKeyStore = Arc<RwLock<DhKeyStore>>;
+type RevocationNonceCache = Arc<Mutex<VecDeque<([u8; 8], std::time::Instant)>>>;
 
 /// Decode a hex string of any length into bytes. Returns `None` on invalid hex.
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
@@ -69,6 +73,15 @@ pub struct Obu {
     /// Ed25519 identity keypair used to sign outgoing DH messages.
     /// Present only when `enable_dh_signatures` is `true`.
     signing_keypair: Option<Arc<SigningKeypair>>,
+    /// Wakes the DH re-keying task immediately when a `SessionTerminated` notice
+    /// is received, bypassing the normal re-key interval sleep.
+    rekey_notify: Arc<Notify>,
+    /// Time-bounded cache of recently-seen `SessionTerminated` nonces.
+    /// Each entry is `(nonce, received_at)`. Entries older than `VALIDITY_SECS`
+    /// are pruned on each check. Because eviction is time-driven (not count-driven)
+    /// the cache never grows stale: old nonces expire along with the messages that
+    /// carried them, so there is no fixed-size window that an attacker could outlast.
+    seen_revocation_nonces: RevocationNonceCache,
 }
 
 impl Obu {
@@ -112,6 +125,8 @@ impl Obu {
         };
 
         let dh_key_store = Arc::new(RwLock::new(DhKeyStore::new(crypto_config)));
+        let rekey_notify = Arc::new(Notify::new());
+        let seen_revocation_nonces = Arc::new(Mutex::new(VecDeque::new()));
         let obu = Arc::new(Self {
             args,
             routing,
@@ -122,6 +137,8 @@ impl Obu {
             dh_key_store,
             crypto_config,
             signing_keypair,
+            rekey_notify,
+            seen_revocation_nonces,
         });
 
         tracing::info!(
@@ -201,12 +218,69 @@ impl Obu {
             .unwrap_or(0)
     }
 
+    /// Return this node's name.
+    pub fn node_name(&self) -> &str {
+        &self.node_name
+    }
+
+    /// Return this node's VANET MAC address.
+    pub fn mac_address(&self) -> MacAddress {
+        self.device.mac_address()
+    }
+
+    /// Return the ordered list of cached upstream candidates (primary first).
+    pub fn get_upstream_candidates(&self) -> Vec<MacAddress> {
+        self.routing
+            .read()
+            .expect("routing table read lock poisoned")
+            .get_cached_candidates()
+            .unwrap_or_default()
+    }
+
+    /// Return the established DH session info: `(key_id, age_secs)`.
+    /// Returns `None` when no session has been established yet.
+    pub fn get_dh_session_info(&self) -> Option<(u32, u64)> {
+        self.dh_key_store
+            .read()
+            .expect("dh key store read lock poisoned")
+            .get_session_info(server_virtual_mac())
+    }
+
+    /// Immediately trigger a DH re-key exchange, bypassing the normal interval.
+    ///
+    /// Clears the current established session (if any) and wakes the re-keying
+    /// task so it initiates a new key exchange on the next loop iteration.
+    pub fn trigger_rekey(&self) {
+        {
+            let mut store = self
+                .dh_key_store
+                .write()
+                .expect("dh key store write lock poisoned");
+            store.clear_session(server_virtual_mac());
+        }
+        self.rekey_notify.notify_one();
+        tracing::info!("DH re-key triggered manually via admin interface");
+    }
+
+    /// Return whether a pending DH exchange is in progress.
+    pub fn has_dh_pending(&self) -> bool {
+        self.dh_key_store
+            .read()
+            .expect("dh key store read lock poisoned")
+            .has_pending(server_virtual_mac())
+    }
+
     /// Periodic DH re-keying task.
+    ///
+    /// Normally wakes every `dh_rekey_interval_ms` to check whether a new key
+    /// exchange is needed.  The `rekey_notify` Notify bypasses the sleep so the
+    /// task reacts immediately when a `SessionTerminated` notice clears the key.
     fn dh_rekey_task(obu: Arc<Self>) -> Result<()> {
         let rekey_interval = Duration::from_millis(obu.args.obu_params.dh_rekey_interval_ms);
         let key_lifetime_ms = obu.args.obu_params.dh_key_lifetime_ms;
         let reply_timeout_ms = obu.args.obu_params.dh_reply_timeout_ms;
         let node_name = obu.node_name.clone();
+        let rekey_notify = obu.rekey_notify.clone();
 
         let span = tracing::info_span!("node", name = %node_name);
         tokio::task::spawn(
@@ -335,7 +409,14 @@ impl Obu {
                         }
                     }
 
-                    tokio::time::sleep(rekey_interval).await;
+                    // Wait for either the normal rekey interval or an early wake-up
+                    // triggered by receiving a SessionTerminated notice.
+                    tokio::select! {
+                        _ = tokio::time::sleep(rekey_interval) => {}
+                        _ = rekey_notify.notified() => {
+                            tracing::debug!("DH rekey task woken early by SessionTerminated");
+                        }
+                    }
                 }
             }
             .instrument(span),
@@ -601,6 +682,9 @@ impl Obu {
             PacketType::Control(Control::KeyExchangeReply(ke_reply)) => {
                 self.handle_key_exchange_reply(ke_reply, msg)
             }
+            PacketType::Control(Control::SessionTerminated(st)) => {
+                self.handle_session_terminated(st)
+            }
         }
     }
 
@@ -634,6 +718,161 @@ impl Obu {
             "Forwarding KeyExchangeInit up the tree"
         );
         Ok(Some(vec![ReplyType::WireFlat(wire)]))
+    }
+
+    fn handle_session_terminated(
+        &self,
+        st: &SessionTerminated<'_>,
+    ) -> Result<Option<Vec<ReplyType>>> {
+        let target = st.target();
+        let our_mac = self.device.mac_address();
+
+        if target != our_mac {
+            // Not for us — forward toward the target OBU.
+            let routing = self
+                .routing
+                .read()
+                .expect("routing table read lock poisoned");
+            let Some(next_hop) = routing.get_route_to(Some(target)) else {
+                tracing::debug!(
+                    target = %target,
+                    "No route to forward SessionTerminated, dropping"
+                );
+                return Ok(None);
+            };
+            let owned = st.clone_into_owned();
+            let fwd = Message::new(
+                our_mac,
+                next_hop.mac,
+                PacketType::Control(Control::SessionTerminated(owned)),
+            );
+            let wire: Vec<u8> = (&fwd).into();
+            tracing::debug!(
+                target = %target,
+                via = %next_hop.mac,
+                "Forwarding SessionTerminated down the tree"
+            );
+            return Ok(Some(vec![ReplyType::WireFlat(wire)]));
+        }
+
+        // It's for us.
+        //
+        // Authenticate the revocation notice before acting on it to prevent DoS:
+        //   1. If server_signing_pubkey is configured: require a valid signature.
+        //      Unsigned messages are dropped.
+        //   2. Verify the signature over [0x04][TARGET_MAC 6B][TIMESTAMP 8B][NONCE 8B].
+        //   3. Check timestamp is within the validity window.
+        //   4. Check the nonce has not been seen within the window (replay prevention).
+        //      The cache is time-bounded: entries older than VALIDITY_SECS are pruned
+        //      on each check, so it never accumulates stale nonces that could be replayed
+        //      after a count-bounded window wraps.
+        use node_lib::messages::control::session_terminated::{
+            CLOCK_SKEW_TOLERANCE_SECS, VALIDITY_SECS,
+        };
+        if let Some(ref expected_hex) = self.args.obu_params.server_signing_pubkey {
+            let (ts, nonce, algo_id, sig) = match (
+                st.timestamp_secs(),
+                st.nonce(),
+                st.sig_algo_id(),
+                st.signature(),
+            ) {
+                (Some(t), Some(n), Some(algo), Some(s)) => (t, n, algo, s),
+                _ => {
+                    tracing::warn!(
+                        "SessionTerminated is unsigned but server_signing_pubkey is \
+                             configured — dropping (possible replay or misconfigured server)"
+                    );
+                    return Ok(None);
+                }
+            };
+
+            // Timestamp check: reject messages outside the validity window.
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let too_old = ts < now_secs.saturating_sub(VALIDITY_SECS);
+            let too_new = ts > now_secs.saturating_add(CLOCK_SKEW_TOLERANCE_SECS);
+            if too_old || too_new {
+                tracing::warn!(
+                    msg_ts = ts,
+                    now = now_secs,
+                    "SessionTerminated timestamp outside validity window — dropping"
+                );
+                return Ok(None);
+            }
+
+            let expected_bytes = match decode_hex(expected_hex) {
+                Some(b) if b.len() == 32 || b.len() == 1952 => b,
+                _ => {
+                    tracing::warn!(
+                        "server_signing_pubkey is invalid hex or has wrong length, \
+                         cannot verify SessionTerminated — dropping"
+                    );
+                    return Ok(None);
+                }
+            };
+
+            let algo = match node_lib::crypto::sig_algo_from_id(algo_id) {
+                Some(a) => a,
+                None => {
+                    tracing::warn!(
+                        algo_id,
+                        "SessionTerminated uses unknown signature algorithm — dropping"
+                    );
+                    return Ok(None);
+                }
+            };
+
+            let mut payload = vec![0x04u8];
+            payload.extend_from_slice(&our_mac.bytes());
+            payload.extend_from_slice(&ts.to_be_bytes());
+            payload.extend_from_slice(nonce);
+
+            if let Err(e) =
+                node_lib::crypto::verify_dh_signature(algo, &payload, &expected_bytes, sig)
+            {
+                tracing::warn!(error = %e, "SessionTerminated has invalid signature — dropping");
+                return Ok(None);
+            }
+
+            // Signature valid — check nonce freshness using a time-bounded cache.
+            let validity = std::time::Duration::from_secs(VALIDITY_SECS);
+            {
+                let mut cache = self
+                    .seen_revocation_nonces
+                    .lock()
+                    .expect("revocation nonce cache lock poisoned");
+                // Prune expired entries first.
+                while cache.front().is_some_and(|(_, t)| t.elapsed() > validity) {
+                    cache.pop_front();
+                }
+                if cache.iter().any(|(n, _)| n == nonce) {
+                    tracing::debug!("SessionTerminated nonce already seen — dropping (replay)");
+                    return Ok(None);
+                }
+                cache.push_back((*nonce, std::time::Instant::now()));
+            }
+
+            tracing::debug!(
+                ts,
+                "SessionTerminated signature, timestamp, and nonce verified"
+            );
+        }
+
+        // Clear the DH session and wake the re-keying task.
+        {
+            let mut store = self
+                .dh_key_store
+                .write()
+                .expect("dh key store write lock poisoned");
+            store.clear_session(server_virtual_mac());
+        }
+        tracing::warn!(
+            "SessionTerminated received from server — DH session cleared, re-keying immediately"
+        );
+        self.rekey_notify.notify_one();
+        Ok(None)
     }
 
     fn handle_key_exchange_reply(
@@ -898,8 +1137,9 @@ pub(crate) fn handle_msg_for_test(
             .expect("routing table write lock poisoned in test helper")
             .handle_heartbeat_reply(msg, device_mac),
         PacketType::Control(Control::KeyExchangeInit(_))
-        | PacketType::Control(Control::KeyExchangeReply(_)) => {
-            // Key exchange messages not handled in basic test helper
+        | PacketType::Control(Control::KeyExchangeReply(_))
+        | PacketType::Control(Control::SessionTerminated(_)) => {
+            // Key exchange and session messages not handled in basic test helper
             Ok(None)
         }
     }
