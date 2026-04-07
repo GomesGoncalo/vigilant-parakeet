@@ -331,6 +331,22 @@ impl DhKeyStore {
     pub fn has_established_key(&self, peer: MacAddress) -> bool {
         self.established.contains_key(&peer.bytes())
     }
+
+    /// Return `(key_id, age_secs)` for the established key of a peer, if any.
+    pub fn get_session_info(&self, peer: MacAddress) -> Option<(u32, u64)> {
+        let key = self.established.get(&peer.bytes())?;
+        Some((key.key_id, key.established_at.elapsed().as_secs()))
+    }
+
+    /// Clear any established key and pending exchange for a peer.
+    ///
+    /// Called when a `SessionTerminated` notice is received from the server so
+    /// the OBU immediately stops sending encrypted traffic and re-initiates the
+    /// DH handshake on the next opportunity.
+    pub fn clear_session(&mut self, peer: MacAddress) {
+        self.established.remove(&peer.bytes());
+        self.pending.remove(&peer.bytes());
+    }
 }
 
 #[cfg(test)]

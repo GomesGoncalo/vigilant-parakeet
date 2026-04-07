@@ -1,3 +1,5 @@
+pub mod admin;
+
 pub mod args;
 pub use args::{ObuArgs, ObuParameters};
 
@@ -38,17 +40,28 @@ pub fn create_with_vdev(
     node_device: Arc<Device>,
     node_name: String,
 ) -> Result<Arc<dyn Node>> {
+    Ok(create_obu(args, tun, node_device, node_name)?)
+}
+
+/// Like `create_with_vdev` but returns `Arc<Obu>` directly for callers that
+/// need access to the concrete type (e.g. to start the admin interface).
+pub fn create_obu(
+    args: ObuArgs,
+    tun: Arc<Tun>,
+    node_device: Arc<Device>,
+    node_name: String,
+) -> Result<Arc<Obu>> {
     #[cfg(any(test, feature = "test_helpers"))]
     {
-        Ok(ObuBuilder::from_args(args)
+        ObuBuilder::from_args(args)
             .with_tun(tun)
             .with_device(node_device)
             .with_node_name(node_name)
-            .build()?)
+            .build()
     }
     #[cfg(not(any(test, feature = "test_helpers")))]
     {
-        Ok(Obu::new(args, tun, node_device, node_name)?)
+        Obu::new(args, tun, node_device, node_name)
     }
 }
 

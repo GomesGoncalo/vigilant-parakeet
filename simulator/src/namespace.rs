@@ -86,8 +86,18 @@ impl NamespaceManager {
             bail!("no namespace for node {}", node);
         };
 
-        // Execute callback within namespace context
-        let result = match nsi.run(|_| callback(node, node_config)) {
+        // Execute callback within namespace context.
+        // Bring up loopback first — new namespaces have lo DOWN by default,
+        // which makes 127.0.0.1 unreachable (ENETUNREACH) until lo is up.
+        let result = match nsi.run(|_| {
+            let lo_status = std::process::Command::new("ip")
+                .args(["link", "set", "lo", "up"])
+                .status();
+            if let Err(e) = lo_status {
+                tracing::warn!(node = %node_name, error = %e, "Failed to bring up loopback interface");
+            }
+            callback(node, node_config)
+        }) {
             Ok(Ok(res)) => res,
             Ok(Err(e)) => bail!("callback failed for node {}: {}", node, e),
             Err(e) => bail!("namespace run failed for node {}: {}", node, e),

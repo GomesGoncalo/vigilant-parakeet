@@ -1,3 +1,5 @@
+pub mod admin;
+
 pub mod args;
 pub use args::{RsuArgs, RsuParameters};
 
@@ -38,16 +40,22 @@ pub fn create_with_vdev(
     node_device: Arc<Device>,
     node_name: String,
 ) -> Result<Arc<dyn Node>> {
+    Ok(create_rsu(args, node_device, node_name)?)
+}
+
+/// Like `create_with_vdev` but returns `Arc<Rsu>` directly for callers that
+/// need access to the concrete type (e.g. to start the admin interface).
+pub fn create_rsu(args: RsuArgs, node_device: Arc<Device>, node_name: String) -> Result<Arc<Rsu>> {
     #[cfg(any(test, feature = "test_helpers"))]
     {
-        Ok(RsuBuilder::from_args(args)
+        RsuBuilder::from_args(args)
             .with_device(node_device)
             .with_node_name(node_name)
-            .build()?)
+            .build()
     }
     #[cfg(not(any(test, feature = "test_helpers")))]
     {
-        Ok(Rsu::new(args, node_device, node_name)?)
+        Rsu::new(args, node_device, node_name)
     }
 }
 

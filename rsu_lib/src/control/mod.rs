@@ -16,7 +16,8 @@ use node::ReplyType;
 use node_lib::messages::{control::Control, data::Data, message::Message, packet_type::PacketType};
 use routing::Routing;
 use server_lib::cloud_protocol::{
-    CloudMessage, DownstreamForward, KeyExchangeForward, KeyExchangeResponse, UpstreamForward,
+    CloudMessage, DownstreamForward, KeyExchangeForward, KeyExchangeResponse,
+    SessionTerminatedForward, UpstreamForward,
 };
 use std::{
     io::IoSlice,
@@ -124,6 +125,41 @@ impl Rsu {
             .expect("routing table read lock poisoned")
             .iter_next_hops()
             .count()
+    }
+
+    /// Return this node's name.
+    pub fn node_name(&self) -> &str {
+        &self.node_name
+    }
+
+    /// Return this node's VANET MAC address.
+    pub fn mac_address(&self) -> MacAddress {
+        self.device.mac_address()
+    }
+
+    /// Return all known OBU clients: `(obu_mac, via_mac)`.
+    pub fn get_clients(&self) -> Vec<(MacAddress, MacAddress)> {
+        self.cache
+            .get_all_clients()
+            .into_iter()
+            .filter_map(|obu| self.cache.get(obu).map(|via| (obu, via)))
+            .collect()
+    }
+
+    /// Return all known next-hop MACs and their best route info: `(mac, hops, latency_us)`.
+    pub fn get_next_hops_info(&self) -> Vec<(MacAddress, u32, Option<u64>)> {
+        let routing = self
+            .routing
+            .read()
+            .expect("routing table read lock poisoned");
+        routing
+            .iter_next_hops()
+            .filter_map(|mac| {
+                routing
+                    .get_route_to(Some(*mac))
+                    .map(|r| (*mac, r.hops, r.latency.map(|d| d.as_micros() as u64)))
+            })
+            .collect()
     }
 
     fn wire_traffic_task(rsu: Arc<Self>) -> Result<()> {
@@ -293,7 +329,11 @@ impl Rsu {
             }
             PacketType::Data(Data::Downstream(_))
             | PacketType::Control(Control::Heartbeat(_))
-            | PacketType::Control(Control::KeyExchangeReply(_)) => Ok(None),
+            | PacketType::Control(Control::KeyExchangeReply(_))
+            // SessionTerminated is only delivered to OBUs; the RSU forwards it via
+            // handle_session_terminated_forward() when received from the server cloud
+            // socket, so if it arrives on the VANET wire here it's already been handled.
+            | PacketType::Control(Control::SessionTerminated(_)) => Ok(None),
         }
     }
 
@@ -418,6 +458,12 @@ impl Rsu {
                                 Some(CloudMessage::KeyExchangeResponse(rsp)) => {
                                     Self::handle_key_exchange_response(
                                         &rsp, &device, &routing, &cache,
+                                    )
+                                    .await;
+                                }
+                                Some(CloudMessage::SessionTerminatedForward(stf)) => {
+                                    Self::handle_session_terminated_forward(
+                                        &stf, &device, &routing, &cache,
                                     )
                                     .await;
                                 }
@@ -567,6 +613,71 @@ impl Rsu {
             );
         }
     }
+
+    /// Handle a `SessionTerminatedForward` from the server and relay as a VANET
+    /// `SessionTerminated` control message to the target OBU.
+    async fn handle_session_terminated_forward(
+        stf: &SessionTerminatedForward,
+        device: &Arc<Device>,
+        routing: &Shared<Routing>,
+        cache: &Arc<ClientCache>,
+    ) {
+        let dest_mac = stf.obu_mac;
+
+        // Find the next hop to the target OBU
+        let next_hop = {
+            let routing = routing
+                .read()
+                .expect("routing table read lock poisoned during session terminated forward");
+            if let Some(route) = routing.get_route_to(Some(dest_mac)) {
+                Some(route.mac)
+            } else {
+                cache.get(dest_mac)
+            }
+        };
+
+        let Some(next_hop) = next_hop else {
+            tracing::debug!(
+                dest = %dest_mac,
+                "No route to OBU for session terminated relay"
+            );
+            return;
+        };
+
+        use node_lib::messages::control::session_terminated::SessionTerminated;
+        // Pass timestamp, nonce, and signature through transparently so the OBU
+        // can authenticate and replay-check the revocation notice.
+        let st = match (
+            stf.timestamp_secs,
+            stf.nonce,
+            stf.sig_algo_id,
+            stf.signature.as_deref(),
+        ) {
+            (Some(ts), Some(nonce), Some(algo_id), Some(sig)) => {
+                SessionTerminated::new_signed(dest_mac, ts, nonce, algo_id, sig.to_vec())
+            }
+            _ => SessionTerminated::new(dest_mac),
+        };
+        let msg = Message::new(
+            device.mac_address(),
+            next_hop,
+            PacketType::Control(Control::SessionTerminated(st)),
+        );
+        let wire: Vec<u8> = (&msg).into();
+        let slices = [IoSlice::new(&wire)];
+        if let Err(e) = device.send_vectored(&slices).await {
+            tracing::error!(
+                error = %e,
+                dest = %dest_mac,
+                "Failed to relay SessionTerminated to OBU on VANET"
+            );
+        } else {
+            tracing::info!(
+                dest = %dest_mac,
+                "Relayed SessionTerminated from server to OBU"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -608,7 +719,8 @@ pub(crate) fn handle_msg_for_test(
         PacketType::Data(Data::Downstream(_))
         | PacketType::Control(Control::Heartbeat(_))
         | PacketType::Control(Control::KeyExchangeInit(_))
-        | PacketType::Control(Control::KeyExchangeReply(_)) => Ok(None),
+        | PacketType::Control(Control::KeyExchangeReply(_))
+        | PacketType::Control(Control::SessionTerminated(_)) => Ok(None),
     }
 }
 
