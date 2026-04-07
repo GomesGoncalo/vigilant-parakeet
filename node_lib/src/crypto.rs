@@ -6,8 +6,11 @@ use aes_gcm::{
 use chacha20poly1305::ChaCha20Poly1305;
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use hkdf::Hkdf;
+use ml_dsa::{ExpandedSigningKey, MlDsa65};
+use ml_kem::{Decapsulate, Encapsulate, EncapsulationKey, FromSeed, Kem, KeyExport, MlKem768};
 use sha2::{Sha256, Sha384, Sha512};
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
+use zeroize::Zeroizing;
 
 /// HKDF info string for deriving keys from DH shared secrets.
 const HKDF_INFO: &[u8] = b"vigilant-parakeet-dh";
@@ -99,18 +102,22 @@ impl std::str::FromStr for KdfAlgorithm {
     }
 }
 
-/// DH group for key exchange.
+/// DH group / KEM algorithm for key exchange.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum DhGroup {
-    /// X25519 (Curve25519, default) — 32-byte keys.
+    /// X25519 (Curve25519, default) — classical ECDH, 32-byte keys.
     #[default]
     X25519,
+    /// ML-KEM-768 (NIST FIPS 203) — quantum-resistant KEM.
+    /// Encapsulation key: 1184 bytes; ciphertext: 1088 bytes; shared secret: 32 bytes.
+    MlKem768,
 }
 
 impl std::fmt::Display for DhGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::X25519 => write!(f, "x25519"),
+            Self::MlKem768 => write!(f, "ml-kem-768"),
         }
     }
 }
@@ -120,7 +127,45 @@ impl std::str::FromStr for DhGroup {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "x25519" | "curve25519" => Ok(Self::X25519),
-            _ => Err(format!("unknown DH group '{}', expected: x25519", s)),
+            "ml-kem-768" | "mlkem768" | "kyber768" => Ok(Self::MlKem768),
+            _ => Err(format!(
+                "unknown DH group '{}', expected: x25519, ml-kem-768",
+                s
+            )),
+        }
+    }
+}
+
+/// Signing algorithm for DH key exchange authentication.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SigningAlgorithm {
+    /// Ed25519 (default) — classical EdDSA, 32-byte verifying key, 64-byte signature.
+    #[default]
+    Ed25519,
+    /// ML-DSA-65 (NIST FIPS 204) — quantum-resistant digital signature.
+    /// Verifying key: 1952 bytes; signature: 3309 bytes.
+    MlDsa65,
+}
+
+impl std::fmt::Display for SigningAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ed25519 => write!(f, "ed25519"),
+            Self::MlDsa65 => write!(f, "ml-dsa-65"),
+        }
+    }
+}
+
+impl std::str::FromStr for SigningAlgorithm {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "ed25519" => Ok(Self::Ed25519),
+            "ml-dsa-65" | "mldsa65" | "dilithium3" => Ok(Self::MlDsa65),
+            _ => Err(format!(
+                "unknown signing algorithm '{}', expected: ed25519, ml-dsa-65",
+                s
+            )),
         }
     }
 }
@@ -131,6 +176,80 @@ pub struct CryptoConfig {
     pub cipher: SymmetricCipher,
     pub kdf: KdfAlgorithm,
     pub dh_group: DhGroup,
+    /// Signing algorithm used when `enable_dh_signatures` is set.
+    pub signing_algorithm: SigningAlgorithm,
+}
+
+// ── ML-KEM-768 constants ───────────────────────────────────────────────
+
+/// Encapsulation key size (public key sent in KeyExchangeInit).
+pub const ML_KEM_768_EK_LEN: usize = 1184;
+/// Ciphertext size (returned in KeyExchangeReply).
+pub const ML_KEM_768_CT_LEN: usize = 1088;
+/// Decapsulation key seed size (stored locally, never transmitted).
+pub const ML_KEM_768_SEED_LEN: usize = 64;
+/// Shared secret size (32 bytes, same as X25519).
+pub const ML_KEM_768_SS_LEN: usize = 32;
+
+// ── Ed25519 constants ──────────────────────────────────────────────────
+
+/// Ed25519 verifying key size.
+pub const ED25519_VK_LEN: usize = 32;
+/// Ed25519 signature size.
+pub const ED25519_SIG_LEN: usize = 64;
+
+// ── ML-DSA-65 constants ────────────────────────────────────────────────
+
+/// ML-DSA-65 verifying key size (sent in signed messages).
+pub const ML_DSA_65_VK_LEN: usize = 1952;
+/// ML-DSA-65 signature size.
+pub const ML_DSA_65_SIG_LEN: usize = 3309;
+
+// ── ML-KEM-768 key encapsulation mechanism ─────────────────────────────
+
+/// Generate an ML-KEM-768 keypair.
+///
+/// Returns `(dk_seed, ek_bytes)`:
+/// - `dk_seed`: 64-byte seed that reconstructs the decapsulation (private) key.
+/// - `ek_bytes`: 1184-byte encapsulation (public) key to send in `KeyExchangeInit`.
+pub fn kem_768_generate() -> ([u8; ML_KEM_768_SEED_LEN], [u8; ML_KEM_768_EK_LEN]) {
+    let (dk, ek) = MlKem768::generate_keypair();
+    let dk_seed: [u8; ML_KEM_768_SEED_LEN] = dk.to_bytes().into();
+    let ek_bytes: [u8; ML_KEM_768_EK_LEN] = ek.to_bytes().into();
+    (dk_seed, ek_bytes)
+}
+
+/// Encapsulate a shared secret using the peer's ML-KEM-768 encapsulation key.
+///
+/// Returns `(ct_bytes, ss_bytes)`:
+/// - `ct_bytes`: 1088-byte ciphertext to send in `KeyExchangeReply`.
+/// - `ss_bytes`: 32-byte shared secret — feed into HKDF to derive the symmetric key.
+pub fn kem_768_encapsulate(
+    ek_bytes: &[u8; ML_KEM_768_EK_LEN],
+) -> Result<([u8; ML_KEM_768_CT_LEN], [u8; ML_KEM_768_SS_LEN]), NodeError> {
+    let ek_key_arr: ml_kem::Key<EncapsulationKey<MlKem768>> = (*ek_bytes).into();
+    let ek = EncapsulationKey::<MlKem768>::new(&ek_key_arr)
+        .map_err(|e| NodeError::EncryptionError(format!("invalid ML-KEM-768 encap key: {e}")))?;
+    let (ct, ss) = ek.encapsulate();
+    let ct_bytes: [u8; ML_KEM_768_CT_LEN] = ct.into();
+    let ss_bytes: [u8; ML_KEM_768_SS_LEN] = ss.into();
+    Ok((ct_bytes, ss_bytes))
+}
+
+/// Decapsulate the shared secret from an ML-KEM-768 ciphertext.
+///
+/// `dk_seed` is the 64-byte seed stored in `PendingExchange`.
+/// Returns the 32-byte shared secret — feed into HKDF to derive the symmetric key.
+pub fn kem_768_decapsulate(
+    dk_seed: &[u8; ML_KEM_768_SEED_LEN],
+    ct_bytes: &[u8; ML_KEM_768_CT_LEN],
+) -> Result<[u8; ML_KEM_768_SS_LEN], NodeError> {
+    let seed_array: ml_kem::Seed = (*dk_seed).into();
+    let (dk, _) = MlKem768::from_seed(&seed_array);
+    let ct_array: ml_kem::Ciphertext<MlKem768> = (*ct_bytes).into();
+    let ss = dk.decapsulate(&ct_array);
+    let ss_bytes: [u8; ML_KEM_768_SS_LEN] = ss.into();
+    Ok(ss_bytes)
 }
 
 // ── DH key exchange ────────────────────────────────────────────────
@@ -162,65 +281,177 @@ pub fn generate_ephemeral_keypair() -> (EphemeralSecret, PublicKey) {
     (secret, public)
 }
 
-// ── Ed25519 signing for DH messages ───────────────────────────────
+// ── Signing keypair (Ed25519 or ML-DSA-65) ────────────────────────────
 
-/// Ed25519 signing keypair for authenticating DH key exchange messages.
+/// Signing keypair for authenticating DH key exchange messages.
 ///
-/// Each node generates a random identity keypair at startup. The verifying
-/// (public) key is embedded in signed KE messages so the receiver can verify
-/// without prior key distribution (trust-on-first-use model).
+/// Supports both classical Ed25519 and quantum-resistant ML-DSA-65.
+/// The algorithm is chosen at construction time via `SigningAlgorithm`.
+/// Both algorithms derive the keypair deterministically from a 32-byte seed,
+/// enabling persistent identities via configuration.
+///
+/// The seed field is automatically zeroed when the keypair is dropped.
 pub struct SigningKeypair {
-    inner: ed25519_dalek::SigningKey,
+    /// Raw 32-byte seed — zeroized on drop to prevent key material lingering in memory.
+    seed: Zeroizing<[u8; 32]>,
+    inner: SigningKeypairInner,
+}
+
+enum SigningKeypairInner {
+    Ed25519(Box<ed25519_dalek::SigningKey>),
+    MlDsa65(Box<ExpandedSigningKey<MlDsa65>>),
 }
 
 impl SigningKeypair {
-    /// Generate a new random Ed25519 signing keypair.
-    pub fn generate() -> Self {
+    /// Generate a new random signing keypair using the given algorithm.
+    pub fn generate(algo: SigningAlgorithm) -> Self {
+        let seed = ed25519_dalek::SigningKey::generate(&mut OsRng).to_bytes();
+        Self::from_seed(algo, seed)
+    }
+
+    /// Reconstruct a `SigningKeypair` from a 32-byte seed and algorithm.
+    /// The same `(algo, seed)` pair always produces the same keypair.
+    pub fn from_seed(algo: SigningAlgorithm, seed: [u8; 32]) -> Self {
+        let inner = match algo {
+            SigningAlgorithm::Ed25519 => {
+                SigningKeypairInner::Ed25519(Box::new(ed25519_dalek::SigningKey::from_bytes(&seed)))
+            }
+            SigningAlgorithm::MlDsa65 => {
+                let dsa_seed: ml_dsa::Seed = seed.into();
+                SigningKeypairInner::MlDsa65(Box::new(ExpandedSigningKey::<MlDsa65>::from_seed(
+                    &dsa_seed,
+                )))
+            }
+        };
         Self {
-            inner: ed25519_dalek::SigningKey::generate(&mut OsRng),
+            seed: Zeroizing::new(seed),
+            inner,
         }
     }
 
-    /// Reconstruct a `SigningKeypair` from a 32-byte seed.
-    /// The same seed always produces the same keypair, enabling persistent identities.
-    pub fn from_seed(seed: [u8; 32]) -> Self {
-        Self {
-            inner: ed25519_dalek::SigningKey::from_bytes(&seed),
-        }
-    }
-
-    /// Return the 32-byte seed that can be used to reconstruct this keypair via `from_seed`.
+    /// Return the 32-byte seed for reconstructing this keypair via `from_seed`.
     pub fn seed_bytes(&self) -> [u8; 32] {
-        self.inner.to_bytes()
+        *self.seed
     }
 
-    /// Sign `message` and return the 64-byte Ed25519 signature.
-    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
-        self.inner.sign(message).to_bytes()
+    /// Return the signing algorithm used by this keypair.
+    pub fn signing_algorithm(&self) -> SigningAlgorithm {
+        match &self.inner {
+            SigningKeypairInner::Ed25519(_) => SigningAlgorithm::Ed25519,
+            SigningKeypairInner::MlDsa65(_) => SigningAlgorithm::MlDsa65,
+        }
     }
 
-    /// Return the 32-byte verifying (public) key bytes.
-    pub fn verifying_key_bytes(&self) -> [u8; 32] {
-        self.inner.verifying_key().to_bytes()
+    /// Sign `message` and return the signature bytes.
+    ///
+    /// - Ed25519: 64 bytes.
+    /// - ML-DSA-65: 3309 bytes.
+    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+        match &self.inner {
+            SigningKeypairInner::Ed25519(sk) => sk.sign(message).to_bytes().to_vec(),
+            SigningKeypairInner::MlDsa65(sk) => {
+                use ml_dsa::signature::Signer;
+                sk.sign(message).encode().to_vec()
+            }
+        }
+    }
+
+    /// Return the verifying (public) key bytes.
+    ///
+    /// - Ed25519: 32 bytes.
+    /// - ML-DSA-65: 1952 bytes.
+    pub fn verifying_key_bytes(&self) -> Vec<u8> {
+        match &self.inner {
+            SigningKeypairInner::Ed25519(sk) => sk.verifying_key().to_bytes().to_vec(),
+            SigningKeypairInner::MlDsa65(sk) => sk.verifying_key().encode().to_vec(),
+        }
     }
 }
 
-/// Verify an Ed25519 signature over a DH key exchange message.
+/// Decode a 64-hex-character string into a 32-byte array.
 ///
-/// `message` is the bytes that were signed (the 42-byte base KE payload).
-/// `signing_pubkey_bytes` is the 32-byte Ed25519 verifying key.
-/// `signature_bytes` is the 64-byte signature.
+/// Returns `None` if the input is not exactly 64 hex characters.
+pub fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..32)
+        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
+        .collect();
+    bytes.and_then(|b| b.try_into().ok())
+}
+
+/// Map a wire-format signature algorithm ID to a [`SigningAlgorithm`].
+///
+/// Returns `None` for unrecognised IDs — callers should drop the message.
+pub fn sig_algo_from_id(id: u8) -> Option<SigningAlgorithm> {
+    use crate::messages::control::key_exchange::{SIG_ALGO_ED25519, SIG_ALGO_ML_DSA_65};
+    match id {
+        SIG_ALGO_ED25519 => Some(SigningAlgorithm::Ed25519),
+        SIG_ALGO_ML_DSA_65 => Some(SigningAlgorithm::MlDsa65),
+        _ => None,
+    }
+}
+
+/// Verify a DH key exchange signature.
+///
+/// `algo` selects the algorithm that produced the signature.
+/// `message` is the base KE payload bytes that were signed.
+/// `signing_pubkey` — 32 bytes for Ed25519, 1952 bytes for ML-DSA-65.
+/// `signature` — 64 bytes for Ed25519, 3309 bytes for ML-DSA-65.
 pub fn verify_dh_signature(
+    algo: SigningAlgorithm,
     message: &[u8],
-    signing_pubkey_bytes: &[u8; 32],
-    signature_bytes: &[u8; 64],
+    signing_pubkey: &[u8],
+    signature: &[u8],
 ) -> Result<(), NodeError> {
-    let verifying_key = VerifyingKey::from_bytes(signing_pubkey_bytes)
-        .map_err(|e| NodeError::SignatureError(format!("invalid signing public key: {e}")))?;
-    let signature = Signature::from_bytes(signature_bytes);
-    verifying_key
-        .verify(message, &signature)
-        .map_err(|e| NodeError::SignatureError(format!("signature verification failed: {e}")))
+    match algo {
+        SigningAlgorithm::Ed25519 => {
+            let pk_bytes: &[u8; 32] = signing_pubkey.try_into().map_err(|_| {
+                NodeError::SignatureError(format!(
+                    "Ed25519 verifying key must be 32 bytes, got {}",
+                    signing_pubkey.len()
+                ))
+            })?;
+            let sig_bytes: &[u8; 64] = signature.try_into().map_err(|_| {
+                NodeError::SignatureError(format!(
+                    "Ed25519 signature must be 64 bytes, got {}",
+                    signature.len()
+                ))
+            })?;
+            let verifying_key = VerifyingKey::from_bytes(pk_bytes).map_err(|e| {
+                NodeError::SignatureError(format!("invalid Ed25519 verifying key: {e}"))
+            })?;
+            let sig = Signature::from_bytes(sig_bytes);
+            verifying_key
+                .verify(message, &sig)
+                .map_err(|e| NodeError::SignatureError(format!("Ed25519 verification failed: {e}")))
+        }
+        SigningAlgorithm::MlDsa65 => {
+            let enc_vk: [u8; ML_DSA_65_VK_LEN] = signing_pubkey.try_into().map_err(|_| {
+                NodeError::SignatureError(format!(
+                    "ML-DSA-65 verifying key must be {ML_DSA_65_VK_LEN} bytes, got {}",
+                    signing_pubkey.len()
+                ))
+            })?;
+            let enc_sig_arr: [u8; ML_DSA_65_SIG_LEN] = signature.try_into().map_err(|_| {
+                NodeError::SignatureError(format!(
+                    "ML-DSA-65 signature must be {ML_DSA_65_SIG_LEN} bytes, got {}",
+                    signature.len()
+                ))
+            })?;
+            let enc_vk_array: ml_dsa::EncodedVerifyingKey<MlDsa65> = enc_vk.into();
+            let vk = ml_dsa::VerifyingKey::<MlDsa65>::decode(&enc_vk_array);
+            let enc_sig: ml_dsa::EncodedSignature<MlDsa65> = enc_sig_arr.into();
+            let sig = ml_dsa::Signature::<MlDsa65>::decode(&enc_sig).ok_or_else(|| {
+                NodeError::SignatureError("ML-DSA-65 signature decoding failed".into())
+            })?;
+            use ml_dsa::signature::Verifier;
+            vk.verify(message, &sig).map_err(|e| {
+                NodeError::SignatureError(format!("ML-DSA-65 verification failed: {e}"))
+            })
+        }
+    }
 }
 
 // ── Key derivation ─────────────────────────────────────────────────
@@ -232,7 +463,7 @@ pub fn verify_dh_signature(
 /// `key_len` determines the output size (16 for AES-128, 32 for AES-256/ChaCha20).
 pub fn derive_key(
     kdf: KdfAlgorithm,
-    shared_secret: &[u8; 32],
+    shared_secret: &[u8],
     key_id: u32,
     key_len: usize,
 ) -> Result<Vec<u8>, NodeError> {
@@ -593,6 +824,7 @@ mod tests {
             cipher: SymmetricCipher::ChaCha20Poly1305,
             kdf: KdfAlgorithm::HkdfSha512,
             dh_group: DhGroup::X25519,
+            signing_algorithm: SigningAlgorithm::Ed25519,
         };
 
         let alice = DhKeypair::generate();
@@ -639,6 +871,7 @@ mod tests {
     #[test]
     fn dh_group_from_str() {
         assert_eq!("x25519".parse::<DhGroup>().unwrap(), DhGroup::X25519);
+        assert_eq!("ml-kem-768".parse::<DhGroup>().unwrap(), DhGroup::MlKem768);
         assert!("rsa".parse::<DhGroup>().is_err());
     }
 
@@ -648,54 +881,146 @@ mod tests {
         assert_eq!(cfg.cipher, SymmetricCipher::Aes256Gcm);
         assert_eq!(cfg.kdf, KdfAlgorithm::HkdfSha256);
         assert_eq!(cfg.dh_group, DhGroup::X25519);
+        assert_eq!(cfg.signing_algorithm, SigningAlgorithm::Ed25519);
     }
 
-    // ── Signing tests ────────────────────────────────────────────────
+    // ── Ed25519 signing tests ────────────────────────────────────────
 
     #[test]
     fn signing_keypair_generates_distinct_keys() {
-        let kp1 = SigningKeypair::generate();
-        let kp2 = SigningKeypair::generate();
+        let kp1 = SigningKeypair::generate(SigningAlgorithm::Ed25519);
+        let kp2 = SigningKeypair::generate(SigningAlgorithm::Ed25519);
         assert_ne!(kp1.verifying_key_bytes(), kp2.verifying_key_bytes());
     }
 
     #[test]
     fn sign_and_verify_roundtrip() {
-        let kp = SigningKeypair::generate();
+        let kp = SigningKeypair::generate(SigningAlgorithm::Ed25519);
         let message = b"key_id + dh_public + sender";
         let sig = kp.sign(message);
         let pubkey = kp.verifying_key_bytes();
-        assert!(verify_dh_signature(message, &pubkey, &sig).is_ok());
+        assert!(verify_dh_signature(SigningAlgorithm::Ed25519, message, &pubkey, &sig).is_ok());
     }
 
     #[test]
     fn verify_wrong_key_fails() {
-        let signer = SigningKeypair::generate();
-        let other = SigningKeypair::generate();
+        let signer = SigningKeypair::generate(SigningAlgorithm::Ed25519);
+        let other = SigningKeypair::generate(SigningAlgorithm::Ed25519);
         let message = b"some dh payload";
         let sig = signer.sign(message);
         let wrong_pubkey = other.verifying_key_bytes();
-        assert!(verify_dh_signature(message, &wrong_pubkey, &sig).is_err());
+        assert!(
+            verify_dh_signature(SigningAlgorithm::Ed25519, message, &wrong_pubkey, &sig).is_err()
+        );
     }
 
     #[test]
     fn verify_tampered_message_fails() {
-        let kp = SigningKeypair::generate();
+        let kp = SigningKeypair::generate(SigningAlgorithm::Ed25519);
         let message = b"original dh payload";
         let sig = kp.sign(message);
         let pubkey = kp.verifying_key_bytes();
-        // tamper with the message
         let tampered = b"tampered dh payload";
-        assert!(verify_dh_signature(tampered, &pubkey, &sig).is_err());
+        assert!(verify_dh_signature(SigningAlgorithm::Ed25519, tampered, &pubkey, &sig).is_err());
     }
 
     #[test]
     fn verify_tampered_signature_fails() {
-        let kp = SigningKeypair::generate();
+        let kp = SigningKeypair::generate(SigningAlgorithm::Ed25519);
         let message = b"dh payload bytes";
         let mut sig = kp.sign(message);
-        sig[0] ^= 0xFF; // flip bits in the signature
+        sig[0] ^= 0xFF;
         let pubkey = kp.verifying_key_bytes();
-        assert!(verify_dh_signature(message, &pubkey, &sig).is_err());
+        assert!(verify_dh_signature(SigningAlgorithm::Ed25519, message, &pubkey, &sig).is_err());
+    }
+
+    #[test]
+    fn ed25519_seed_roundtrip() {
+        let kp = SigningKeypair::generate(SigningAlgorithm::Ed25519);
+        let seed = kp.seed_bytes();
+        let kp2 = SigningKeypair::from_seed(SigningAlgorithm::Ed25519, seed);
+        assert_eq!(kp.verifying_key_bytes(), kp2.verifying_key_bytes());
+    }
+
+    // ── ML-DSA-65 signing tests ──────────────────────────────────────
+
+    #[test]
+    fn ml_dsa_65_sign_verify_roundtrip() {
+        let kp = SigningKeypair::generate(SigningAlgorithm::MlDsa65);
+        assert_eq!(kp.verifying_key_bytes().len(), ML_DSA_65_VK_LEN);
+        let message = b"quantum-resistant key exchange payload";
+        let sig = kp.sign(message);
+        assert_eq!(sig.len(), ML_DSA_65_SIG_LEN);
+        let pubkey = kp.verifying_key_bytes();
+        assert!(verify_dh_signature(SigningAlgorithm::MlDsa65, message, &pubkey, &sig).is_ok());
+    }
+
+    #[test]
+    fn ml_dsa_65_wrong_key_fails() {
+        let signer = SigningKeypair::generate(SigningAlgorithm::MlDsa65);
+        let other = SigningKeypair::generate(SigningAlgorithm::MlDsa65);
+        let message = b"some payload";
+        let sig = signer.sign(message);
+        let wrong_pubkey = other.verifying_key_bytes();
+        assert!(
+            verify_dh_signature(SigningAlgorithm::MlDsa65, message, &wrong_pubkey, &sig).is_err()
+        );
+    }
+
+    #[test]
+    fn ml_dsa_65_seed_roundtrip() {
+        let kp = SigningKeypair::generate(SigningAlgorithm::MlDsa65);
+        let seed = kp.seed_bytes();
+        let kp2 = SigningKeypair::from_seed(SigningAlgorithm::MlDsa65, seed);
+        assert_eq!(kp.verifying_key_bytes(), kp2.verifying_key_bytes());
+    }
+
+    // ── ML-KEM-768 tests ─────────────────────────────────────────────
+
+    #[test]
+    fn ml_kem_768_roundtrip() {
+        let (dk_seed, ek_bytes) = kem_768_generate();
+        assert_eq!(ek_bytes.len(), ML_KEM_768_EK_LEN);
+        assert_eq!(dk_seed.len(), ML_KEM_768_SEED_LEN);
+
+        let (ct_bytes, ss_enc) = kem_768_encapsulate(&ek_bytes).expect("encapsulate");
+        assert_eq!(ct_bytes.len(), ML_KEM_768_CT_LEN);
+        assert_eq!(ss_enc.len(), ML_KEM_768_SS_LEN);
+
+        let ss_dec = kem_768_decapsulate(&dk_seed, &ct_bytes).expect("decapsulate");
+        assert_eq!(ss_enc, ss_dec, "shared secrets must match");
+    }
+
+    #[test]
+    fn ml_kem_768_different_pairs_dont_share_secret() {
+        let (dk_seed1, ek_bytes1) = kem_768_generate();
+        let (dk_seed2, _ek_bytes2) = kem_768_generate();
+        assert_ne!(dk_seed1, dk_seed2);
+
+        // Encapsulate with key1
+        let (ct, ss_correct) = kem_768_encapsulate(&ek_bytes1).expect("encapsulate");
+        // Correct decapsulation: dk1 decapsulates ciphertext addressed to ek1
+        let ss_dk1 = kem_768_decapsulate(&dk_seed1, &ct).expect("decapsulate dk1");
+        assert_eq!(
+            ss_correct, ss_dk1,
+            "correct keypair must recover the shared secret"
+        );
+        // Wrong decapsulation: dk2 decapsulates the same ciphertext — must produce a different secret
+        let ss_dk2 = kem_768_decapsulate(&dk_seed2, &ct).expect("decapsulate dk2");
+        assert_ne!(
+            ss_dk1, ss_dk2,
+            "wrong decapsulation key must produce a different secret"
+        );
+    }
+
+    #[test]
+    fn ml_kem_768_derive_key_roundtrip() {
+        let (dk_seed, ek_bytes) = kem_768_generate();
+        let (ct_bytes, ss_enc) = kem_768_encapsulate(&ek_bytes).expect("encapsulate");
+        let ss_dec = kem_768_decapsulate(&dk_seed, &ct_bytes).expect("decapsulate");
+
+        let key_enc = derive_key(KdfAlgorithm::HkdfSha256, &ss_enc, 1, 32).expect("derive enc");
+        let key_dec = derive_key(KdfAlgorithm::HkdfSha256, &ss_dec, 1, 32).expect("derive dec");
+        assert_eq!(key_enc, key_dec, "derived keys must match");
     }
 }

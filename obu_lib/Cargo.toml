@@ -27,6 +27,8 @@ tracing-subscriber = { version = "*", features = ["env-filter"] }
 aes-gcm = { version = "0.10", features = ["aes"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 thiserror = "*"
+zeroize = { version = "1", features = ["derive"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 [features]
 stats = [ "common/stats", "node_lib/stats" ]

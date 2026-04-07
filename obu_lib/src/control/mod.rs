@@ -15,7 +15,7 @@ use common::{device::Device, network_interface::NetworkInterface};
 use dh_key_store::DhKeyStore;
 use mac_address::MacAddress;
 use node::ReplyType;
-use node_lib::crypto::{CryptoConfig, SigningKeypair};
+use node_lib::crypto::{sig_algo_from_id, CryptoConfig, SigningAlgorithm, SigningKeypair};
 use node_lib::messages::{
     control::{
         key_exchange::{KeyExchangeInit, KeyExchangeReply},
@@ -36,14 +36,14 @@ use node_lib::{Shared, SharedDevice, SharedTun};
 
 type SharedKeyStore = Arc<RwLock<DhKeyStore>>;
 
-fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
+/// Decode a hex string of any length into bytes. Returns `None` on invalid hex.
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
-    let bytes: Option<Vec<u8>> = (0..32)
+    (0..s.len() / 2)
         .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
-        .collect();
-    bytes.and_then(|b| b.try_into().ok())
+        .collect()
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -87,16 +87,18 @@ impl Obu {
             cipher: args.obu_params.cipher,
             kdf: args.obu_params.kdf,
             dh_group: args.obu_params.dh_group,
+            signing_algorithm: args.obu_params.signing_algorithm,
         };
 
+        let signing_algo = args.obu_params.signing_algorithm;
         let signing_keypair = if args.obu_params.enable_dh_signatures {
             let kp = if let Some(ref hex_seed) = args.obu_params.signing_key_seed {
-                let seed = decode_hex_32(hex_seed).ok_or_else(|| {
+                let seed = node_lib::crypto::decode_hex_32(hex_seed).ok_or_else(|| {
                     anyhow!("signing_key_seed must be exactly 64 hex characters (32 bytes)")
                 })?;
-                SigningKeypair::from_seed(seed)
+                SigningKeypair::from_seed(signing_algo, seed)
             } else {
-                SigningKeypair::generate()
+                SigningKeypair::generate(signing_algo)
             };
             let pubkey_hex = encode_hex(&kp.verifying_key_bytes());
             tracing::info!(
@@ -138,6 +140,18 @@ impl Obu {
             dh_reply_timeout_ms = obu.args.obu_params.dh_reply_timeout_ms,
             "OBU initialized"
         );
+        if !obu.args.obu_params.enable_encryption {
+            tracing::warn!(
+                "Encryption is DISABLED — all traffic is sent in the clear. \
+                 Set --enable-encryption to protect data payloads."
+            );
+        }
+        if !obu.args.obu_params.enable_dh_signatures {
+            tracing::warn!(
+                "DH signatures are DISABLED — key exchange messages are not authenticated. \
+                 Set --enable-dh-signatures to prevent MITM key substitution."
+            );
+        }
         obu.session_task()?;
         Obu::wire_traffic_task(obu.clone())?;
         if obu.args.obu_params.enable_encryption {
@@ -260,14 +274,39 @@ impl Obu {
                                 };
 
                                 let our_mac = obu.device.mac_address();
+                                let algo_id = match obu.crypto_config.dh_group {
+                                    node_lib::crypto::DhGroup::X25519 => {
+                                        node_lib::messages::control::key_exchange::KE_ALGO_X25519
+                                    }
+                                    node_lib::crypto::DhGroup::MlKem768 => {
+                                        node_lib::messages::control::key_exchange::KE_ALGO_ML_KEM_768
+                                    }
+                                };
                                 let init_msg = if let Some(ref kp) = obu.signing_keypair {
-                                    let unsigned = KeyExchangeInit::new(key_id, pub_key, our_mac);
+                                    let sig_algo_id = match kp.signing_algorithm() {
+                                        SigningAlgorithm::Ed25519 => {
+                                            node_lib::messages::control::key_exchange::SIG_ALGO_ED25519
+                                        }
+                                        SigningAlgorithm::MlDsa65 => {
+                                            node_lib::messages::control::key_exchange::SIG_ALGO_ML_DSA_65
+                                        }
+                                    };
+                                    let unsigned = KeyExchangeInit::new_raw(
+                                        algo_id, key_id, pub_key.clone(), our_mac,
+                                        None, None, None,
+                                    );
                                     let base = unsigned.base_payload();
                                     let sig = kp.sign(&base);
                                     let spk = kp.verifying_key_bytes();
-                                    KeyExchangeInit::new_signed(key_id, pub_key, our_mac, spk, sig)
+                                    KeyExchangeInit::new_raw(
+                                        algo_id, key_id, pub_key, our_mac,
+                                        Some(sig_algo_id), Some(spk), Some(sig),
+                                    )
                                 } else {
-                                    KeyExchangeInit::new(key_id, pub_key, our_mac)
+                                    KeyExchangeInit::new_raw(
+                                        algo_id, key_id, pub_key, our_mac,
+                                        None, None, None,
+                                    )
                                 };
                                 // Send to upstream RSU — it will relay to server
                                 let msg = Message::new(
@@ -580,17 +619,8 @@ impl Obu {
             return Ok(None);
         };
 
-        // Preserve any attached signature when forwarding — the server needs it.
-        let init = match (ke_init.signing_pubkey(), ke_init.signature()) {
-            (Some(spk), Some(sig)) => KeyExchangeInit::new_signed(
-                ke_init.key_id(),
-                ke_init.public_key(),
-                ke_init.sender(),
-                spk,
-                sig,
-            ),
-            _ => KeyExchangeInit::new(ke_init.key_id(), ke_init.public_key(), ke_init.sender()),
-        };
+        // Preserve all fields (algorithm, key material, signature) when forwarding.
+        let init = ke_init.clone_into_owned();
         let fwd = Message::new(
             self.device.mac_address(),
             upstream.mac,
@@ -635,21 +665,8 @@ impl Obu {
                 return Ok(None);
             };
 
-            // Preserve any attached signature when forwarding.
-            let reply = match (ke_reply.signing_pubkey(), ke_reply.signature()) {
-                (Some(spk), Some(sig)) => KeyExchangeReply::new_signed(
-                    ke_reply.key_id(),
-                    ke_reply.public_key(),
-                    ke_reply.sender(),
-                    spk,
-                    sig,
-                ),
-                _ => KeyExchangeReply::new(
-                    ke_reply.key_id(),
-                    ke_reply.public_key(),
-                    ke_reply.sender(),
-                ),
-            };
+            // Preserve all fields (algorithm, key material, signature) when forwarding.
+            let reply = ke_reply.clone_into_owned();
             let fwd = Message::new(
                 self.device.mac_address(),
                 next_hop.mac,
@@ -667,10 +684,25 @@ impl Obu {
 
         // It's for us — verify the server's signature before completing the exchange.
         if self.args.obu_params.enable_dh_signatures {
-            match (ke_reply.signing_pubkey(), ke_reply.signature()) {
-                (Some(spk), Some(sig)) => {
+            match (
+                ke_reply.sig_algo_id(),
+                ke_reply.signing_pubkey(),
+                ke_reply.signature(),
+            ) {
+                (Some(sig_algo), Some(spk), Some(sig)) => {
+                    let algo = match sig_algo_from_id(sig_algo) {
+                        Some(a) => a,
+                        None => {
+                            tracing::warn!(
+                                sig_algo_id = sig_algo,
+                                key_id = ke_reply.key_id(),
+                                "KeyExchangeReply uses unknown signature algorithm, dropping"
+                            );
+                            return Ok(None);
+                        }
+                    };
                     let base = ke_reply.base_payload();
-                    if let Err(e) = node_lib::crypto::verify_dh_signature(&base, &spk, &sig) {
+                    if let Err(e) = node_lib::crypto::verify_dh_signature(algo, &base, spk, sig) {
                         tracing::warn!(
                             error = %e,
                             key_id = ke_reply.key_id(),
@@ -695,9 +727,31 @@ impl Obu {
 
         // PKI: if a pinned server public key is configured, reject replies
         // from any server whose signing key doesn't match.
+        // Signature verification must be enabled; without it the key bytes are
+        // unverified and an attacker could include the pinned key in a forged reply.
+        if self.args.obu_params.server_signing_pubkey.is_some()
+            && !self.args.obu_params.enable_dh_signatures
+        {
+            tracing::warn!(
+                key_id = ke_reply.key_id(),
+                "server_signing_pubkey is configured but enable_dh_signatures is false; \
+                 dropping KeyExchangeReply to prevent key-pinning bypass"
+            );
+            return Ok(None);
+        }
         if let Some(ref expected_hex) = self.args.obu_params.server_signing_pubkey {
-            match (ke_reply.signing_pubkey(), decode_hex_32(expected_hex)) {
-                (Some(spk), Some(expected)) if spk == expected => {
+            let expected_bytes =
+                decode_hex(expected_hex).filter(|b| b.len() == 32 || b.len() == 1952);
+            if expected_bytes.is_none() && !expected_hex.is_empty() {
+                tracing::warn!(
+                    key_id = ke_reply.key_id(),
+                    "server_signing_pubkey is invalid hex or has wrong length \
+                     (expected 32B Ed25519 or 1952B ML-DSA-65), dropping reply"
+                );
+                return Ok(None);
+            }
+            match (ke_reply.signing_pubkey(), expected_bytes) {
+                (Some(spk), Some(ref expected)) if spk == expected.as_slice() => {
                     tracing::debug!(
                         key_id = ke_reply.key_id(),
                         "KeyExchangeReply signing key matches pinned server pubkey"
@@ -719,23 +773,43 @@ impl Obu {
                 }
                 (_, None) => {
                     tracing::warn!(
-                        "server_signing_pubkey is not valid 64-char hex, cannot verify reply — dropping"
+                        "server_signing_pubkey is not valid hex, cannot verify reply — dropping"
                     );
                     return Ok(None);
                 }
             }
         }
 
-        // Complete the DH exchange.
+        // Validate that the reply algorithm matches what we initiated.
+        // Rejecting mismatches prevents an attacker from downgrading the algorithm
+        // by rewriting the algo_id byte in a relayed reply.
+        {
+            use node_lib::messages::control::key_exchange::{KE_ALGO_ML_KEM_768, KE_ALGO_X25519};
+            let expected_algo_id = match self.crypto_config.dh_group {
+                node_lib::crypto::DhGroup::X25519 => KE_ALGO_X25519,
+                node_lib::crypto::DhGroup::MlKem768 => KE_ALGO_ML_KEM_768,
+            };
+            if ke_reply.algo_id() != expected_algo_id {
+                tracing::warn!(
+                    key_id = ke_reply.key_id(),
+                    expected = expected_algo_id,
+                    received = ke_reply.algo_id(),
+                    "KeyExchangeReply algo_id does not match initiated algorithm, dropping"
+                );
+                return Ok(None);
+            }
+        }
+
+        // Complete the key exchange.
         let key_id = ke_reply.key_id();
-        let peer_pub = ke_reply.public_key();
+        let peer_response = ke_reply.key_material();
 
         let result = {
             let mut store = self
                 .dh_key_store
                 .write()
                 .expect("dh key store write lock poisoned");
-            store.complete_exchange(server_virtual_mac(), key_id, &peer_pub)
+            store.complete_exchange(server_virtual_mac(), key_id, peer_response)
         };
 
         match result {

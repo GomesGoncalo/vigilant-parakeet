@@ -87,6 +87,7 @@ mod tests {
                 cipher: node_lib::crypto::SymmetricCipher::default(),
                 kdf: node_lib::crypto::KdfAlgorithm::default(),
                 dh_group: node_lib::crypto::DhGroup::default(),
+                signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
             },
         };
         let res = create(args);

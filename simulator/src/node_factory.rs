@@ -146,12 +146,20 @@ pub fn create_node_from_settings(
     // Create VANET interface (the wireless medium where control/data messages flow).
     // A fixed MAC can be set via `vanet_mac` in the node YAML so it matches entries
     // in a server's dh_signing_allowlist (the allowlist is keyed by VANET MAC).
+    //
+    // MTU is set to node_lib::PACKET_BUFFER_SIZE (9000, jumbo frames) so that
+    // post-quantum key-exchange messages fit in a single frame without EMSGSIZE.
+    // The largest PQ frame is a signed ML-KEM-768 + ML-DSA-65 KeyExchangeInit
+    // at ~6.5 KB; standard 1500 B Ethernet MTU would reject it at the AF_PACKET
+    // layer.  Both the VANET TAP and the PACKET_BUFFER_SIZE receive buffer must
+    // agree on this value.
     let vanet_mac = settings
         .get_string("vanet_mac")
         .ok()
         .and_then(|s| parse_mac(&s));
+    let vanet_mtu = u16::try_from(node_lib::PACKET_BUFFER_SIZE).unwrap_or(u16::MAX);
     let vanet_tun = {
-        let b = InterfaceBuilder::new("vanet");
+        let b = InterfaceBuilder::new("vanet").with_mtu(vanet_mtu);
         let b = if let Some(mac) = vanet_mac {
             b.with_mac(mac)
         } else {
@@ -213,6 +221,7 @@ pub fn create_node_from_settings(
                 cipher: crypto_config.cipher,
                 kdf: crypto_config.kdf,
                 dh_group: crypto_config.dh_group,
+                signing_algorithm: crypto_config.signing_algorithm,
             },
         };
 
@@ -300,9 +309,11 @@ fn parse_mac(s: &str) -> Option<[u8; 6]> {
 /// Expected YAML format:
 /// ```yaml
 /// dh_signing_allowlist:
-///   "AA:BB:CC:DD:EE:FF": "aabbcc...64hexchars"
+///   "AA:BB:CC:DD:EE:FF": "aabbcc...hexchars"
 /// ```
-fn parse_dh_signing_allowlist(settings: &Config) -> HashMap<MacAddress, [u8; 32]> {
+///
+/// Accepts Ed25519 (64 hex chars = 32 bytes) or ML-DSA-65 (3904 hex chars = 1952 bytes).
+fn parse_dh_signing_allowlist(settings: &Config) -> HashMap<MacAddress, Vec<u8>> {
     let raw: HashMap<String, config::Value> = match settings.get_table("dh_signing_allowlist") {
         Ok(m) => m,
         Err(_) => return HashMap::new(),
@@ -323,16 +334,25 @@ fn parse_dh_signing_allowlist(settings: &Config) -> HashMap<MacAddress, [u8; 32]
                 continue;
             }
         };
-        if hex.len() != 64 {
-            tracing::warn!(mac = %mac_str, "dh_signing_allowlist pubkey must be 64 hex chars, skipping");
+        if hex.len() % 2 != 0 {
+            tracing::warn!(mac = %mac_str, "dh_signing_allowlist pubkey hex length must be even, skipping");
             continue;
         }
-        let bytes: Option<Vec<u8>> = (0..32)
+        let bytes: Option<Vec<u8>> = (0..hex.len() / 2)
             .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok())
             .collect();
-        match bytes.and_then(|b| <[u8; 32]>::try_from(b).ok()) {
-            Some(arr) => {
-                out.insert(mac, arr);
+        match bytes {
+            Some(b) => {
+                // Validate known key lengths: Ed25519 (32 B) or ML-DSA-65 (1952 B).
+                if b.len() != 32 && b.len() != 1952 {
+                    tracing::warn!(
+                        mac = %mac_str,
+                        len = b.len(),
+                        "dh_signing_allowlist pubkey has unexpected length (expected 32 or 1952 bytes), skipping"
+                    );
+                    continue;
+                }
+                out.insert(mac, b);
             }
             None => {
                 tracing::warn!(mac = %mac_str, "Failed to decode dh_signing_allowlist pubkey hex, skipping");
@@ -388,10 +408,27 @@ fn parse_crypto_config(settings: &Config) -> node_lib::crypto::CryptoConfig {
         },
         Err(_) => Default::default(),
     };
+
+    let signing_algorithm = match settings.get_string("signing_algorithm") {
+        Ok(raw) => match raw.parse() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                tracing::warn!(
+                    %raw,
+                    %err,
+                    "Invalid signing_algorithm in configuration, falling back to default"
+                );
+                Default::default()
+            }
+        },
+        Err(_) => Default::default(),
+    };
+
     node_lib::crypto::CryptoConfig {
         cipher,
         kdf,
         dh_group,
+        signing_algorithm,
     }
 }
 

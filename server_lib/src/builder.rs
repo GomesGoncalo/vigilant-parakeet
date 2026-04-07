@@ -43,6 +43,7 @@ impl ServerBuilder {
                 cipher: args.server_params.cipher,
                 kdf: args.server_params.kdf,
                 dh_group: args.server_params.dh_group,
+                signing_algorithm: args.server_params.signing_algorithm,
             },
         }
     }
@@ -125,6 +126,7 @@ mod tests {
                 cipher: node_lib::crypto::SymmetricCipher::default(),
                 kdf: node_lib::crypto::KdfAlgorithm::default(),
                 dh_group: node_lib::crypto::DhGroup::default(),
+                signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
             },
         };
         let server = ServerBuilder::from_args(args).build().unwrap();

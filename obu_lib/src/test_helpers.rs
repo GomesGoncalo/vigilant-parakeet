@@ -30,6 +30,7 @@ pub fn mk_test_obu_args() -> ObuArgs {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     }
 }
@@ -54,6 +55,7 @@ pub fn mk_test_obu_args_with_history(hello_history: u32) -> ObuArgs {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     }
 }
@@ -78,6 +80,7 @@ pub fn mk_test_obu_args_encrypted() -> ObuArgs {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     }
 }
@@ -102,6 +105,7 @@ pub fn mk_test_obu_args_dh() -> ObuArgs {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     }
 }
@@ -132,6 +136,7 @@ pub fn mk_obu_args_encrypted() -> ObuArgs {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     }
 }
@@ -156,6 +161,7 @@ pub fn mk_obu_args_dh() -> ObuArgs {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     }
 }
@@ -180,6 +186,7 @@ pub fn mk_obu_args_dh_signed() -> ObuArgs {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     }
 }

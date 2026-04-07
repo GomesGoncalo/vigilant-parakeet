@@ -5,7 +5,9 @@ use crate::registry::RegistrationMessage;
 use anyhow::Result;
 use common::tun::Tun;
 use mac_address::MacAddress;
-use node_lib::crypto::{CryptoConfig, DhKeypair, SigningKeypair};
+use node_lib::crypto::{
+    sig_algo_from_id, CryptoConfig, DhKeypair, SigningAlgorithm, SigningKeypair,
+};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -13,16 +15,6 @@ use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::Instant;
 use tracing::Instrument;
-
-fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
-        return None;
-    }
-    let bytes: Option<Vec<u8>> = (0..32)
-        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
-        .collect();
-    bytes.and_then(|b| b.try_into().ok())
-}
 
 /// Shared reference to a Tun device.
 pub type SharedTun = Arc<Tun>;
@@ -97,12 +89,15 @@ pub struct Server {
     node_name: String,
     /// Whether to sign DH replies and verify incoming DH message signatures.
     enable_dh_signatures: bool,
-    /// Ed25519 identity keypair for signing DH replies (present when `enable_dh_signatures`).
+    /// Identity keypair for signing DH replies using the configured signing algorithm
+    /// (present when `enable_dh_signatures`).
     signing_keypair: Option<Arc<SigningKeypair>>,
-    /// PKI allowlist: OBU VANET MAC → expected 32-byte Ed25519 verifying key.
+    /// PKI allowlist: OBU VANET MAC → expected verifying key bytes (Ed25519: 32B, ML-DSA-65: 1952B).
     /// When non-empty and enable_dh_signatures is set, only OBUs whose signing key
     /// matches the registered entry are allowed to complete key exchange.
-    dh_signing_allowlist: HashMap<MacAddress, [u8; 32]>,
+    dh_signing_allowlist: HashMap<MacAddress, Vec<u8>>,
+    /// Signing algorithm used for DH message signing (default: Ed25519).
+    signing_algorithm: SigningAlgorithm,
 }
 
 impl Server {
@@ -124,6 +119,7 @@ impl Server {
             enable_dh_signatures: false,
             signing_keypair: None,
             dh_signing_allowlist: HashMap::new(),
+            signing_algorithm: SigningAlgorithm::default(),
         }
     }
 
@@ -147,7 +143,19 @@ impl Server {
 
     /// Set the crypto configuration for key derivation.
     pub fn with_crypto_config(mut self, config: CryptoConfig) -> Self {
+        // Also sync signing_algorithm so that with_dh_signatures() called afterward
+        // generates a keypair with the correct algorithm without requiring an extra
+        // with_signing_algorithm() call.
+        self.signing_algorithm = config.signing_algorithm;
         self.crypto_config = config;
+        self
+    }
+
+    /// Set the signing algorithm to use for DH message signing (default: Ed25519).
+    /// This is automatically set by `with_crypto_config`; call this only when
+    /// overriding the algorithm independently of the full crypto config.
+    pub fn with_signing_algorithm(mut self, algo: SigningAlgorithm) -> Self {
+        self.signing_algorithm = algo;
         self
     }
 
@@ -157,7 +165,7 @@ impl Server {
     pub fn with_dh_signatures(mut self, enabled: bool) -> Self {
         self.enable_dh_signatures = enabled;
         if enabled {
-            self.signing_keypair = Some(Arc::new(SigningKeypair::generate()));
+            self.signing_keypair = Some(Arc::new(SigningKeypair::generate(self.signing_algorithm)));
         } else {
             self.signing_keypair = None;
         }
@@ -165,20 +173,31 @@ impl Server {
     }
 
     /// Load the signing keypair from a 32-byte hex-encoded seed instead of generating
-    /// a random one.  Must be called after `with_dh_signatures(true)`.
-    /// The same seed always produces the same keypair, giving the server a stable
-    /// identity across restarts so OBUs can pin it via `server_signing_pubkey`.
+    /// a random one. The signing algorithm is taken from `self.signing_algorithm`
+    /// (set via `with_crypto_config` or `with_signing_algorithm`).
+    /// The same `(algorithm, seed)` pair always produces the same keypair, giving the
+    /// server a stable identity across restarts so OBUs can pin it via
+    /// `server_signing_pubkey`.
     pub fn with_signing_key_seed(mut self, hex_seed: &str) -> anyhow::Result<Self> {
-        let seed = decode_hex_32(hex_seed)
+        let seed = node_lib::crypto::decode_hex_32(hex_seed)
             .ok_or_else(|| anyhow::anyhow!("signing_key_seed must be exactly 64 hex characters"))?;
-        self.signing_keypair = Some(Arc::new(SigningKeypair::from_seed(seed)));
+        let kp = SigningKeypair::from_seed(self.signing_algorithm, seed);
+        // Sanity-check: the derived keypair's algorithm must match self.signing_algorithm.
+        // If this fires, with_signing_algorithm() was called after with_signing_key_seed(),
+        // which would silently deploy the wrong keypair.
+        debug_assert_eq!(
+            kp.signing_algorithm(),
+            self.signing_algorithm,
+            "signing keypair algorithm mismatch — call with_signing_algorithm before with_signing_key_seed"
+        );
+        self.signing_keypair = Some(Arc::new(kp));
         Ok(self)
     }
 
-    /// Set the PKI allowlist mapping OBU VANET MAC → expected Ed25519 verifying key bytes.
+    /// Set the PKI allowlist mapping OBU VANET MAC → expected verifying key bytes.
     /// When non-empty and DH signatures are enabled, only allowlisted OBUs may complete
     /// key exchange (closes the TOFU first-contact impersonation gap).
-    pub fn with_dh_signing_allowlist(mut self, allowlist: HashMap<MacAddress, [u8; 32]>) -> Self {
+    pub fn with_dh_signing_allowlist(mut self, allowlist: HashMap<MacAddress, Vec<u8>>) -> Self {
         self.dh_signing_allowlist = allowlist;
         self
     }
@@ -196,6 +215,18 @@ impl Server {
             "Starting server UDP listener"
         );
 
+        if !self.enable_encryption {
+            tracing::warn!(
+                "Encryption is DISABLED — all downstream traffic is sent in the clear. \
+                 Set enable_encryption = true to protect data payloads."
+            );
+        }
+        if !self.enable_dh_signatures {
+            tracing::warn!(
+                "DH signatures are DISABLED — key exchange messages are not authenticated. \
+                 Set enable_dh_signatures = true to prevent MITM key substitution."
+            );
+        }
         if let Some(ref kp) = self.signing_keypair {
             let pubkey_hex: String = kp
                 .verifying_key_bytes()
@@ -294,7 +325,7 @@ impl Server {
         enable_encryption: bool,
         enable_dh_signatures: bool,
         signing_keypair: Option<Arc<SigningKeypair>>,
-        dh_signing_allowlist: Arc<HashMap<MacAddress, [u8; 32]>>,
+        dh_signing_allowlist: Arc<HashMap<MacAddress, Vec<u8>>>,
         dh_keys: Arc<RwLock<DhKeyStore>>,
         crypto_config: CryptoConfig,
         key_ttl_ms: u64,
@@ -771,7 +802,7 @@ impl Server {
         socket: &Arc<UdpSocket>,
         enable_dh_signatures: bool,
         signing_keypair: Option<&SigningKeypair>,
-        dh_signing_allowlist: &HashMap<MacAddress, [u8; 32]>,
+        dh_signing_allowlist: &HashMap<MacAddress, Vec<u8>>,
     ) {
         // Parse the KeyExchangeInit payload
         let ke_init = match node_lib::messages::control::key_exchange::KeyExchangeInit::try_from(
@@ -790,10 +821,25 @@ impl Server {
 
         // Verify the OBU's signature if signatures are required.
         if enable_dh_signatures {
-            match (ke_init.signing_pubkey(), ke_init.signature()) {
-                (Some(spk), Some(sig)) => {
+            match (
+                ke_init.sig_algo_id(),
+                ke_init.signing_pubkey(),
+                ke_init.signature(),
+            ) {
+                (Some(sig_algo), Some(spk), Some(sig)) => {
+                    let algo = match sig_algo_from_id(sig_algo) {
+                        Some(a) => a,
+                        None => {
+                            tracing::warn!(
+                                obu = %ke_fwd.obu_mac,
+                                sig_algo_id = sig_algo,
+                                "KeyExchangeInit uses unknown signature algorithm, dropping"
+                            );
+                            return;
+                        }
+                    };
                     let base = ke_init.base_payload();
-                    if let Err(e) = node_lib::crypto::verify_dh_signature(&base, &spk, &sig) {
+                    if let Err(e) = node_lib::crypto::verify_dh_signature(algo, &base, spk, sig) {
                         tracing::warn!(
                             obu = %ke_fwd.obu_mac,
                             error = %e,
@@ -818,12 +864,22 @@ impl Server {
 
         // PKI allowlist check: if configured, the OBU's signing key must match the
         // pre-registered entry for its MAC address, closing the TOFU gap.
+        // Signature verification must be enabled when an allowlist is configured;
+        // without it the key bytes in the message are unverified and can be forged.
+        if !dh_signing_allowlist.is_empty() && !enable_dh_signatures {
+            tracing::warn!(
+                obu = %ke_fwd.obu_mac,
+                "dh_signing_allowlist is configured but enable_dh_signatures is false; \
+                 dropping KeyExchangeInit to prevent allowlist bypass"
+            );
+            return;
+        }
         if !dh_signing_allowlist.is_empty() {
             match (
                 ke_init.signing_pubkey(),
                 dh_signing_allowlist.get(&ke_fwd.obu_mac),
             ) {
-                (Some(spk), Some(expected)) if spk == *expected => {
+                (Some(spk), Some(expected)) if spk == expected.as_slice() => {
                     tracing::debug!(
                         obu = %ke_fwd.obu_mac,
                         "KeyExchangeInit signing key matches PKI allowlist"
@@ -844,8 +900,6 @@ impl Server {
                     return;
                 }
                 (None, Some(_)) => {
-                    // Already caught above by enable_dh_signatures unsigned check,
-                    // but be explicit for the allowlist-only case.
                     tracing::warn!(
                         obu = %ke_fwd.obu_mac,
                         "KeyExchangeInit unsigned but PKI allowlist is configured, dropping"
@@ -856,7 +910,27 @@ impl Server {
         }
 
         let key_id = ke_init.key_id();
-        let peer_pub_bytes = ke_init.public_key();
+        let algo_id = ke_init.algo_id();
+
+        // Reject key exchanges that use an algorithm the server isn't configured for.
+        // An attacker could otherwise downgrade the algorithm by rewriting algo_id
+        // in a forwarded KeyExchangeInit.
+        {
+            use node_lib::messages::control::key_exchange::{KE_ALGO_ML_KEM_768, KE_ALGO_X25519};
+            let expected_algo_id = match crypto_config.dh_group {
+                node_lib::crypto::DhGroup::X25519 => KE_ALGO_X25519,
+                node_lib::crypto::DhGroup::MlKem768 => KE_ALGO_ML_KEM_768,
+            };
+            if algo_id != expected_algo_id {
+                tracing::warn!(
+                    obu = %ke_fwd.obu_mac,
+                    algo_id = algo_id,
+                    expected = expected_algo_id,
+                    "KeyExchangeInit algo_id does not match server crypto config, dropping"
+                );
+                return;
+            }
+        }
 
         // Deduplicate: if we already have a key for this OBU with the same key_id,
         // skip reprocessing (duplicate KeyExchangeInit can arrive via multiple
@@ -875,15 +949,64 @@ impl Server {
             }
         }
 
-        // Generate our keypair and compute shared secret
-        let our_keypair = DhKeypair::generate();
-        let our_public = *our_keypair.public.as_bytes();
+        use node_lib::messages::control::key_exchange::{
+            KE_ALGO_ML_KEM_768, KE_ALGO_X25519, SIG_ALGO_ED25519, SIG_ALGO_ML_DSA_65,
+        };
 
-        let peer_public = x25519_dalek::PublicKey::from(peer_pub_bytes);
-        let shared_secret = our_keypair.diffie_hellman(&peer_public);
+        // Perform the key exchange based on the algorithm in the init message.
+        let (our_reply_material, shared_secret_bytes) = match algo_id {
+            KE_ALGO_X25519 => {
+                let peer_pub_bytes: [u8; 32] = match ke_init.key_material().try_into() {
+                    Ok(b) => b,
+                    Err(_) => {
+                        tracing::warn!(obu = %ke_fwd.obu_mac, "X25519 key_material wrong length");
+                        return;
+                    }
+                };
+                let our_keypair = DhKeypair::generate();
+                let our_public = our_keypair.public.as_bytes().to_vec();
+                let peer_public = x25519_dalek::PublicKey::from(peer_pub_bytes);
+                let ss = our_keypair.diffie_hellman(&peer_public).as_bytes().to_vec();
+                (our_public, ss)
+            }
+            KE_ALGO_ML_KEM_768 => {
+                let ek_bytes: &[u8; node_lib::crypto::ML_KEM_768_EK_LEN] =
+                    match ke_init.key_material().try_into() {
+                        Ok(b) => b,
+                        Err(_) => {
+                            tracing::warn!(
+                                obu = %ke_fwd.obu_mac,
+                                "ML-KEM-768 encap key wrong length (expected {})",
+                                node_lib::crypto::ML_KEM_768_EK_LEN,
+                            );
+                            return;
+                        }
+                    };
+                match node_lib::crypto::kem_768_encapsulate(ek_bytes) {
+                    Ok((ct, ss)) => (ct.to_vec(), ss.to_vec()),
+                    Err(e) => {
+                        tracing::error!(
+                            obu = %ke_fwd.obu_mac,
+                            error = %e,
+                            "ML-KEM-768 encapsulation failed"
+                        );
+                        return;
+                    }
+                }
+            }
+            _ => {
+                tracing::warn!(
+                    obu = %ke_fwd.obu_mac,
+                    algo_id = algo_id,
+                    "Unknown key exchange algorithm, dropping"
+                );
+                return;
+            }
+        };
+
         let derived_key = match node_lib::crypto::derive_key(
             crypto_config.kdf,
-            shared_secret.as_bytes(),
+            &shared_secret_bytes,
             key_id,
             crypto_config.cipher.key_len(),
         ) {
@@ -892,7 +1015,7 @@ impl Server {
                 tracing::error!(
                     obu = %ke_fwd.obu_mac,
                     error = %e,
-                    "Failed to derive DH key for OBU"
+                    "Failed to derive session key for OBU"
                 );
                 return;
             }
@@ -913,37 +1036,51 @@ impl Server {
             obu = %ke_fwd.obu_mac,
             rsu = %ke_fwd.rsu_mac,
             key_id = key_id,
+            algo_id = algo_id,
             cipher = %crypto_config.cipher,
             kdf = %crypto_config.kdf,
             key_len = key_len,
-            "DH key exchange completed with OBU, session key established"
+            "Key exchange completed with OBU, session key established"
         );
 
         // Build the KeyExchangeReply payload.
-        // Set sender = obu_mac so relay OBUs know who the final recipient is and
-        // forward the reply hop-by-hop rather than consuming it themselves.
+        // Set sender = obu_mac so relay OBUs know who the final recipient is.
         // Sign the reply if signatures are enabled.
         let ke_reply = if let Some(kp) = signing_keypair {
-            let unsigned = node_lib::messages::control::key_exchange::KeyExchangeReply::new(
+            let sig_algo_id = match kp.signing_algorithm() {
+                SigningAlgorithm::Ed25519 => SIG_ALGO_ED25519,
+                SigningAlgorithm::MlDsa65 => SIG_ALGO_ML_DSA_65,
+            };
+            let unsigned = node_lib::messages::control::key_exchange::KeyExchangeReply::new_raw(
+                algo_id,
                 key_id,
-                our_public,
+                our_reply_material.clone(),
                 ke_fwd.obu_mac,
+                None,
+                None,
+                None,
             );
             let base = unsigned.base_payload();
             let sig = kp.sign(&base);
             let spk = kp.verifying_key_bytes();
-            node_lib::messages::control::key_exchange::KeyExchangeReply::new_signed(
+            node_lib::messages::control::key_exchange::KeyExchangeReply::new_raw(
+                algo_id,
                 key_id,
-                our_public,
+                our_reply_material,
                 ke_fwd.obu_mac,
-                spk,
-                sig,
+                Some(sig_algo_id),
+                Some(spk),
+                Some(sig),
             )
         } else {
-            node_lib::messages::control::key_exchange::KeyExchangeReply::new(
+            node_lib::messages::control::key_exchange::KeyExchangeReply::new_raw(
+                algo_id,
                 key_id,
-                our_public,
+                our_reply_material,
                 ke_fwd.obu_mac,
+                None,
+                None,
+                None,
             )
         };
         let reply_bytes: Vec<u8> = (&ke_reply).into();

@@ -9,8 +9,17 @@ pub mod error;
 pub mod messages;
 pub mod metrics;
 
-/// Standard Maximum Transmission Unit (MTU) for Ethernet packets
-pub const PACKET_BUFFER_SIZE: usize = 1500;
+/// Maximum frame size for VANET packet receive buffers.
+///
+/// Set to 9000 (jumbo-frame size) so that post-quantum key-exchange messages
+/// fit in a single frame. The largest current PQ message is a signed
+/// ML-KEM-768 + ML-DSA-65 `KeyExchangeInit`: base payload (1197 B) +
+/// ML-DSA-65 signed extension (5266 B) + message header (14 B) +
+/// control-type bytes (2 B) = 6479 B.
+///
+/// VANET TAP interfaces must also be configured with MTU ≥ this value;
+/// see `simulator/src/node_factory.rs`.
+pub const PACKET_BUFFER_SIZE: usize = 9000;
 
 // Type aliases for common complex types to improve readability
 use common::device::Device;

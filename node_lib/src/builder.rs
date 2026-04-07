@@ -3,7 +3,7 @@
 //! This module provides a generic builder pattern for constructing node instances (OBU/RSU)
 //! with flexible configuration, eliminating duplication between ObuBuilder and RsuBuilder.
 
-use crate::crypto::{DhGroup, KdfAlgorithm, SymmetricCipher};
+use crate::crypto::{DhGroup, KdfAlgorithm, SigningAlgorithm, SymmetricCipher};
 use anyhow::{anyhow, Result};
 use common::device::Device;
 use common::tun::Tun;
@@ -30,6 +30,7 @@ pub struct NodeBuilder {
     pub cipher: SymmetricCipher,
     pub kdf: KdfAlgorithm,
     pub dh_group: DhGroup,
+    pub signing_algorithm: SigningAlgorithm,
     pub node_name: Option<String>,
     // For testing with injected dependencies
     #[cfg_attr(not(test), allow(dead_code))]
@@ -56,6 +57,7 @@ impl NodeBuilder {
             cipher: SymmetricCipher::default(),
             kdf: KdfAlgorithm::default(),
             dh_group: DhGroup::default(),
+            signing_algorithm: SigningAlgorithm::default(),
             node_name: None,
             tun: None,
             device: None,
@@ -137,6 +139,12 @@ impl NodeBuilder {
     /// Set the DH group (default: X25519)
     pub fn with_dh_group(mut self, dh_group: DhGroup) -> Self {
         self.dh_group = dh_group;
+        self
+    }
+
+    /// Set the signing algorithm (default: Ed25519)
+    pub fn with_signing_algorithm(mut self, algo: SigningAlgorithm) -> Self {
+        self.signing_algorithm = algo;
         self
     }
 

@@ -11,3 +11,6 @@ path = "src/main.rs"
 
 [dependencies]
 node_lib = { path = "../node_lib/" }
+clap = { version = "4", features = ["derive"] }
+serde_yaml = "0.9"
+anyhow = "1.0"

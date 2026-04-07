@@ -143,23 +143,27 @@ impl DownstreamForward {
     }
 }
 
-/// Minimum byte length of a KeyExchangeForward message (unsigned payload).
-/// Layout: MAGIC(2) + TYPE(1) + OBU_MAC(6) + RSU_MAC(6) + KE_PAYLOAD(42) = 57
-pub const KEY_EXCHANGE_FWD_MIN_LEN: usize = 57;
+/// Minimum byte length of a KeyExchangeForward message.
+/// Layout: MAGIC(2) + TYPE(1) + OBU_MAC(6) + RSU_MAC(6) + KE_PAYLOAD(≥14) = 29
+pub const KEY_EXCHANGE_FWD_MIN_LEN: usize = 29;
 
-/// Minimum byte length of a KeyExchangeResponse message (unsigned payload).
-/// Layout: MAGIC(2) + TYPE(1) + OBU_DEST_MAC(6) + KE_PAYLOAD(42) = 51
-pub const KEY_EXCHANGE_RSP_MIN_LEN: usize = 51;
+/// Minimum byte length of a KeyExchangeResponse message.
+/// Layout: MAGIC(2) + TYPE(1) + OBU_DEST_MAC(6) + KE_PAYLOAD(≥14) = 23
+pub const KEY_EXCHANGE_RSP_MIN_LEN: usize = 23;
+
+/// Minimum key exchange payload size.
+/// New variable-length format: algo_id(1) + key_id(4) + km_len(2) + km(≥1) + sender(6) = 14
+pub const KE_PAYLOAD_MIN_LEN: usize = 14;
 
 /// A key exchange forwarding message sent by an RSU to the server.
 ///
 /// When an RSU receives a `KeyExchangeInit` control message from an OBU on the
-/// VANET, it wraps the raw 42-byte key exchange payload in this message and
+/// VANET, it wraps the variable-length key exchange payload in this message and
 /// forwards it to the server over UDP.
 ///
 /// Binary format:
 /// ```text
-/// [MAGIC 2B: 0xAB 0xCD] [TYPE 1B: 0x04] [OBU_MAC 6B] [RSU_MAC 6B] [KE_PAYLOAD 42B]
+/// [MAGIC 2B: 0xAB 0xCD] [TYPE 1B: 0x04] [OBU_MAC 6B] [RSU_MAC 6B] [KE_PAYLOAD ≥14B]
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyExchangeForward {
@@ -167,23 +171,16 @@ pub struct KeyExchangeForward {
     pub obu_mac: MacAddress,
     /// MAC address of the relaying RSU (VANET MAC).
     pub rsu_mac: MacAddress,
-    /// Raw key exchange init payload (42 bytes: key_id + public_key + sender).
+    /// Raw key exchange init payload (variable length, new format).
     pub payload: Vec<u8>,
 }
 
-/// Expected key exchange payload size for unsigned messages (key_id 4B + public_key 32B + sender 6B).
-pub const KE_PAYLOAD_LEN: usize = 42;
-
-/// Expected key exchange payload size for signed messages (base 42B + verifying_key 32B + signature 64B).
-pub const KE_SIGNED_PAYLOAD_LEN: usize = 138;
-
 impl KeyExchangeForward {
     pub fn new(obu_mac: MacAddress, rsu_mac: MacAddress, payload: Vec<u8>) -> Result<Self> {
-        if payload.len() != KE_PAYLOAD_LEN && payload.len() != KE_SIGNED_PAYLOAD_LEN {
+        if payload.len() < KE_PAYLOAD_MIN_LEN {
             bail!(
-                "KeyExchangeForward payload must be {} or {} bytes, got {}",
-                KE_PAYLOAD_LEN,
-                KE_SIGNED_PAYLOAD_LEN,
+                "KeyExchangeForward payload must be at least {} bytes, got {}",
+                KE_PAYLOAD_MIN_LEN,
                 payload.len()
             );
         }
@@ -212,7 +209,7 @@ impl KeyExchangeForward {
             return None;
         }
         let payload = &data[15..];
-        if payload.len() != KE_PAYLOAD_LEN && payload.len() != KE_SIGNED_PAYLOAD_LEN {
+        if payload.len() < KE_PAYLOAD_MIN_LEN {
             return None;
         }
         let obu_bytes: [u8; 6] = data[3..9].try_into().ok()?;
@@ -233,23 +230,22 @@ impl KeyExchangeForward {
 ///
 /// Binary format:
 /// ```text
-/// [MAGIC 2B: 0xAB 0xCD] [TYPE 1B: 0x05] [OBU_DEST_MAC 6B] [KE_PAYLOAD 42B]
+/// [MAGIC 2B: 0xAB 0xCD] [TYPE 1B: 0x05] [OBU_DEST_MAC 6B] [KE_PAYLOAD ≥14B]
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyExchangeResponse {
     /// MAC address of the destination OBU (VANET MAC).
     pub obu_dest_mac: MacAddress,
-    /// Raw key exchange reply payload (42 bytes: key_id + public_key + sender).
+    /// Raw key exchange reply payload (variable length, new format).
     pub payload: Vec<u8>,
 }
 
 impl KeyExchangeResponse {
     pub fn new(obu_dest_mac: MacAddress, payload: Vec<u8>) -> Result<Self> {
-        if payload.len() != KE_PAYLOAD_LEN && payload.len() != KE_SIGNED_PAYLOAD_LEN {
+        if payload.len() < KE_PAYLOAD_MIN_LEN {
             bail!(
-                "KeyExchangeResponse payload must be {} or {} bytes, got {}",
-                KE_PAYLOAD_LEN,
-                KE_SIGNED_PAYLOAD_LEN,
+                "KeyExchangeResponse payload must be at least {} bytes, got {}",
+                KE_PAYLOAD_MIN_LEN,
                 payload.len()
             );
         }
@@ -276,7 +272,7 @@ impl KeyExchangeResponse {
             return None;
         }
         let payload = &data[9..];
-        if payload.len() != KE_PAYLOAD_LEN && payload.len() != KE_SIGNED_PAYLOAD_LEN {
+        if payload.len() < KE_PAYLOAD_MIN_LEN {
             return None;
         }
         let dest_bytes: [u8; 6] = data[3..9].try_into().ok()?;
@@ -455,7 +451,8 @@ mod tests {
         let payload = vec![0xAB; 42];
         let msg = KeyExchangeForward::new(obu, rsu, payload.clone()).unwrap();
         let bytes = msg.to_bytes();
-        assert_eq!(bytes.len(), KEY_EXCHANGE_FWD_MIN_LEN);
+        // header (15 bytes: MAGIC+TYPE+OBU_MAC+RSU_MAC) + payload
+        assert_eq!(bytes.len(), 15 + payload.len());
         let parsed = KeyExchangeForward::try_from_bytes(&bytes).unwrap();
         assert_eq!(parsed, msg);
     }
@@ -483,7 +480,8 @@ mod tests {
         let payload = vec![0xCD; 42];
         let msg = KeyExchangeResponse::new(dest, payload.clone()).unwrap();
         let bytes = msg.to_bytes();
-        assert_eq!(bytes.len(), KEY_EXCHANGE_RSP_MIN_LEN);
+        // header (9 bytes: MAGIC+TYPE+OBU_DEST_MAC) + payload
+        assert_eq!(bytes.len(), 9 + payload.len());
         let parsed = KeyExchangeResponse::try_from_bytes(&bytes).unwrap();
         assert_eq!(parsed, msg);
     }

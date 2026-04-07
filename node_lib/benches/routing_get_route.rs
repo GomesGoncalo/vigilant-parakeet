@@ -25,6 +25,7 @@ fn bench_obu_get_route(_c: &mut Criterion) {
             cipher: node_lib::crypto::SymmetricCipher::default(),
             kdf: node_lib::crypto::KdfAlgorithm::default(),
             dh_group: node_lib::crypto::DhGroup::default(),
+            signing_algorithm: node_lib::crypto::SigningAlgorithm::default(),
         },
     };
 
