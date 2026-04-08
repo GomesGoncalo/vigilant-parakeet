@@ -292,17 +292,21 @@ fn app() -> Html {
                 <button class={if is_graph { "vp-tab-btn active" } else { "vp-tab-btn" }} onclick={on_tab_graph}>
                     {"Network Graph"}
                 </button>
-                if has_positions {
-                    <button class={if !is_graph { "vp-tab-btn active" } else { "vp-tab-btn" }} onclick={on_tab_map}>
-                        {"Map"}
-                    </button>
-                }
+                <button class={if !is_graph { "vp-tab-btn active" } else { "vp-tab-btn" }} onclick={on_tab_map}>
+                    {"Map"}
+                </button>
             </div>
             <div id="vp-panel-graph" style={graph_panel_style}>
                 <Graph nodes={(*nodes).clone()} channels={(*channels).clone()} node_info={(*node_info).clone()} stats={(*stats).clone()} geo_positions={(*geo_positions).clone()} />
             </div>
             <div id="vp-panel-map" style={map_panel_style}>
-                <div id="map"></div>
+                <div id="map" style="width:100%;height:100%;position:relative;">
+                    if !has_positions {
+                        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#111;color:#888;font-size:13px;z-index:1000;pointer-events:none;">
+                            {"Waiting for mobility data — run simulator with --features webview,mobility and mobility.enabled: true"}
+                        </div>
+                    }
+                </div>
             </div>
         </>
     }
