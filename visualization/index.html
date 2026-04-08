@@ -381,7 +381,8 @@
         if (name === 'map' && window.__vp_leaflet_map) {
             setTimeout(() => {
                 try { window.__vp_leaflet_map.invalidateSize(); } catch(e){}
-                // Re-fit to nodes every time the map tab is opened
+                // Reset fitted flag so we re-center every time the tab is opened
+                window.__vp_map_fitted = false;
                 window.__vp_fit_to_nodes();
             }, 80);
         }
@@ -397,8 +398,9 @@
         function ensureMap() {
             if (leafletMap) return leafletMap;
             const container = document.getElementById('map');
-            if (!container || container.offsetHeight === 0) return null;
-            leafletMap = L.map(container, { preferCanvas: true }).setView([51.505, -0.09], 13);
+            if (!container) return null;
+            // Initialize at Porto city centre — fitBounds will override this once data arrives
+            leafletMap = L.map(container, { preferCanvas: true }).setView([41.157, -8.625], 14);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
                 maxZoom: 19
@@ -407,16 +409,15 @@
             return leafletMap;
         }
 
+        // Initialise the map eagerly so it exists before the tab is first opened
+        document.addEventListener('DOMContentLoaded', () => { ensureMap(); });
+
         // positions: { name: { lat, lon, speed, bearing }, ... }
         // edges: [ { from, to }, ... ]  (Cytoscape edge objects with data.source / data.target)
         // node_types: { name: "Rsu"|"Obu"|"Server", ... }
         window.__vp_render_map = function(positions, edges, node_types) {
             const map = ensureMap();
-            if (!map) {
-                // Map container may not be visible yet; retry shortly
-                setTimeout(() => window.__vp_render_map(positions, edges, node_types), 300);
-                return;
-            }
+            if (!map) return;  // container missing entirely — nothing we can do
 
             const names = Object.keys(positions || {});
             if (names.length === 0) return;
