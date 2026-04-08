@@ -1,0 +1,10 @@
+# obu2 connects only to obu1 (multi-hop relay: obu2 -> obu1 -> rsu1 -> server)
+node_type: Obu
+hello_history: 10
+ip: 10.0.1.2
+vanet_mac: AA:BB:CC:DD:01:02
+enable_encryption: true
+enable_dh_signatures: false
+dh_group: ml-kem-768
+dh_reply_timeout_ms: 3000
+dh_rekey_interval_ms: 300000

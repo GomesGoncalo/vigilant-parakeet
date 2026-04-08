@@ -1,0 +1,6 @@
+node_type: Server
+virtual_ip: 10.0.0.1
+cloud_ip: 172.16.0.1
+port: 8080
+enable_encryption: true
+enable_dh_signatures: false

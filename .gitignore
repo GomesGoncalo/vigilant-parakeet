@@ -1,5 +1,7 @@
 /target
 *.yaml
+!examples/**/*.yaml
+!examples/*.yaml
 /visualization/dist
 Cargo.lock
 lcov.info
