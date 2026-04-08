@@ -300,9 +300,13 @@ impl Obu {
             async move {
                 // Initial delay to allow routing to establish
                 tokio::time::sleep(Duration::from_millis(500)).await;
+                tracing::info!(
+                    upstream = ?obu.cached_upstream_mac(),
+                    "DH rekey task starting (initial delay elapsed)"
+                );
 
                 loop {
-                    if let Some(upstream_mac) = obu.cached_upstream_mac() {
+                    if let Some(mut upstream_mac) = obu.cached_upstream_mac() {
                         // Use server_virtual_mac() for key store lookups — the key
                         // is with the server, not with a specific RSU/peer.
                         let needs_exchange = {
@@ -326,6 +330,9 @@ impl Obu {
                             // Determine what action to take:
                             // - If no pending exchange, initiate a new one
                             // - If pending exchange timed out, re-initiate (preserving retry count)
+                            //   After 3 consecutive timeouts, failover to the next-best RSU candidate
+                            //   so that an OBU stuck at the edge of range doesn't retry forever
+                            //   through an RSU with high packet loss.
                             // - If pending exchange still in progress, wait
                             let action = {
                                 let store = obu
@@ -336,11 +343,30 @@ impl Obu {
                                     Some("initiate")
                                 } else if store.is_pending_timed_out(server_virtual_mac(), reply_timeout_ms) {
                                     let retries = store.pending_retries(server_virtual_mac()).unwrap_or(0);
-                                    tracing::warn!(
-                                        via = %upstream_mac,
-                                        retry = retries + 1,
-                                        "Server DH reply timed out, re-initiating (no session — packets will be dropped until established)"
-                                    );
+                                    // After 3 timeouts through the same RSU, rotate to the next
+                                    // candidate.  The reinitiation below will use the new upstream.
+                                    if retries >= 3 {
+                                        if let Some(new_upstream) = obu
+                                            .routing
+                                            .read()
+                                            .expect("routing read lock")
+                                            .failover_cached_upstream()
+                                        {
+                                            tracing::warn!(
+                                                old_via = %upstream_mac,
+                                                new_via = %new_upstream,
+                                                retry = retries + 1,
+                                                "DH timeout threshold reached, failing over to next RSU candidate"
+                                            );
+                                            upstream_mac = new_upstream;
+                                        }
+                                    } else {
+                                        tracing::warn!(
+                                            via = %upstream_mac,
+                                            retry = retries + 1,
+                                            "Server DH reply timed out, re-initiating (no session — packets will be dropped until established)"
+                                        );
+                                    }
                                     Some("reinitiate")
                                 } else {
                                     None // still pending, wait
@@ -411,15 +437,20 @@ impl Obu {
                                         "Failed to send DH KeyExchangeInit (for server)"
                                     );
                                 } else {
-                                    tracing::debug!(
+                                    tracing::info!(
                                         via = %upstream_mac,
                                         key_id = key_id,
+                                        mode = mode,
                                         dh_group = %obu.crypto_config.dh_group,
                                         "Sent DH KeyExchangeInit to server (via RSU)"
                                     );
                                 }
                             }
                         }
+                    } else {
+                        tracing::warn!(
+                            "DH rekey task: no upstream RSU cached yet — skipping exchange until next wakeup"
+                        );
                     }
 
                     // Wait for either the normal rekey interval or an early wake-up

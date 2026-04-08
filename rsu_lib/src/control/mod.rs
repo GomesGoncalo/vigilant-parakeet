@@ -326,8 +326,9 @@ impl Rsu {
                             "Failed to forward KeyExchangeInit to server"
                         );
                     } else {
-                        tracing::debug!(
+                        tracing::info!(
                             obu = %obu_mac,
+                            via_rsu = %self.device.mac_address(),
                             "Relayed KeyExchangeInit to server"
                         );
                     }
@@ -579,22 +580,27 @@ impl Rsu {
             }
         };
 
-        // Find the next hop to the destination OBU
+        // Find the next hop to the destination OBU.
+        // Prefer the ClientCache: it was set when the KeyExchangeInit arrived and
+        // always reflects the actual forwarding path (e.g. OBU1→OBU2→RSU). The
+        // routing table may hold a stale direct-route entry that skips intermediate
+        // hops, causing the reply to be misdelivered.
         let next_hop = {
-            let routing = routing
-                .read()
-                .expect("routing table read lock poisoned during key exchange response");
-            if let Some(route) = routing.get_route_to(Some(dest_mac)) {
-                Some(route.mac)
+            let from_cache = cache.get(dest_mac);
+            if from_cache.is_some() {
+                from_cache
             } else {
-                cache.get(dest_mac)
+                let routing = routing
+                    .read()
+                    .expect("routing table read lock poisoned during key exchange response");
+                routing.get_route_to(Some(dest_mac)).map(|r| r.mac)
             }
         };
 
         let Some(next_hop) = next_hop else {
-            tracing::debug!(
+            tracing::warn!(
                 dest = %dest_mac,
-                "No route to OBU for key exchange response relay"
+                "No route/cache entry to OBU for key exchange response relay — reply dropped"
             );
             return;
         };
@@ -614,8 +620,9 @@ impl Rsu {
                 "Failed to relay KeyExchangeReply to OBU on VANET"
             );
         } else {
-            tracing::debug!(
+            tracing::info!(
                 dest = %dest_mac,
+                next_hop = %next_hop,
                 "Relayed KeyExchangeReply from server to OBU"
             );
         }
