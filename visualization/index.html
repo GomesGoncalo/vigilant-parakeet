@@ -598,10 +598,7 @@
 
         async function _pollMap() {
             try {
-                const [posRes, chRes] = await Promise.all([
-                    fetch('http://127.0.0.1:3030/positions'),
-                    fetch('http://127.0.0.1:3030/channels').catch(() => null)
-                ]);
+                const posRes = await fetch('http://127.0.0.1:3030/positions');
                 if (!posRes.ok) return;
                 const positions = await posRes.json();
                 if (!positions || !Object.keys(positions).length) return;
@@ -613,19 +610,17 @@
                 }
                 _lastNodeTypes = node_types;
 
-                // Build edges from channels { rsu1: { obu1: {...}, ... }, ... }
-                if (chRes && chRes.ok) {
-                    const channels = await chRes.json().catch(() => ({}));
-                    const edges = [];
-                    for (const [src, dests] of Object.entries(channels || {})) {
-                        for (const tgt of Object.keys(dests || {})) {
-                            // Skip :cloud and server nodes
-                            if (src.includes(':') || tgt.includes(':')) continue;
-                            edges.push({ data: { source: src, target: tgt } });
+                // Build edges from routing upstream info (traffic flow direction only)
+                // Each node points to its upstream router — no mesh clutter
+                const edges = [];
+                if (window.__vp_last_node_info) {
+                    for (const [name, info] of Object.entries(window.__vp_last_node_info)) {
+                        if (info && info.upstream && info.upstream.node_name) {
+                            edges.push({ data: { source: name, target: info.upstream.node_name } });
                         }
                     }
-                    if (edges.length) _lastEdges = edges;
                 }
+                if (edges.length) _lastEdges = edges;
 
                 window.__vp_render_map(positions, _lastEdges, _lastNodeTypes);
             } catch(e) {
