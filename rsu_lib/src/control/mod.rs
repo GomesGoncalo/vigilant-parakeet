@@ -312,6 +312,13 @@ impl Rsu {
                                 return Ok(None);
                             }
                         };
+                    // Cache the OBU's reachability via the last-hop sender so that
+                    // handle_key_exchange_response can route the reply back even
+                    // when the heartbeat-based routing table has no entry for this
+                    // OBU yet (e.g., on first connection or after a range change).
+                    if let Ok(from_mac) = msg.from() {
+                        self.cache.store_mac(obu_mac, from_mac);
+                    }
                     if let Err(e) = self.cloud_socket.send(&fwd.to_bytes()).await {
                         tracing::warn!(
                             error = %e,

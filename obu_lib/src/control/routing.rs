@@ -953,21 +953,96 @@ impl Routing {
         None
     }
 
+    /// Reception quality for a given RSU source MAC: fraction of expected heartbeat
+    /// sequences that were actually received within the `hello_history` window.
+    ///
+    /// Returns:
+    /// - `1.0`  — all sequences received (great signal, nearby RSU)
+    /// - `0.0`  — no data, or the last heartbeat is stale (RSU out of range / gone)
+    /// - `0.0–1.0` — partial reception (lossy channel or RSU at range edge)
+    ///
+    /// Staleness: the heartbeat period is estimated from the observed inter-arrival
+    /// times.  If no heartbeat has been received within 3× that period the RSU is
+    /// considered stale and 0.0 is returned regardless of historic fill-rate.
+    fn rsu_reception_quality(&self, rsu_mac: MacAddress) -> f64 {
+        let seqs = match self.routes.get(&rsu_mac) {
+            Some(s) if !s.is_empty() => s,
+            _ => return 0.0,
+        };
+
+        // Estimate inter-heartbeat period from wall-clock reception times stored
+        // in the first element of each PerHopInfo tuple.
+        let durations: Vec<Duration> = seqs.values().map(|(d, _, _, _, _)| *d).collect();
+        let last_recv = *durations.last().unwrap_or(&Duration::ZERO);
+        let now = Instant::now().duration_since(self.boot);
+
+        let estimated_period = if durations.len() >= 2 {
+            let span = *durations.last().unwrap() - *durations.first().unwrap();
+            span / (durations.len() as u32).saturating_sub(1).max(1)
+        } else {
+            Duration::from_secs(5) // safe default: assume 5 s heartbeat period
+        };
+
+        // Treat RSU as gone if its last heartbeat is >3× the estimated period old.
+        if now > last_recv + estimated_period * 3 {
+            return 0.0;
+        }
+
+        if seqs.len() < 2 {
+            return 0.5; // insufficient history to compute a meaningful ratio
+        }
+
+        let oldest_seq = *seqs.keys().next().unwrap();
+        let newest_seq = *seqs.keys().last().unwrap();
+        // wrapping_sub handles the (unlikely) u32 rollover case
+        let span = newest_seq.wrapping_sub(oldest_seq).saturating_add(1) as f64;
+        seqs.len() as f64 / span
+    }
+
     /// Select the best route to an RSU and cache N-best candidates for failover.
     ///
     /// This function:
-    /// 1. Calls `get_route_to()` to find the best route with hysteresis
-    /// 2. Caches the selected upstream as primary
-    /// 3. Builds an ordered list of N-best candidates for fast failover
-    /// 4. Logs when first upstream is selected (important OBU milestone)
-    ///
-    /// Candidates are scored using:
-    /// - Latency-based scoring (min + avg) when measurements available
-    /// - Hop-count based backfill for unmeasured routes  
-    /// - Deterministic ordering for reproducible behavior
+    /// 1. Applies a reception-quality guard: if the arriving RSU is a *different*
+    ///    RSU than the currently cached one and is not at least 30 % better in
+    ///    reception quality, the cache is left unchanged (prevents flapping when
+    ///    multiple RSUs are within range).
+    /// 2. Calls `get_route_to()` to find the best route with hysteresis
+    /// 3. Caches the selected upstream as primary
+    /// 4. Builds an ordered list of N-best candidates for fast failover
+    /// 5. Logs when first upstream is selected (important OBU milestone)
     ///
     /// Returns the selected route, or None if no route exists.
     pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
+        // --- Reception-quality guard -------------------------------------------
+        // The latency-based path in get_route_to never fires for RSU targets
+        // (RSUs do not send heartbeat replies, so they never appear in the
+        // downstream observation map).  Without this guard, every incoming RSU
+        // heartbeat would overwrite the cache with that RSU — causing rapid
+        // flapping between all hearable RSUs.
+        //
+        // Instead: only replace the cached RSU when the arriving one is
+        // meaningfully better (≥30 % higher reception quality), or when the
+        // cached RSU has gone stale (quality == 0).
+        if let Some(cached_source) = self.cache.get_cached_source() {
+            if cached_source != mac {
+                let q_incoming = self.rsu_reception_quality(mac);
+                let q_cached = self.rsu_reception_quality(cached_source);
+                // Keep cached unless the new RSU is clearly better.
+                // `q_cached > 0.0` — if cached has gone stale we fall through
+                // and let get_route_to pick whatever is reachable.
+                if q_cached > 0.0 && q_incoming <= q_cached * 1.3 {
+                    if let Some(cached_up) = self.cache.get_cached_upstream() {
+                        return Some(Route {
+                            mac: cached_up,
+                            hops: 1,   // approximate; callers ignore the return value
+                            latency: None,
+                        });
+                    }
+                }
+            }
+        }
+        // -----------------------------------------------------------------------
+
         let route = self.get_route_to(Some(mac))?;
         let old_upstream = self.cache.get_cached_upstream();
 
