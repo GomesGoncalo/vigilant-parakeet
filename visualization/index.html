@@ -579,7 +579,64 @@
                 else if (lls.length > 1)   leafletMap.fitBounds(lls, { padding: [60, 60] });
             } catch(e) {}
         };
-    })();
+
+        // ── Pure-JS polling loop ───────────────────────────────────────────────
+        // Polls /positions and /channels directly — independent of WASM call chain.
+        let _lastNodeTypes = {};
+        let _lastEdges = [];
+
+        function _inferNodeType(name) {
+            // Prefer WASM-provided node_info, fall back to name prefix heuristic
+            if (window.__vp_last_node_info) {
+                const ni = window.__vp_last_node_info[name];
+                if (ni && ni.node_type) return ni.node_type;
+            }
+            if (name.toLowerCase().startsWith('rsu')) return 'Rsu';
+            if (name.toLowerCase().startsWith('obu')) return 'Obu';
+            return 'Obu';
+        }
+
+        async function _pollMap() {
+            try {
+                const [posRes, chRes] = await Promise.all([
+                    fetch('http://127.0.0.1:3030/positions'),
+                    fetch('http://127.0.0.1:3030/channels').catch(() => null)
+                ]);
+                if (!posRes.ok) return;
+                const positions = await posRes.json();
+                if (!positions || !Object.keys(positions).length) return;
+
+                // Build node_types map from names
+                const node_types = {};
+                for (const name of Object.keys(positions)) {
+                    node_types[name] = _inferNodeType(name);
+                }
+                _lastNodeTypes = node_types;
+
+                // Build edges from channels { rsu1: { obu1: {...}, ... }, ... }
+                if (chRes && chRes.ok) {
+                    const channels = await chRes.json().catch(() => ({}));
+                    const edges = [];
+                    for (const [src, dests] of Object.entries(channels || {})) {
+                        for (const tgt of Object.keys(dests || {})) {
+                            // Skip :cloud and server nodes
+                            if (src.includes(':') || tgt.includes(':')) continue;
+                            edges.push({ data: { source: src, target: tgt } });
+                        }
+                    }
+                    if (edges.length) _lastEdges = edges;
+                }
+
+                window.__vp_render_map(positions, _lastEdges, _lastNodeTypes);
+            } catch(e) {
+                console.debug('[vp-map-poll]', e);
+            }
+        }
+
+        // Start polling as soon as the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            setInterval(_pollMap, 1000);
+        });
     </script>
     <script>
     // nodes: array of node names
