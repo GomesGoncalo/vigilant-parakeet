@@ -283,10 +283,12 @@ impl Rsu {
                     match msg.from() {
                         Ok(from_mac) => {
                             if from_mac != obu_mac {
-                                tracing::warn!(
-                                    from = %from_mac,
-                                    claimed = %obu_mac,
-                                    "Mismatching OBU MAC in KeyExchangeInit; using payload sender()"
+                                // Normal in multi-hop mesh: the immediate sender is a relay OBU
+                                // whose MAC differs from the originating OBU in the payload.
+                                tracing::debug!(
+                                    relay = %from_mac,
+                                    obu = %obu_mac,
+                                    "KeyExchangeInit relayed via intermediate OBU"
                                 );
                             }
                         }
