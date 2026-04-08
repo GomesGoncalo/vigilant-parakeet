@@ -1,6 +1,6 @@
 // ── Chapter 1 — Introduction ──────────────────────────────────────────────────
 
-= Introduction
+= Introduction <introduction>
 
 == Motivation
 
@@ -37,6 +37,10 @@ This thesis investigates the following questions:
   CPU, and how much does it reduce route-restoration latency after a next-hop
   failure?
 
++ What is the practical overhead of post-quantum key exchange (ML-KEM-768
+  + ML-DSA-65) in terms of handshake latency and message size, and is it
+  compatible with the latency budgets of vehicular V2I sessions?
+
 == Contributions
 
 The primary contributions of this work are:
@@ -49,11 +53,30 @@ The primary contributions of this work are:
   N-best upstream candidate caching, and fast failover.
 
 - *An end-to-end security architecture* providing encrypted OBU–server
-  communication via X25519 Diffie-Hellman key exchange, HKDF-derived session
-  keys, and AEAD payload encryption with a configurable cipher suite (AES-256-GCM,
-  AES-128-GCM, ChaCha20-Poly1305). An optional Ed25519 authentication layer
+  communication via a configurable key exchange (classical X25519 or
+  quantum-resistant ML-KEM-768, NIST FIPS 203), HKDF-derived session keys,
+  and AEAD payload encryption (AES-256-GCM, AES-128-GCM, ChaCha20-Poly1305).
+  An optional digital signature layer (Ed25519 or ML-DSA-65, NIST FIPS 204)
   protects the key exchange itself, supporting both Trust-on-First-Use (TOFU)
-  and pre-registered PKI deployment modes.
+  and pre-registered PKI deployment modes. The post-quantum combination of
+  ML-KEM-768 and ML-DSA-65 addresses harvest-now-decrypt-later threats against
+  long-lived vehicular infrastructure.
+
+- *A HeartbeatReply replay-detection mechanism* (`rsu_lib::ReplayWindow`) at
+  RSUs — a per-sender sliding 64-bit bitmask window following the IPsec AH
+  design — preventing stale routing state from being injected via replayed
+  control messages. A supplementary window-poisoning defence prevents forged
+  large sequence numbers from rendering the window permanently closed.
+
+- *A signed session-revocation protocol* allowing the server to forcibly
+  terminate an OBU's established DH session and trigger immediate re-keying.
+  Revocation messages carry a timestamp and a fresh random nonce, with the OBU
+  maintaining a time-bounded nonce cache to prevent replay over the revocation
+  validity window.
+
+- *A `keygen` utility* for generating Ed25519 and ML-DSA-65 signing keypairs
+  at provisioning time, enabling stable, restartable node identities for PKI
+  mode deployments.
 
 - *An in-process test hub* (`node_lib::test_helpers::hub::Hub`) enabling
   deterministic, reproducible integration testing without root privileges or
@@ -70,7 +93,11 @@ The primary contributions of this work are:
 The remainder of this thesis is organised as follows.
 
 - @background reviews vehicular networking concepts, relevant routing
-  protocols, and prior simulation approaches.
+  protocols, post-quantum cryptographic foundations, and simulation approaches.
+
+- @related-work surveys related VANET simulation platforms, routing protocol
+  implementations, and security frameworks, positioning vigilant-parakeet
+  within the existing literature.
 
 - @architecture describes the high-level design of vigilant-parakeet and the
   rationale behind its crate decomposition.
@@ -78,9 +105,11 @@ The remainder of this thesis is organised as follows.
 - @implementation details the implementation of the routing protocol, the
   simulator, the test infrastructure, and the visualisation layer.
 
-- @security presents the security architecture: threat model, DH key exchange,
-  HKDF key derivation, configurable AEAD cipher suite, DH key store lifecycle,
-  and the Ed25519 authentication layer with its TOFU and PKI trust models.
+- @security presents the security architecture: threat model, DH key exchange
+  (X25519 and ML-KEM-768), HKDF key derivation, configurable AEAD cipher
+  suite, DH key store lifecycle, the Ed25519/ML-DSA-65 authentication layer
+  with its TOFU and PKI trust models, HeartbeatReply replay detection, and
+  the signed session-revocation protocol.
 
 - @evaluation presents the experimental setup and results.
 

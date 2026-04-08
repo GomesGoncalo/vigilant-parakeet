@@ -453,12 +453,15 @@ as before — unsigned, 42-byte KE messages.
 
 ### Wire format summary
 
-| Mode     | Size (bytes) | Contents |
-|----------|-------------|----------|
-| Unsigned | 42          | `key_id (4) \| dh_pubkey (32) \| sender (6)` |
-| Signed   | 138         | `key_id (4) \| dh_pubkey (32) \| sender (6) \| ed25519_verifying_key (32) \| ed25519_signature (64)` |
+| Mode | Size (bytes) | Contents |
+|------|-------------|----------|
+| Unsigned (X25519) | 45 | `algo_id (1) \| key_id (4) \| key_material_len (2) \| dh_pubkey (32) \| sender (6)` |
+| Signed Ed25519 | 146 | Unsigned base + `sig_algo_id (1) \| spk_len (2) \| ed25519_verifying_key (32) \| sig_len (2) \| ed25519_signature (64)` |
 
-The signature covers the first 42 bytes (the base payload).
+The signature covers the 45-byte base payload. `algo_id` distinguishes X25519
+(`0x01`) from ML-KEM-768 (`0x02`); ML-KEM-768 messages are larger (Init: 1197 B,
+Reply: 1101 B unsigned). A fully signed ML-KEM-768 + ML-DSA-65 message reaches
+approximately 6.5 KB, which fits within the 9000-byte jumbo-frame buffer.
 
 ## Development tips
 

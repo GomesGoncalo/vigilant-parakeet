@@ -76,6 +76,124 @@ and are agnostic to the specific air interface: any link delivering packets
 between neighbouring nodes with the appropriate latency and loss characteristics
 is a valid substrate.
 
+== V2X Application Domains and QoS Requirements
+
+The design of a VANET routing and security layer cannot be evaluated in
+isolation from the applications it carries. Each V2X application class places
+qualitatively different demands on the network in terms of latency, reliability,
+and message rate, which in turn determine the feasibility of various routing
+and security mechanisms. @safetyapps surveys the major application categories.
+
+=== Safety-Critical Applications
+
+Safety applications are the primary driver of the DSRC/IEEE 802.11p standard
+and represent the most demanding QoS class. They include:
+
+/ *Cooperative Collision Avoidance (CCA)*: OBUs broadcast position, speed,
+  and heading at 10 Hz. Receiving vehicles detect trajectories that will
+  intersect within a collision horizon and warn the driver or apply automatic
+  braking. ETSI ITS @etsi-its-latency specifies an end-to-end latency budget of
+  100 ms for safety-critical alerts, with the radio access layer alone capped
+  at 10–50 ms.
+
+/ *Intersection Management*: RSUs broadcast signal phase and timing (SPAT)
+  and map data (MAP) messages to approaching vehicles. Latency of tens of
+  milliseconds allows OBUs to optimise speed to catch a green phase (green
+  wave) or to brake before a red one.
+
+/ *Emergency Vehicle Notification*: police, ambulance, and fire vehicles
+  broadcast priority alerts. Relay OBUs forward the alert on DSRC;
+  infrastructure RSUs relay to out-of-range areas. Latency requirements are
+  below 500 ms over a 300 m radius.
+
+/ *Post-Crash Notification*: a crashed vehicle broadcasts an eCall trigger
+  to nearby OBUs, which relay it to an RSU for forwarding to emergency services.
+  The V2X path serves as a backup when the in-vehicle cellular modem is
+  inoperative or blocked by metalwork.
+
+All safety applications share the properties of: small message payloads
+(CAM messages are typically 200–400 bytes); broadcast or geocast delivery
+(authenticated but not encrypted under IEEE 1609.2, since the payload is meant
+to be received by any nearby vehicle); and strict latency requirements
+(typically 10–100 ms) that rule out reactive route discovery protocols.
+
+=== Traffic Efficiency Applications
+
+Traffic efficiency applications operate on a seconds-to-minutes time scale and
+can tolerate somewhat higher latency than safety applications in exchange for
+coordinated vehicle behaviour:
+
+/ *Cooperative Adaptive Cruise Control (CACC)*: vehicles in a platoon
+  exchange acceleration and braking intentions at 10–50 Hz. CACC allows
+  inter-vehicle gaps as short as 0.3–1 s at highway speeds by providing advance
+  notice of upstream deceleration, allowing following vehicles to brake before
+  the deceleration propagates backward through the platoon. Latency requirements
+  are 10–20 ms for effective gap closing @platooning.
+
+/ *Truck Platooning*: multiple trucks drive in close convoy under joint
+  electronic control. The lead truck broadcasts velocity commands; followers
+  adjust throttle and brakes via V2V. Since the platoon can span several hundred
+  metres, multi-hop relaying with controlled latency is required. End-to-end
+  latency must be bounded: unbounded latency variance causes platoon instability
+  and potential collision. This is precisely the use case for the N-best
+  upstream caching and latency-based routing metric in vigilant-parakeet.
+
+/ *Traffic Signal Phase Optimisation*: RSUs can receive aggregate traffic
+  density information from approaching OBUs and adapt signal timing accordingly.
+  Unicast or groupcast delivery via V2I with latency on the order of one signal
+  phase (tens of seconds) is sufficient.
+
+=== Infotainment and Value-Added Services
+
+Non-safety applications carry internet traffic, parking availability data,
+map updates, and digital content downloads from infrastructure RSUs. These are
+typically unicast TCP sessions requiring reliable delivery but tolerating
+latency on the order of hundreds of milliseconds to seconds. The OBU acts as
+a mobile gateway, and the key routing challenge is hand-off: maintaining session
+continuity as the vehicle moves between RSU coverage areas. The DH session key
+architecture in vigilant-parakeet is designed for this use case: the session
+key is between the OBU and a backend server, not the OBU and the current RSU,
+so RSU hand-off does not require rekeying.
+
+=== Cooperative Perception for Automated Driving
+
+Emerging autonomous driving applications share raw sensor data — camera images,
+LiDAR point clouds, radar returns — between nearby vehicles and roadside sensors
+to extend beyond each vehicle's direct sensor horizon @coop-perception. This
+data sharing (Collective Perception Messages, CPMs) demands very high throughput
+(potentially tens of Mbps per vehicle) and low latency (50–100 ms for useful
+fusion). These requirements push beyond what 802.11p can deliver at vehicular
+densities, motivating 5G NR-V2X sidelink for this application class. The routing
+and security protocols studied in vigilant-parakeet are relevant to the control
+plane of such systems (session establishment, relay selection) even if the data
+plane would require different transport.
+
+=== QoS Implications for Routing and Security
+
+#figure(
+  table(
+    columns: (1fr, auto, auto, auto, auto),
+    align: (left, center, center, center, center),
+    [*Application class*], [*Latency budget*], [*Reliability*], [*Payload*], [*Encrypted?*],
+    [Safety (CAM, DENM)],    [$<$100 ms],  [99.999%], [200–400 B], [No (signed)],
+    [CACC / platooning],     [$<$20 ms],   [99.99%],  [100–200 B], [Optional],
+    [Traffic efficiency],    [$<$1 s],     [99%],     [0.5–2 KB],  [Optional],
+    [Infotainment / data],   [$<$5 s],     [95%],     [large],     [Yes],
+    [Cooperative perception],[50–100 ms],  [99.9%],   [MB-range],  [Yes],
+  ),
+  caption: [QoS requirements across V2X application classes],
+) <tab-qos>
+
+The table illustrates why the routing metric matters: for CACC and platooning,
+route oscillation of even a few tens of milliseconds per interval is
+disruptive. The 10% hysteresis threshold in vigilant-parakeet's route selection
+(see @sec-routing-protocol) is calibrated to prevent exactly this oscillation.
+For safety applications, the absence of payload encryption is a deliberate
+design choice in the standards: CAM messages are public safety information, and
+encryption would prevent roadside sensors and other non-paired receivers from
+using the broadcast. The data-plane encryption in vigilant-parakeet applies to
+the infotainment-class unicast sessions that require confidentiality.
+
 == Routing in Vehicular Networks
 
 A survey of routing approaches in VANETs @vanet-routing-survey identifies
@@ -556,9 +674,169 @@ A brief summary of the cryptographic primitives used in this project:
   used optionally in this work to authenticate DH handshake messages, binding
   them to node identities and preventing active man-in-the-middle substitution.
 
-These primitives compose as follows: X25519 produces a shared secret; HKDF
-derives symmetric keys; AEAD encrypts application payloads; Ed25519 (when
-enabled) signs handshake messages to authenticate the key exchange endpoints.
+- *ML-KEM-768 (Module Lattice Key Encapsulation Mechanism)* @fips203: a
+  quantum-resistant Key Encapsulation Mechanism standardised as NIST FIPS 203.
+  Unlike DH, it does not require both parties to contribute randomness to the
+  shared secret; instead, one party (the encapsulator) generates the secret and
+  transmits it encrypted under the other's public encapsulation key. The
+  encapsulation key is 1184 bytes, the ciphertext 1088 bytes, and the shared
+  secret 32 bytes. Its security rests on the hardness of the Module Learning
+  With Errors (MLWE) problem rather than on discrete logarithms, making it
+  resistant to Shor's algorithm @shor94 (see @sec-pqc).
+
+- *ML-DSA-65 (Module Lattice Digital Signature Algorithm)* @fips204: a
+  quantum-resistant signature scheme standardised as NIST FIPS 204, used as a
+  drop-in replacement for Ed25519 when quantum resistance is required. The
+  verifying key is 1952 bytes and the signature 3309 bytes. Like ML-KEM-768 it
+  is based on MLWE and is not vulnerable to known quantum attacks (see @sec-pqc).
+
+These primitives compose as follows: X25519 or ML-KEM-768 produces a shared
+secret; HKDF derives symmetric keys; AEAD encrypts application payloads;
+Ed25519 or ML-DSA-65 (when enabled) signs handshake messages to authenticate
+the key exchange endpoints. The classical pair (X25519 + Ed25519) and the
+quantum-resistant pair (ML-KEM-768 + ML-DSA-65) are independently configurable.
+
+=== Post-Quantum Cryptography <sec-pqc>
+
+==== The Quantum Threat
+
+Shor @shor94 demonstrated in 1994 that a sufficiently large quantum computer
+can solve the integer factorisation and discrete logarithm problems in
+polynomial time. This breaks all widely deployed asymmetric cryptography whose
+security relies on those problems: RSA, Diffie-Hellman over finite fields, and
+all elliptic-curve variants including X25519 (ECDH) and Ed25519 (ECDSA/EdDSA).
+
+The practical timeline for cryptographically relevant quantum computers remains
+uncertain, but the *harvest now, decrypt later* (HNDL) attack is a present
+threat: an adversary with sufficient storage can capture encrypted traffic
+today and decrypt it retroactively once quantum hardware matures. For long-lived
+infrastructure such as vehicular network nodes — which may remain in service for
+a decade or more — the HNDL window is a genuine concern, motivating
+quantum-resistant key exchange now rather than at the point of quantum
+availability. Grover's algorithm provides a quadratic speedup for brute-force
+search, halving the effective security of symmetric ciphers; AES-256 retains
+128-bit post-quantum security and is unaffected by this work.
+
+==== NIST Post-Quantum Cryptography Standardisation
+
+In 2016 NIST launched an open competition to standardise post-quantum
+cryptographic algorithms. After three evaluation rounds involving the global
+cryptographic community, NIST selected and standardised four algorithms in
+2024:
+
+- *FIPS 203 — ML-KEM* @fips203: key encapsulation (based on CRYSTALS-Kyber)
+- *FIPS 204 — ML-DSA* @fips204: digital signatures (based on CRYSTALS-Dilithium)
+- *FIPS 205 — SLH-DSA*: stateless hash-based signatures (based on SPHINCS+)
+- *FIPS 206 — FN-DSA*: fast lattice-based signatures (based on FALCON)
+
+vigilant-parakeet implements ML-KEM-768 (FIPS 203) and ML-DSA-65 (FIPS 204),
+the NIST Security Level 3 parameter sets of the two primary lattice-based
+standards. NIST Security Level 3 targets security equivalent to AES-192,
+meaning no known classical or quantum algorithm can break the scheme faster
+than exhaustive search of a 192-bit key space.
+
+==== Module Learning With Errors
+
+Both ML-KEM and ML-DSA derive their security from the *Module Learning With
+Errors* (MLWE) problem, a structured variant of the Learning With Errors (LWE)
+problem introduced by Regev @lwe. Given a polynomial ring $R_q = ZZ_q [x] \/ (x^n + 1)$
+with $n = 256$ and a prime modulus $q$, the MLWE problem is:
+
+*Given* a random matrix $bold(A) in R_q^(k times k)$, a secret vector
+$bold(s) in R_q^k$ with small coefficients, and an error vector
+$bold(e) in R_q^k$ with small coefficients, *distinguish*
+$bold(A), bold(A) bold(s) + bold(e)$ from $bold(A), bold(u)$ where
+$bold(u)$ is uniformly random.
+
+For ML-KEM-768 and ML-DSA-65, $k = 3$ (the "768" designates the total ring
+dimension $k dot n = 768$). No polynomial-time classical or quantum algorithm
+is known for MLWE; the best known algorithms require sub-exponential time even
+on quantum hardware. The reduction from MLWE to ring-LWE and standard LWE is
+well-studied, providing a firm theoretical foundation for the security claims.
+
+==== ML-KEM-768: Key Encapsulation Mechanism
+
+A KEM differs from Diffie-Hellman in a fundamental way: it is *asymmetric in
+the production of the shared secret*. The holder of the encapsulation key
+(analogous to a public key) can only receive a secret; only the holder of the
+decapsulation key can recover it. There is no joint computation — the
+encapsulator generates the secret unilaterally and transmits it encrypted.
+
+The ML-KEM-768 key sizes are governed by the ring dimension and modulus:
+
+#figure(
+  table(
+    columns: (auto, auto, 1fr),
+    align: (left, left, left),
+    [*Object*], [*Size*], [*Role*],
+    [Encapsulation key (public)], [1184 B], [Distributed to the party that will encapsulate secrets.],
+    [Decapsulation key seed],     [64 B],   [Stored securely by the key holder; full decapsulation key is derived on demand.],
+    [Ciphertext],                 [1088 B], [Transmitted from encapsulator to decapsulator; contains the encrypted shared secret.],
+    [Shared secret],              [32 B],   [Recovered by both parties; used as input to HKDF for session key derivation.],
+  ),
+  caption: [ML-KEM-768 key and ciphertext sizes],
+) <tab-ml-kem-sizes>
+
+The encapsulation operation is $"Encaps"("ek") -> ("ct", "ss")$: given the
+encapsulation key, it draws random coins, computes a ciphertext, and outputs a
+shared secret. Decapsulation is $"Decaps"("dk", "ct") -> "ss"$: given the
+decapsulation key and the ciphertext, it recovers the same shared secret.
+ML-KEM provides IND-CCA2 security (indistinguishability under adaptive chosen
+ciphertext attacks) under the MLWE assumption.
+
+==== ML-DSA-65: Lattice-Based Digital Signatures
+
+ML-DSA (formerly CRYSTALS-Dilithium) is a Fiat-Shamir with Aborts signature
+scheme. Signing generates a candidate response vector and rejects it if it
+leaks information about the signing key, repeating until a valid response is
+found. This abort-and-retry mechanism ensures that the signature statistically
+hides the secret key.
+
+#figure(
+  table(
+    columns: (auto, auto, 1fr),
+    align: (left, left, left),
+    [*Object*], [*Size*], [*Role*],
+    [Signing key seed], [32 B],   [Compact representation; full signing key is derived on demand.],
+    [Verifying key],    [1952 B], [Distributed to verifiers; pre-registered in peer allowlists for PKI mode.],
+    [Signature],        [3309 B], [Carried in-band in the signed key exchange extension.],
+  ),
+  caption: [ML-DSA-65 key and signature sizes],
+) <tab-ml-dsa-sizes>
+
+ML-DSA-65 provides existential unforgeability under chosen message attacks
+(EUF-CMA) under the MLWE and MSIS (Module Short Integer Solution) assumptions,
+both of which are conjectured to be hard for quantum computers.
+
+==== Size Overhead Compared to Classical Algorithms
+
+The quantum-resistant algorithms carry significantly larger key material and
+signatures than their classical counterparts. @tab-pqc-size-comparison
+summarises the size overhead, which directly affects the on-wire message sizes
+for key exchange and authentication:
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, left, left, left),
+    [*Algorithm*], [*Role*], [*Key / encap material*], [*Sig / ciphertext*],
+    [X25519],     [ECDH],      [32 B public key],   [—],
+    [Ed25519],    [Signature], [32 B verifying key], [64 B],
+    [ML-KEM-768], [KEM],       [1184 B encap key],  [1088 B ciphertext],
+    [ML-DSA-65],  [Signature], [1952 B verifying key], [3309 B],
+  ),
+  caption: [Classical versus post-quantum algorithm sizes],
+) <tab-pqc-size-comparison>
+
+For VANET applications, the larger sizes have two consequences. First, a fully
+signed ML-KEM-768 + ML-DSA-65 key exchange message can reach approximately
+6.5 KB (1197 B base + 5266 B signed extension), requiring jumbo-frame support
+in the underlying transport — vigilant-parakeet sets `PACKET_BUFFER_SIZE =
+9000` bytes to accommodate this. Second, the key exchange latency budget must
+account for the larger message traversal time across the wireless link.
+Critically, the overhead applies only to the session setup handshake; subsequent
+encrypted data frames carry only the 28-byte AEAD header (12-byte nonce +
+16-byte tag) regardless of which key exchange algorithm was used.
 
 === Data Confidentiality
 
@@ -579,6 +857,67 @@ analyse the broader trade-offs between pseudonymous certificate-based approaches
 and lightweight alternatives for vehicular security, concluding that lightweight
 DH-based schemes are more practical under the connectivity constraints of
 vehicular networks.
+
+The long operational lifetime of vehicular infrastructure introduces an
+additional dimension: the *harvest now, decrypt later* threat. An adversary
+who records today's encrypted VANET traffic can store it and attempt decryption
+once quantum hardware capable of running Shor's algorithm @shor94 becomes
+available. For traffic whose confidentiality must be preserved beyond the
+expected quantum horizon, key exchange algorithms resistant to quantum attacks
+— such as ML-KEM-768 @fips203 — are necessary even before large-scale quantum
+computers exist.
+
+=== Replay Window Mechanism
+
+The *sliding receive window* is the standard technique for replay protection
+in authenticated packet protocols, used in IPsec AH @ipsec-ah and IKEv2, and
+implemented in vigilant-parakeet's `ReplayWindow` for HeartbeatReply messages.
+The mechanism warrants a brief treatment here because the vigilant-parakeet
+implementation follows the IPsec design closely, including a non-obvious
+extension for window-poisoning prevention.
+
+The core state is a pair `(last_seq: u32, window: u64)`:
+
+- `last_seq` is the highest accepted sequence number seen so far.
+- `window` is a 64-bit bitmask: bit $i$ represents whether sequence number
+  `last_seq - i` has been accepted (`1` = accepted; `0` = not yet seen).
+
+A received packet with sequence number `seq` is processed as follows:
+
++ If `seq > last_seq + 1`: the packet is too far ahead. It is accepted; the
+  bitmask is left-shifted by `seq - last_seq` (clearing bits that shifted
+  off the low end), `last_seq` is updated to `seq`, and bit 0 is set.
+
++ If `seq == last_seq + 1`: the packet is the expected next sequence number.
+  Accept, update `last_seq`, set bit 0.
+
++ If `last_seq - 64 < seq <= last_seq` (within the window): check bit
+  `last_seq - seq`. If the bit is already set, the packet is a duplicate:
+  drop. If the bit is clear, accept and set it.
+
++ If `seq <= last_seq - 64` (beyond the left edge of the window): drop.
+  The packet is too old to verify uniqueness.
+
+The bitmask efficiently represents the acceptance state of the last 64 sequence
+numbers in a single 8-byte integer. IPsec AH specifies a mandatory minimum
+window size of 32 and recommends 64; vigilant-parakeet uses 64.
+
+The *window-poisoning attack* is a subtle vulnerability in naive implementations:
+an attacker forges a HeartbeatReply with `seq = u32::MAX` (or any value far
+above the current `last_seq`). The window shifts by `u32::MAX - last_seq`,
+advancing `last_seq` to `u32::MAX`. All subsequent legitimate replies with
+small sequence numbers (including `last_seq + 1` after wrap) now fall
+entirely outside the window and are dropped as "too old." The RSU's routing
+table stops updating for that sender.
+
+IPsec counters this by rejecting packets whose sequence number is implausibly
+large relative to the expected next sequence number. vigilant-parakeet's defence
+is different and specific to the heartbeat context: the RSU maintains a
+ring buffer of the last $N$ sequence numbers it *sent* in its own Heartbeats.
+Before calling `check_and_update()` on the replay window, the RSU verifies
+that the received `seq` appears in its sent-heartbeat ring. A forged large
+sequence number that was never sent is rejected at this pre-check step,
+before it can poison the window.
 
 === The Reference Security Model
 
@@ -703,3 +1042,73 @@ concurrently on a shared thread pool, enabling dense simulations (dozens of
 nodes) on commodity hardware without per-node OS threads. The async model
 also makes latency injection natural: a sleeping `tokio::time::sleep` future
 correctly models a link delay without blocking any OS thread.
+
+==== Ownership, Borrowing, and Memory Safety
+
+Rust's central innovation is its *ownership* discipline enforced at compile
+time by the borrow checker. Every value has a single owner; when the owner
+goes out of scope, the value is dropped (its destructor runs and memory is
+freed) without a garbage collector. Shared read-only access is provided by
+*shared references* (`&T`), exclusive mutable access by *mutable references*
+(`&mut T`). The borrow checker ensures that at most one mutable reference or
+any number of shared references to a value can exist at any time — the
+"aliasing XOR mutability" invariant.
+
+For network protocol code, this eliminates:
+- *Buffer overflows*: slice indexing is bounds-checked; out-of-bounds access
+  panics or returns an `Option::None` rather than reading adjacent memory.
+- *Use-after-free*: the owner of a resource holds the sole live reference; all
+  borrowed references are statically proven to not outlive the owner.
+- *Data races*: mutable access to shared data requires mutual exclusion
+  (`Mutex<T>`, `RwLock<T>`); the compiler rejects code that shares `&mut T`
+  across threads without synchronisation. The `Send` and `Sync` marker traits
+  enforce this at the type level.
+
+For a VANET simulator where multiple nodes share routing state via
+`Arc<RwLock<RoutingTable>>`, these guarantees mean that deadlocks and data
+races are the programmer's last concern rather than a constant source of
+debugging. The integration test suite runs under address sanitiser in CI
+(`RUSTFLAGS="-Z sanitizer=address"`) with no false positives expected, because
+the borrow checker has already excluded the bugs that sanitisers catch.
+
+==== Async/Await and the Tokio Runtime
+
+Tokio implements a cooperative, multi-threaded async executor. An `async fn`
+in Rust desugars to a state machine implementing the `Future` trait: each
+`.await` point is a yield point at which the task can be suspended and another
+task scheduled. The key properties relevant to vigilant-parakeet are:
+
+*M:N thread model.* Tokio maps many Tokio tasks (logical coroutines) onto a
+smaller, configurable pool of OS threads (default: one per logical CPU). On
+the evaluation machine (24 threads), dozens of node tasks share 24 OS threads
+without per-task OS-thread overhead. The memory overhead of a Tokio task is
+the size of its captured state (typically a few hundred bytes for a simple I/O
+loop) rather than the 2–8 MB stack of an OS thread.
+
+*I/O without blocking.* TUN read operations are wrapped with
+`tokio::io::AsyncReadExt`; when no frame is available, the task yields, freeing
+its OS thread for other tasks. A single OS thread can multiplex reads from
+many TUN interfaces simultaneously.
+
+*Mocked time.* `tokio::time::pause()` stops the Tokio time source;
+`tokio::time::advance(duration)` advances it by the given amount without
+wall-clock delay. This allows integration tests to simulate 12 hours of
+re-keying cycles in milliseconds, and to test latency-measurement logic with
+precise, reproducible timing.
+
+*Work stealing.* Tokio uses a work-stealing scheduler: if one OS thread runs
+out of tasks while another has a backlog, it steals tasks from the other's
+queue. This makes throughput robust to uneven task distribution without manual
+thread assignment.
+
+==== Compile-Time Zero-Cost Abstractions
+
+Rust's generics and trait system enable abstractions that have zero runtime
+cost (no virtual dispatch, no heap allocation) when the concrete type is known
+at compile time. The `Tun` and `Device` traits in `common` are monomorphised:
+in production code, `create<T: Tun>(...)` is instantiated with the real
+`TokioTun` or `tun_tap::Iface` types, and the compiler inlines all trait method
+calls. In test code, the same generic is instantiated with the shim
+implementation backed by Tokio channels. The result is that the test and
+production code paths are structurally identical — the compiler can verify both
+— but generate completely different machine code appropriate to each context.

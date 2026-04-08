@@ -78,6 +78,7 @@
   set figure(gap: 0.8em)
   set figure.caption(separator: [ — ])
   show figure.caption: it => text(size: 9pt, style: "italic", it)
+  show figure.where(kind: table): set block(breakable: true)
 
   // ── Lists ──────────────────────────────────────────────────────────────────
   set list(indent: 1em)

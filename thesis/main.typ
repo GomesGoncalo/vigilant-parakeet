@@ -19,6 +19,7 @@
 
 #include "chapters/01-introduction.typ"
 #include "chapters/02-background.typ"
+#include "chapters/related-work.typ"
 #include "chapters/03-architecture.typ"
 #include "chapters/04-implementation.typ"
 #include "chapters/05-security.typ"

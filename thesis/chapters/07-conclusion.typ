@@ -1,4 +1,4 @@
-// ── Chapter 6 — Conclusion <conclusion> ──────────────────────────────────────
+// ── Chapter 7 — Conclusion <conclusion> ──────────────────────────────────────
 
 = Conclusion <conclusion>
 
@@ -21,10 +21,17 @@ The key contributions were:
   caching for fast failover.
 
 + A *security architecture* providing end-to-end encrypted OBU–server
-  communication via X25519 Diffie-Hellman key exchange, HKDF key derivation,
-  and AEAD payload encryption (AES-256-GCM / AES-128-GCM / ChaCha20-Poly1305),
-  with an optional Ed25519 authentication layer supporting both TOFU and
-  PKI deployment modes.
+  communication via a configurable key exchange (classical X25519 or
+  quantum-resistant ML-KEM-768), HKDF key derivation, and AEAD payload
+  encryption (AES-256-GCM / AES-128-GCM / ChaCha20-Poly1305), with an
+  optional digital signature layer (Ed25519 or ML-DSA-65) supporting TOFU
+  and PKI deployment modes. ML-KEM-768 and ML-DSA-65 (NIST FIPS 203/204)
+  provide post-quantum security against harvest-now-decrypt-later threats.
+
++ A *HeartbeatReply replay-detection mechanism* at RSUs (IPsec AH-style
+  sliding receive window) and a *signed session-revocation protocol* with
+  timestamp-and-nonce replay prevention, hardening the control plane against
+  sequence-number forgery and revocation replay attacks.
 
 + An *in-process test infrastructure* (`Hub`, TUN shim) enabling
   deterministic, reproducible integration tests without root privileges.
@@ -34,9 +41,54 @@ The key contributions were:
 
 + An *empirical evaluation* characterising route convergence time, metric
   sensitivity to packet loss, and the failover latency reduction provided
-  by N-best caching.
+  by N-best caching (see @evaluation for results).
 
-// TODO: fill in key numerical results from Chapter 5
+== Reflection on Design Decisions
+
+Several design decisions proved particularly consequential during development.
+
+*Separation of library and binary.* The decision to implement all node logic
+in library crates (`obu_lib`, `rsu_lib`, `server_lib`) rather than in the
+simulator directly enabled the test suite to run without privileges and without
+network namespaces. Early prototypes embedded node logic directly in the
+simulator binary; extracting it into libraries was the most impactful
+refactoring, reducing the cost of adding each new integration test from "needs
+sudo and namespace setup" to "just write a unit test." The lesson is that the
+testability boundary should be designed into the architecture from the start,
+not retrofitted.
+
+*Userspace channel vs. `tc-netem`.* Using userspace `Channel` objects for link
+emulation rather than kernel `tc-netem` rules was initially chosen for
+simplicity, and turned out to provide an unexpected benefit: cooperation with
+Tokio's mocked time. The mocked-time integration tests —
+`integration_latency_measurement_mocked_time` and `integration_failover_send_error`
+— could not be written against `tc-netem` without real wall-clock waits.
+This validates the choice retrospectively.
+
+*Configurable cipher suite.* Making the key exchange algorithm (X25519 vs.
+ML-KEM-768), the signing algorithm (Ed25519 vs. ML-DSA-65), and the AEAD
+cipher independently configurable at the YAML level, rather than hardcoding
+a single algorithm pair, was more work upfront but essential for the
+comparative evaluation of classical and post-quantum configurations. A single
+`CryptoConfig` struct threading through all cryptographic operations made
+this extensible: adding a new algorithm variant requires a new enum arm and
+its implementation, without touching the handshake or encryption code paths.
+
+*The hysteresis threshold.* The 10% hysteresis band was chosen empirically:
+at 5%, simulated links with moderate jitter triggered route oscillation during
+evaluation; at 20%, genuinely better paths took too long to be adopted. The
+threshold is not configurable at the YAML level (an intentional simplification),
+but the routing codebase is structured so that changing it requires modifying
+a single constant. In a production system, the threshold would ideally be
+derived from the observed jitter distribution of each link.
+
+*TOFU as the default trust mode.* Implementing TOFU as the default (with PKI
+mode available but opt-in) reflects the practical deployment reality that key
+pre-distribution is operationally expensive. Most research use cases do not
+require the security guarantees of mutual PKI authentication; they require
+protection against passive eavesdroppers and accidental misconfigurations. TOFU
+provides this at zero operational cost. The PKI mode is available for scenarios
+where the full security property is required.
 
 == Limitations
 

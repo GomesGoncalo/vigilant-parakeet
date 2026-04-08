@@ -39,10 +39,10 @@ flowchart TB
 
 ### `messages`
 Wire-level encoders/decoders (all implement `TryFrom<&[u8]>` + `Into<Vec<u8>>`):
-- `Heartbeat` — periodic beacon from RSU (MAC, seq_id, hop_count)
+- `Heartbeat` — periodic beacon from RSU: `duration(16B) + id(4B) + hops(4B) + source(6B)` = 30 bytes BE
 - `HeartbeatReply` — reply from OBU/relay back toward RSU
 - `Data::{Upstream, Downstream}` — payload wrappers
-- `KeyExchangeInit` / `KeyExchangeReply` — 42-byte DH handshake messages
+- `KeyExchangeInit` / `KeyExchangeReply` — variable-length DH/KEM handshake messages (45 bytes unsigned for X25519; 1197/1101 bytes for ML-KEM-768)
 - `PacketType` / `Message` — outer container with type discriminant
 
 ### `crypto`
