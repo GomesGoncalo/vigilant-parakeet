@@ -379,6 +379,7 @@
     window.vpSwitchTab = function(name) {
         if (name === 'map') {
             setTimeout(() => {
+                if (window.__vp_ensure_map) window.__vp_ensure_map();
                 if (window.__vp_leaflet_map) {
                     try { window.__vp_leaflet_map.invalidateSize(); } catch(e){}
                 }
@@ -493,6 +494,7 @@
             return leafletMap;
         }
 
+        window.__vp_ensure_map = ensureMap;
         document.addEventListener('DOMContentLoaded', () => { ensureMap(); });
 
         // ── Main render function ───────────────────────────────────────────────────
@@ -602,6 +604,7 @@
         }
 
         async function _pollMap() {
+            ensureMap();  // always initialize the map even when no positions are available yet
             try {
                 const [posRes, niRes] = await Promise.all([
                     fetch('http://127.0.0.1:3030/positions'),

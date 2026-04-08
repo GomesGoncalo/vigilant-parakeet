@@ -478,7 +478,25 @@ impl Simulator {
                 (pos, oq, Some(mgr))
             }
             Err(e) => {
-                tracing::error!(error = %e, "Failed to initialise MobilityManager — mobility disabled");
+                tracing::error!(
+                    error = %e,
+                    "┌─────────────────────────────────────────────────────────────────┐"
+                );
+                tracing::error!(
+                    "│  MobilityManager failed to initialise — /positions will be empty │"
+                );
+                tracing::error!(
+                    "│  Hint: ensure internet access on first run so OSM road data can  │"
+                );
+                tracing::error!(
+                    "│  be fetched, or place a pre-built osm_cache.json in the working  │"
+                );
+                tracing::error!(
+                    "│  directory.  Mobility is now DISABLED for this session.          │"
+                );
+                tracing::error!(
+                    "└─────────────────────────────────────────────────────────────────┘"
+                );
                 (
                     Arc::new(RwLock::new(HashMap::new())),
                     Arc::new(tokio::sync::Mutex::new(HashMap::new())),

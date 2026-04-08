@@ -97,19 +97,27 @@ struct OverpassElement {
     tags: Option<serde_json::Value>,
 }
 
+const OVERPASS_MIRRORS: &[&str] = &[
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.openstreetmap.ru/api/interpreter",
+];
+
 async fn query_overpass(bbox: BoundingBox) -> Result<(Vec<OsmNode>, Vec<OsmWay>)> {
     let query = format!(
-        "[out:json][timeout:60];\n\
-         (\n  \
-           way[\"highway\"][\"highway\"!~\"footway|cycleway|path|pedestrian|service|track\"]({min_lat},{min_lon},{max_lat},{max_lon});\n\
-         );\n\
-         (._;>);\n\
-         out body;",
+        r#"[out:json][timeout:60];
+(
+  way["highway"]["highway"!~"footway|cycleway|path|pedestrian|service|track"]["access"!~"private|no"]["indoor"!="yes"]["tunnel"!="building_passage"]({min_lat},{min_lon},{max_lat},{max_lon});
+);
+(._;>);
+out body;"#,
         min_lat = bbox.min_lat,
         min_lon = bbox.min_lon,
         max_lat = bbox.max_lat,
         max_lon = bbox.max_lon,
     );
+
+    tracing::debug!(query, "Overpass query");
 
     let client = reqwest::Client::builder()
         .user_agent("vigilant-parakeet/simulator (OSM mobility)")
@@ -117,67 +125,88 @@ async fn query_overpass(bbox: BoundingBox) -> Result<(Vec<OsmNode>, Vec<OsmWay>)
         .build()
         .context("building HTTP client")?;
 
-    let response = client
-        .post("https://overpass-api.de/api/interpreter")
-        .form(&[("data", &query)])
-        .send()
-        .await
-        .context("sending Overpass API request")?;
+    let mut last_err = anyhow::anyhow!("no Overpass mirrors configured");
+    for &mirror in OVERPASS_MIRRORS {
+        tracing::info!(mirror, "Trying Overpass mirror");
+        let result = client
+            .post(mirror)
+            .form(&[("data", &query)])
+            .send()
+            .await;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Overpass API returned {}: {}", status, body);
-    }
-
-    let overpass: OverpassResponse = response
-        .json()
-        .await
-        .context("parsing Overpass API response")?;
-
-    tracing::info!(
-        elements = overpass.elements.len(),
-        "Overpass API response received"
-    );
-
-    let mut nodes = Vec::new();
-    let mut ways = Vec::new();
-
-    for elem in overpass.elements {
-        match elem.element_type.as_str() {
-            "node" => {
-                if let (Some(lat), Some(lon)) = (elem.lat, elem.lon) {
-                    nodes.push(OsmNode {
-                        id: elem.id,
-                        lat,
-                        lon,
-                    });
-                }
+        let response = match result {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(mirror, error = %e, "Overpass mirror unreachable, trying next");
+                last_err = anyhow::anyhow!("{mirror}: {e}");
+                continue;
             }
-            "way" => {
-                if let Some(node_ids) = elem.nodes {
-                    if node_ids.len() >= 2 {
-                        let oneway = elem
-                            .tags
-                            .as_ref()
-                            .and_then(|t| t.get("oneway"))
-                            .and_then(|v| v.as_str())
-                            .map(|s| s == "yes" || s == "1" || s == "true")
-                            .unwrap_or(false);
-                        ways.push(OsmWay {
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::warn!(mirror, %status, body, "Overpass mirror returned error, trying next");
+            last_err = anyhow::anyhow!("{mirror}: HTTP {status}: {body}");
+            continue;
+        }
+
+        // Success — parse and return
+        let overpass: OverpassResponse = response
+            .json()
+            .await
+            .context("parsing Overpass API response")?;
+
+        tracing::info!(
+            mirror,
+            elements = overpass.elements.len(),
+            "Overpass API response received"
+        );
+
+        let mut nodes = Vec::new();
+        let mut ways = Vec::new();
+
+        for elem in overpass.elements {
+            match elem.element_type.as_str() {
+                "node" => {
+                    if let (Some(lat), Some(lon)) = (elem.lat, elem.lon) {
+                        nodes.push(OsmNode {
                             id: elem.id,
-                            node_ids,
-                            oneway,
+                            lat,
+                            lon,
                         });
                     }
                 }
+                "way" => {
+                    if let Some(node_ids) = elem.nodes {
+                        if node_ids.len() >= 2 {
+                            let oneway = elem
+                                .tags
+                                .as_ref()
+                                .and_then(|t| t.get("oneway"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s == "yes" || s == "1" || s == "true")
+                                .unwrap_or(false);
+                            ways.push(OsmWay {
+                                id: elem.id,
+                                node_ids,
+                                oneway,
+                            });
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
+
+        tracing::info!(nodes = nodes.len(), ways = ways.len(), "OSM data parsed");
+        return Ok((nodes, ways));
     }
 
-    tracing::info!(nodes = nodes.len(), ways = ways.len(), "OSM data parsed");
-    Ok((nodes, ways))
+    anyhow::bail!(
+        "All Overpass mirrors failed — check internet connectivity or place osm_cache.json \
+         manually. Last error: {last_err}"
+    );
 }
 
 #[cfg(test)]
