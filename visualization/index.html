@@ -598,7 +598,10 @@
 
         async function _pollMap() {
             try {
-                const posRes = await fetch('http://127.0.0.1:3030/positions');
+                const [posRes, niRes] = await Promise.all([
+                    fetch('http://127.0.0.1:3030/positions'),
+                    fetch('http://127.0.0.1:3030/node_info').catch(() => null)
+                ]);
                 if (!posRes.ok) return;
                 const positions = await posRes.json();
                 if (!positions || !Object.keys(positions).length) return;
@@ -610,17 +613,17 @@
                 }
                 _lastNodeTypes = node_types;
 
-                // Build edges from routing upstream info (traffic flow direction only)
-                // Each node points to its upstream router — no mesh clutter
-                const edges = [];
-                if (window.__vp_last_node_info) {
-                    for (const [name, info] of Object.entries(window.__vp_last_node_info)) {
+                // Build routing-flow edges: OBU → upstream node only
+                if (niRes && niRes.ok) {
+                    const nodeInfo = await niRes.json().catch(() => ({}));
+                    const edges = [];
+                    for (const [name, info] of Object.entries(nodeInfo || {})) {
                         if (info && info.upstream && info.upstream.node_name) {
                             edges.push({ data: { source: name, target: info.upstream.node_name } });
                         }
                     }
+                    if (edges.length) _lastEdges = edges;
                 }
-                if (edges.length) _lastEdges = edges;
 
                 window.__vp_render_map(positions, _lastEdges, _lastNodeTypes);
             } catch(e) {
