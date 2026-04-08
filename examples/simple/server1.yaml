@@ -4,3 +4,4 @@ cloud_ip: 172.16.0.1
 port: 8080
 enable_encryption: true
 enable_dh_signatures: false
+dh_group: ml-kem-768
