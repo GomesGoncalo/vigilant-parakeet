@@ -27,6 +27,7 @@ use node_lib::messages::{
     message::Message,
     packet_type::PacketType,
 };
+use node_lib::control::client_cache::ClientCache;
 use routing::Routing;
 use session::Session;
 use std::collections::VecDeque;
