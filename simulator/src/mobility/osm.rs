@@ -109,7 +109,7 @@ async fn query_overpass(bbox: BoundingBox) -> Result<(Vec<OsmNode>, Vec<OsmWay>)
 (
   way["highway"]["highway"!~"footway|cycleway|path|pedestrian|service|track"]["access"!~"private|no"]["indoor"!="yes"]["tunnel"!="building_passage"]({min_lat},{min_lon},{max_lat},{max_lon});
 );
-(._;>);
+(._;>;);
 out body;"#,
         min_lat = bbox.min_lat,
         min_lon = bbox.min_lon,
