@@ -411,8 +411,22 @@ impl Obu {
 
                     // Wait for either the normal rekey interval or an early wake-up
                     // triggered by receiving a SessionTerminated notice.
+                    // When a DH exchange is in-flight, use a short sleep equal to
+                    // reply_timeout_ms so we wake promptly to detect the timeout and
+                    // retransmit, rather than waiting the full 12-hour rekey interval
+                    // before retrying a failed initial exchange.
+                    let exchange_pending = obu
+                        .dh_key_store
+                        .read()
+                        .map(|g| g.has_pending(server_virtual_mac()))
+                        .unwrap_or(false);
+                    let sleep_duration = if exchange_pending {
+                        Duration::from_millis(reply_timeout_ms)
+                    } else {
+                        rekey_interval
+                    };
                     tokio::select! {
-                        _ = tokio::time::sleep(rekey_interval) => {}
+                        _ = tokio::time::sleep(sleep_duration) => {}
                         _ = rekey_notify.notified() => {
                             tracing::debug!("DH rekey task woken early by SessionTerminated");
                         }
