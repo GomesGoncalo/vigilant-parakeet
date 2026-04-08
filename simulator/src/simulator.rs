@@ -376,8 +376,8 @@ impl Simulator {
             })
             .collect();
 
-        for (from, from_dev, _) in &node_list {
-            for (to, _to_dev, to_vanet) in &node_list {
+        for (from, _from_dev, _) in &node_list {
+            for (to, to_dev, to_vanet) in &node_list {
                 if from == to {
                     continue;
                 }
@@ -387,9 +387,12 @@ impl Simulator {
                 let Some(to_tun) = to_vanet.as_ref() else {
                     continue;
                 };
+                // MAC filter = destination node's MAC: only frames addressed to `to`
+                // (or broadcast) will pass through, matching the convention used in
+                // parse_topology where channels[from][to].mac = to's MAC.
                 let ch = Channel::new(
                     default_params,
-                    from_dev.mac_address(),
+                    to_dev.mac_address(),
                     to_tun.clone(),
                     from,
                     to,
