@@ -320,23 +320,178 @@
         })();
         </script>
     <style>
-        html, body, #graph {
+        html, body {
             height: 100%;
             margin: 0;
             padding: 0;
             box-sizing: border-box;
+            background: #111;
+            color: #eee;
+            font-family: sans-serif;
+        }
+        .vp-tabs {
+            display: flex;
+            border-bottom: 2px solid #333;
+            background: #1a1a1a;
+        }
+        .vp-tab-btn {
+            padding: 8px 22px;
+            cursor: pointer;
+            background: transparent;
+            color: #aaa;
+            border: none;
+            border-bottom: 2px solid transparent;
+            font-size: 14px;
+            margin-bottom: -2px;
+            transition: color 0.15s;
+        }
+        .vp-tab-btn.active {
+            color: #fff;
+            border-bottom: 2px solid #4af;
+        }
+        #vp-panel-graph {
+            width: 100%;
+            height: calc(100vh - 38px);
+        }
+        #vp-panel-map {
+            width: 100%;
+            height: calc(100vh - 38px);
         }
         #graph {
             width: 100%;
+            height: 100%;
             min-height: 480px;
         }
+        #map {
+            width: 100%;
+            height: 100%;
+        }
     </style>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
-    <div id="graph"></div>
-
     <script>
-    // update_graph(nodes, channels, node_info, stats)
+    // Tab switcher (called from Yew-rendered buttons via onclick)
+    window.vpSwitchTab = function(name) {
+        document.getElementById('vp-panel-graph').style.display = (name === 'graph') ? 'block' : 'none';
+        document.getElementById('vp-panel-map').style.display = (name === 'map') ? 'block' : 'none';
+        if (name === 'map' && window.__vp_leaflet_map) {
+            setTimeout(() => { try { window.__vp_leaflet_map.invalidateSize(); } catch(e){} }, 50);
+        }
+    };
+
+    // Leaflet map interop
+    (function() {
+        let leafletMap = null;
+        let nodeMarkers = {};   // name -> L.circleMarker
+        let labelMarkers = {};  // name -> L.marker (label overlay)
+        let edgeLines = {};     // "from|to" -> L.polyline
+
+        function ensureMap() {
+            if (leafletMap) return leafletMap;
+            const container = document.getElementById('map');
+            if (!container || container.offsetHeight === 0) return null;
+            leafletMap = L.map(container, { preferCanvas: true }).setView([51.505, -0.09], 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+                maxZoom: 19
+            }).addTo(leafletMap);
+            window.__vp_leaflet_map = leafletMap;
+            return leafletMap;
+        }
+
+        // positions: { name: { lat, lon, speed, bearing }, ... }
+        // edges: [ { from, to }, ... ]  (Cytoscape edge objects with data.source / data.target)
+        // node_types: { name: "Rsu"|"Obu"|"Server", ... }
+        window.__vp_render_map = function(positions, edges, node_types) {
+            const map = ensureMap();
+            if (!map) {
+                // Map container may not be visible yet; retry shortly
+                setTimeout(() => window.__vp_render_map(positions, edges, node_types), 300);
+                return;
+            }
+
+            const names = Object.keys(positions || {});
+            if (names.length === 0) return;
+
+            // Update or add node markers
+            const seenNodes = new Set();
+            for (const name of names) {
+                const p = positions[name];
+                if (!p || typeof p.lat !== 'number' || typeof p.lon !== 'number') continue;
+                seenNodes.add(name);
+
+                const nt = (node_types && node_types[name]) ? node_types[name].toLowerCase() : 'obu';
+                const isRsu = nt === 'rsu';
+                const isServer = nt === 'server';
+                const color = isRsu ? '#e84' : isServer ? '#a4f' : '#4af';
+                const radius = isRsu ? 10 : isServer ? 9 : 7;
+
+                const speedStr = p.speed > 0.1 ? ` · ${p.speed.toFixed(1)} m/s` : '';
+                const bearingStr = (p.bearing != null && p.speed > 0.1)
+                    ? ` ↑${Math.round(p.bearing)}°` : '';
+                const tooltip = `<b>${name}</b> (${nt.toUpperCase()})<br>` +
+                    `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}${speedStr}${bearingStr}`;
+
+                if (nodeMarkers[name]) {
+                    nodeMarkers[name].setLatLng([p.lat, p.lon]);
+                    nodeMarkers[name].setTooltipContent(tooltip);
+                    try { nodeMarkers[name].setStyle({ color, fillColor: color }); } catch(e){}
+                    if (labelMarkers[name]) labelMarkers[name].setLatLng([p.lat, p.lon]);
+                } else {
+                    const marker = L.circleMarker([p.lat, p.lon], {
+                        radius, color, fillColor: color, fillOpacity: 0.85, weight: 2
+                    }).addTo(map);
+                    marker.bindTooltip(tooltip, { permanent: false, direction: 'top', sticky: true });
+                    nodeMarkers[name] = marker;
+
+                    const labelIcon = L.divIcon({
+                        className: '',
+                        html: `<span style="background:rgba(0,0,0,0.6);color:#fff;padding:1px 5px;border-radius:3px;font-size:11px;white-space:nowrap;pointer-events:none">${name}</span>`,
+                        iconAnchor: [-(radius + 4), 5]
+                    });
+                    labelMarkers[name] = L.marker([p.lat, p.lon], { icon: labelIcon, interactive: false }).addTo(map);
+                }
+            }
+
+            // Draw / update edges
+            for (const edge of (edges || [])) {
+                const from = edge && edge.data ? edge.data.source : edge.from;
+                const to = edge && edge.data ? edge.data.target : edge.to;
+                if (!from || !to) continue;
+                const key = from + '|' + to;
+                const fp = positions[from];
+                const tp = positions[to];
+                if (!fp || !tp) continue;
+                if (edgeLines[key]) {
+                    edgeLines[key].setLatLngs([[fp.lat, fp.lon], [tp.lat, tp.lon]]);
+                } else {
+                    edgeLines[key] = L.polyline([[fp.lat, fp.lon], [tp.lat, tp.lon]], {
+                        color: '#666', weight: 1.5, opacity: 0.65, dashArray: '5 4'
+                    }).addTo(map);
+                }
+            }
+
+            // Fit bounds on first data arrival
+            if (!window.__vp_map_fitted && names.length > 1) {
+                try {
+                    const lls = names
+                        .map(n => positions[n])
+                        .filter(p => p && !isNaN(p.lat))
+                        .map(p => [p.lat, p.lon]);
+                    if (lls.length > 1) {
+                        map.fitBounds(lls, { padding: [40, 40] });
+                        window.__vp_map_fitted = true;
+                    }
+                } catch(e) {}
+            }
+        };
+    })();
+    </script>
+    <script>
     // nodes: array of node names
     // node_info: map node -> { node_type: "Rsu"|"Obu", upstream: { node_name: <string>, hops, mac } }
     window.update_graph = function(nodes, channels, node_info, stats) {
