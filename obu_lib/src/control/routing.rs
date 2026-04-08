@@ -105,8 +105,13 @@ mod regression_tests;
 #[path = "routing/selection_tests.rs"]
 mod selection_tests;
 
-#[derive(Debug)]
-#[allow(clippy::type_complexity)]
+/// Per-neighbor RSSI table (MAC → received signal strength in dBm).
+///
+/// Populated by the simulator fading task (distance-based) or a real radio
+/// driver (hardware-reported RSSI). When present, RSU selection uses RSSI as
+/// the primary quality metric instead of the heartbeat reception-ratio.
+pub type RssiTable = std::sync::Arc<std::sync::RwLock<HashMap<MacAddress, f32>>>;
+
 pub struct Routing {
     args: ObuArgs,
     boot: Instant,
@@ -114,6 +119,8 @@ pub struct Routing {
     cache: RoutingCache,
     // Track distinct neighbors that forwarded heartbeats for a given source (e.g., RSU)
     source_neighbors: HashMap<MacAddress, HashSet<MacAddress>>,
+    /// Live RSSI readings, injected by the simulator or a real radio driver.
+    rssi_table: Option<RssiTable>,
 }
 
 impl Routing {
@@ -127,6 +134,7 @@ impl Routing {
             routes: HashMap::default(),
             cache: RoutingCache::new(args.obu_params.cached_candidates),
             source_neighbors: HashMap::default(),
+            rssi_table: None,
         })
     }
 
@@ -143,6 +151,15 @@ impl Routing {
     /// Return the ordered cached candidates (primary first) when present.
     pub fn get_cached_candidates(&self) -> Option<Vec<MacAddress>> {
         self.cache.get_cached_candidates()
+    }
+
+    /// Attach a live RSSI table.
+    ///
+    /// Once set, `select_and_cache_upstream` uses RSSI (dBm) as the primary
+    /// RSU selection metric: a higher value means stronger signal / closer RSU.
+    /// A 3 dB hysteresis prevents unnecessary handoffs between equally-good RSUs.
+    pub fn set_rssi_table(&mut self, table: RssiTable) {
+        self.rssi_table = Some(table);
     }
 
     /// Rotate to the next cached candidate (promote the next candidate to primary).
@@ -1002,10 +1019,10 @@ impl Routing {
     /// Select the best route to an RSU and cache N-best candidates for failover.
     ///
     /// This function:
-    /// 1. Applies a reception-quality guard: if the arriving RSU is a *different*
-    ///    RSU than the currently cached one and is not at least 30 % better in
-    ///    reception quality, the cache is left unchanged (prevents flapping when
-    ///    multiple RSUs are within range).
+    /// 1. Applies a signal-quality guard to prevent unnecessary RSU handoffs:
+    ///    - With RSSI table: switch only when incoming RSU is >3 dB stronger
+    ///      (≈40% closer), or the cached RSU has gone stale (RSSI not available).
+    ///    - Without RSSI table: falls back to reception-quality ratio (≥30% better).
     /// 2. Calls `get_route_to()` to find the best route with hysteresis
     /// 3. Caches the selected upstream as primary
     /// 4. Builds an ordered list of N-best candidates for fast failover
@@ -1013,28 +1030,44 @@ impl Routing {
     ///
     /// Returns the selected route, or None if no route exists.
     pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
-        // --- Reception-quality guard -------------------------------------------
+        // --- Signal-quality guard -------------------------------------------
         // The latency-based path in get_route_to never fires for RSU targets
         // (RSUs do not send heartbeat replies, so they never appear in the
-        // downstream observation map).  Without this guard, every incoming RSU
+        // downstream observation map).  Without this guard every incoming RSU
         // heartbeat would overwrite the cache with that RSU — causing rapid
         // flapping between all hearable RSUs.
         //
-        // Instead: only replace the cached RSU when the arriving one is
-        // meaningfully better (≥30 % higher reception quality), or when the
-        // cached RSU has gone stale (quality == 0).
+        // When an RSSI table is available (simulator or real radio driver) we use
+        // signal strength in dBm as the primary quality metric: a closer RSU has
+        // a higher (less negative) RSSI.  We require the incoming RSU to be at
+        // least 3 dB stronger before switching — this corresponds to roughly 40%
+        // closer distance and is below the threshold of perceptible link degradation.
+        //
+        // Without RSSI we fall back to heartbeat reception ratio with a 30% margin.
         if let Some(cached_source) = self.cache.get_cached_source() {
             if cached_source != mac {
-                let q_incoming = self.rsu_reception_quality(mac);
-                let q_cached = self.rsu_reception_quality(cached_source);
-                // Keep cached unless the new RSU is clearly better.
-                // `q_cached > 0.0` — if cached has gone stale we fall through
-                // and let get_route_to pick whatever is reachable.
-                if q_cached > 0.0 && q_incoming <= q_cached * 1.3 {
+                let keep_cached = if let Some(ref rssi_tbl) = self.rssi_table {
+                    let tbl = rssi_tbl.read().expect("rssi table lock");
+                    let rssi_incoming = *tbl.get(&mac).unwrap_or(&-100.0_f32);
+                    let rssi_cached = *tbl.get(&cached_source).unwrap_or(&-100.0_f32);
+                    // -95 dBm is near the edge of usable range (~3 km free-space at
+                    // 5.9 GHz with 23 dBm TX).  Below that the cached RSU is effectively
+                    // gone, so we let the guard fall through.
+                    rssi_cached > -95.0 && rssi_incoming <= rssi_cached + 3.0
+                } else {
+                    let q_incoming = self.rsu_reception_quality(mac);
+                    let q_cached = self.rsu_reception_quality(cached_source);
+                    // Keep cached unless the new RSU is clearly better.
+                    // `q_cached > 0.0` — if cached has gone stale we fall through
+                    // and let get_route_to pick whatever is reachable.
+                    q_cached > 0.0 && q_incoming <= q_cached * 1.3
+                };
+
+                if keep_cached {
                     if let Some(cached_up) = self.cache.get_cached_upstream() {
                         return Some(Route {
                             mac: cached_up,
-                            hops: 1,   // approximate; callers ignore the return value
+                            hops: 1, // approximate; callers ignore the return value
                             latency: None,
                         });
                     }

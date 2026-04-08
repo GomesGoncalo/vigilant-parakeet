@@ -184,6 +184,19 @@ impl Obu {
         Ok(obu)
     }
 
+    /// Attach a live RSSI table for proximity-based RSU selection.
+    ///
+    /// The table maps neighbor MAC addresses to their received signal strength in dBm.
+    /// It is populated by the simulator fading task (from computed distances) or by a
+    /// real radio driver.  Once attached, `select_and_cache_upstream` uses RSSI as the
+    /// primary RSU selection metric with a 3 dB hysteresis.
+    pub fn set_rssi_table(&self, table: routing::RssiTable) {
+        self.routing
+            .write()
+            .expect("routing table write lock poisoned")
+            .set_rssi_table(table);
+    }
+
     /// Return the cached upstream MAC if present.
     pub fn cached_upstream_mac(&self) -> Option<mac_address::MacAddress> {
         self.routing

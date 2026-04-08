@@ -73,7 +73,7 @@ pub enum SimNode {
 }
 
 impl SimNode {
-    #[cfg(feature = "webview")]
+    #[cfg(any(feature = "webview", feature = "mobility"))]
     pub fn as_any(&self) -> &dyn std::any::Any {
         match self {
             SimNode::Obu(o) => o.as_any(),
@@ -113,6 +113,12 @@ pub struct Simulator {
     /// Nakagami-m fading config — present when fading is enabled.
     #[cfg(feature = "mobility")]
     nakagami_config: Option<NakagamiConfig>,
+    /// Per-OBU RSSI tables keyed by node name.
+    ///
+    /// The fading task writes `neighbor_mac → rssi_dbm` for each OBU every
+    /// `update_ms`.  The OBU routing layer reads the table to prefer nearby RSUs.
+    #[cfg(feature = "mobility")]
+    rssi_tables: HashMap<String, obu_lib::RssiTable>,
 }
 
 type CallbackReturn = Result<(Arc<Device>, crate::node_interfaces::NodeInterfaces, SimNode)>;
@@ -191,23 +197,36 @@ impl Simulator {
         let no_filter_mac = mac_address::MacAddress::new([0u8; 6]);
 
         // Helper closure — create bidirectional cloud channel if not already present.
-        let add_cloud_channel =
-            |channels: &mut HashMap<String, HashMap<String, Arc<Channel>>>,
-             from_node: &str,
-             to_node: &str,
-             params: common::channel_parameters::ChannelParameters,
-             from_cloud: &Arc<common::tun::Tun>,
-             to_cloud: &Arc<common::tun::Tun>| {
-                let from_key = format!("{}:cloud", from_node);
-                let to_key = format!("{}:cloud", to_node);
-                channels.entry(from_key.clone()).or_default().entry(to_key.clone()).or_insert_with(|| {
+        let add_cloud_channel = |channels: &mut HashMap<String, HashMap<String, Arc<Channel>>>,
+                                 from_node: &str,
+                                 to_node: &str,
+                                 params: common::channel_parameters::ChannelParameters,
+                                 from_cloud: &Arc<common::tun::Tun>,
+                                 to_cloud: &Arc<common::tun::Tun>| {
+            let from_key = format!("{}:cloud", from_node);
+            let to_key = format!("{}:cloud", to_node);
+            channels
+                .entry(from_key.clone())
+                .or_default()
+                .entry(to_key.clone())
+                .or_insert_with(|| {
                     Channel::new(params, no_filter_mac, to_cloud.clone(), &from_key, &to_key)
                 });
-                channels.entry(to_key.clone()).or_default().entry(from_key.clone()).or_insert_with(|| {
-                    Channel::new(params, no_filter_mac, from_cloud.clone(), &to_key, &from_key)
+            channels
+                .entry(to_key.clone())
+                .or_default()
+                .entry(from_key.clone())
+                .or_insert_with(|| {
+                    Channel::new(
+                        params,
+                        no_filter_mac,
+                        from_cloud.clone(),
+                        &to_key,
+                        &from_key,
+                    )
                 });
-                tracing::info!(from = %from_node, to = %to_node, "Created bidirectional cloud channel");
-            };
+            tracing::info!(from = %from_node, to = %to_node, "Created bidirectional cloud channel");
+        };
 
         // Explicit topology entries (custom params).
         for (from_node, connections) in &topology_config.connections {
@@ -262,11 +281,14 @@ impl Simulator {
             for srv in &server_names {
                 let from_key = format!("{}:cloud", rsu);
                 let to_key = format!("{}:cloud", srv);
-                if channels.get(&from_key).and_then(|m| m.get(&to_key)).is_some() {
+                if channels
+                    .get(&from_key)
+                    .and_then(|m| m.get(&to_key))
+                    .is_some()
+                {
                     continue; // already added via explicit topology
                 }
-                let (Some(rsu_entry), Some(srv_entry)) =
-                    (node_map.get(rsu), node_map.get(srv))
+                let (Some(rsu_entry), Some(srv_entry)) = (node_map.get(rsu), node_map.get(srv))
                 else {
                     continue;
                 };
@@ -275,14 +297,7 @@ impl Simulator {
                 else {
                     continue;
                 };
-                add_cloud_channel(
-                    &mut channels,
-                    rsu,
-                    srv,
-                    zero_params,
-                    rsu_cloud,
-                    srv_cloud,
-                );
+                add_cloud_channel(&mut channels, rsu, srv, zero_params, rsu_cloud, srv_cloud);
             }
         }
 
@@ -324,6 +339,25 @@ impl Simulator {
         let (positions, override_queue, mobility_option) =
             Self::maybe_init_mobility(&args.config_file, &nodes).await;
 
+        // Build per-OBU RSSI tables and wire them into each OBU's routing layer.
+        // The fading task will populate them; the OBU routing reads them on every
+        // RSU heartbeat to choose the nearest RSU.
+        #[cfg(feature = "mobility")]
+        let rssi_tables: HashMap<String, obu_lib::RssiTable> = {
+            let mut tables = HashMap::new();
+            for (name, (_, _, sim_node)) in &nodes {
+                if let SimNode::Obu(obu_dyn) = sim_node {
+                    if let Some(obu) = obu_dyn.as_any().downcast_ref::<obu_lib::Obu>() {
+                        let table: obu_lib::RssiTable =
+                            Arc::new(std::sync::RwLock::new(HashMap::new()));
+                        obu.set_rssi_table(table.clone());
+                        tables.insert(name.clone(), table);
+                    }
+                }
+            }
+            tables
+        };
+
         Ok(Self {
             namespaces,
             channels,
@@ -338,6 +372,8 @@ impl Simulator {
             override_queue,
             #[cfg(feature = "mobility")]
             mobility_manager: tokio::sync::Mutex::new(mobility_option),
+            #[cfg(feature = "mobility")]
+            rssi_tables,
         })
     }
 
@@ -536,6 +572,15 @@ impl Simulator {
                 })
                 .collect();
 
+            // Build name → MAC mapping so the fading task can write RSSI keyed by MAC.
+            let name_to_mac: HashMap<String, mac_address::MacAddress> = self
+                .nodes
+                .iter()
+                .map(|(name, (device, _, _))| (name.clone(), device.mac_address()))
+                .collect();
+
+            let rssi_tables = self.rssi_tables.clone();
+
             let interval = Duration::from_millis(cfg.update_ms);
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(interval);
@@ -547,9 +592,34 @@ impl Simulator {
                             let d = crate::fading::haversine_m(fp.lat, fp.lon, tp.lat, tp.lon);
                             let loss = crate::fading::nakagami_loss(d, &cfg);
                             // Scale latency by distance so routing prefers closer RSUs.
-                            let latency_ms =
-                                ((d / 100.0) * cfg.latency_ms_per_100m).round() as u64;
+                            let latency_ms = ((d / 100.0) * cfg.latency_ms_per_100m).round() as u64;
                             channel.set_fading_params(loss, latency_ms);
+
+                            // Update per-OBU RSSI table so the routing layer can pick
+                            // the nearest RSU using signal strength.
+                            // Free-space model at 5.9 GHz (ITS-G5) with 23 dBm TX power:
+                            //   RSSI ≈ -40 - 20·log₁₀(d_m)
+                            // This gives -80 dBm at 100 m, -100 dBm at 1000 m.
+                            let rssi_dbm = (-40.0_f64 - 20.0 * d.max(1.0).log10()) as f32;
+
+                            // If `from` is an OBU, record the RSSI of the `to` node
+                            // (which may be an RSU or another OBU).
+                            if let (Some(to_mac), Some(tbl)) =
+                                (name_to_mac.get(to), rssi_tables.get(from))
+                            {
+                                if let Ok(mut w) = tbl.write() {
+                                    w.insert(*to_mac, rssi_dbm);
+                                }
+                            }
+                            // And the reverse direction: if `to` is an OBU, record
+                            // the RSSI of `from`.
+                            if let (Some(from_mac), Some(tbl)) =
+                                (name_to_mac.get(from), rssi_tables.get(to))
+                            {
+                                if let Ok(mut w) = tbl.write() {
+                                    w.insert(*from_mac, rssi_dbm);
+                                }
+                            }
                         }
                     }
                 }

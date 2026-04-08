@@ -128,11 +128,7 @@ out body;"#,
     let mut last_err = anyhow::anyhow!("no Overpass mirrors configured");
     for &mirror in OVERPASS_MIRRORS {
         tracing::info!(mirror, "Trying Overpass mirror");
-        let result = client
-            .post(mirror)
-            .form(&[("data", &query)])
-            .send()
-            .await;
+        let result = client.post(mirror).form(&[("data", &query)]).send().await;
 
         let response = match result {
             Ok(r) => r,

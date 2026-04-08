@@ -10,6 +10,7 @@ pub mod control;
 
 mod session;
 
+pub use control::routing::RssiTable;
 pub use control::Obu;
 
 #[cfg(any(test, feature = "test_helpers"))]
