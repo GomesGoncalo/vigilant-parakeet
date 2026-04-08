@@ -9,7 +9,7 @@ pub struct NextHopStats {
     pub count: u32,
 }
 
-/// Given a map of next-hop -> NextHopStats, pick the best next hop by score = min + avg.
+/// Given a map of next-hop -> NextHopStats, pick the best next hop by score = avg.
 /// Returns (MacAddress, avg_us) or None when map is empty.
 pub fn pick_best_next_hop(
     per_next: HashMap<MacAddress, NextHopStats>,
@@ -22,11 +22,7 @@ pub fn pick_best_next_hop(
         } else {
             u128::MAX
         };
-        let score = if stats.min_us == u128::MAX || avg_us == u128::MAX {
-            u128::MAX
-        } else {
-            stats.min_us + avg_us
-        };
+        let score = avg_us;
         match &mut best {
             None => best = Some((score, mac, avg_us)),
             Some((bscore, bmac, bavg)) => {
@@ -44,23 +40,19 @@ pub fn pick_best_next_hop(
 }
 
 /// Given a latency_candidates map (mac -> (min_us, sum_us, count, hops)),
-/// compute (score=min+avg, hops, mac, avg) for each and return a sorted Vec
+/// compute (score=avg, hops, mac, avg) for each and return a sorted Vec
 /// ordered by score then hops.
 pub fn score_and_sort_latency_candidates(
     latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)>,
 ) -> Vec<(u128, u32, MacAddress, u128)> {
     let mut scored: Vec<(u128, u32, MacAddress, u128)> = Vec::new();
-    for (mac, (min_us, sum_us, n, hops_val)) in latency_candidates.into_iter() {
+    for (mac, (_min_us, sum_us, n, hops_val)) in latency_candidates.into_iter() {
         let avg_us = if n > 0 {
             sum_us / (n as u128)
         } else {
             u128::MAX
         };
-        let score = if min_us == u128::MAX || avg_us == u128::MAX {
-            u128::MAX
-        } else {
-            min_us + avg_us
-        };
+        let score = avg_us;
         scored.push((score, hops_val, mac, avg_us));
     }
     scored.sort_by(|a, b| {
@@ -174,7 +166,7 @@ mod tests {
         let mut m = HashMap::new();
         // a: min=1 but n=0 -> avg=MAX -> score = MAX
         m.insert(a, (1u128, 0u128, 0u32, 1u32));
-        // b: min=100, sum=100, n=1 -> avg=100 -> score=200
+        // b: min=100, sum=100, n=1 -> avg=100 -> score=100
         m.insert(b, (100u128, 100u128, 1u32, 1u32));
         let best = super::pick_best_from_latency_candidates(m).expect("some");
         assert_eq!(best.0, b);
@@ -188,7 +180,7 @@ mod tests {
         let b: MacAddress = [1u8, 0, 0, 0, 0, 2].into(); // hops=1 (lower MAC than c)
         let c: MacAddress = [1u8, 0, 0, 0, 0, 3].into(); // hops=1
         let mut m = HashMap::new();
-        // All three will have score = 50 + 50 = 100
+        // All three will have score = avg = 50
         m.insert(a, (50u128, 50u128, 1u32, 2u32));
         m.insert(b, (50u128, 50u128, 1u32, 1u32));
         m.insert(c, (50u128, 50u128, 1u32, 1u32));
@@ -240,17 +232,13 @@ mod tests {
         // build expected ordering using the same comparator logic
         let mut expected: Vec<(u128, u32, MacAddress, u128)> = m
             .into_iter()
-            .map(|(mac, (min_us, sum_us, n, hops))| {
+            .map(|(mac, (_min_us, sum_us, n, hops))| {
                 let avg = if n > 0 {
                     sum_us / (n as u128)
                 } else {
                     u128::MAX
                 };
-                let score = if min_us == u128::MAX || avg == u128::MAX {
-                    u128::MAX
-                } else {
-                    min_us + avg
-                };
+                let score = avg;
                 (score, hops, mac, avg)
             })
             .collect();
@@ -292,13 +280,9 @@ mod tests {
 
             let mut expected: Vec<(u128, u32, MacAddress, u128)> = mapped
                 .into_iter()
-                .map(|(mac, (min_us, sum_us, n, hops))| {
+                .map(|(mac, (_min_us, sum_us, n, hops))| {
                     let avg = if n > 0 { sum_us / (n as u128) } else { u128::MAX };
-                    let score = if min_us == u128::MAX || avg == u128::MAX {
-                        u128::MAX
-                    } else {
-                        min_us + avg
-                    };
+                    let score = avg;
                     (score, hops, mac, avg)
                 })
                 .collect();

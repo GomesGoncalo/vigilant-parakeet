@@ -674,14 +674,14 @@ impl Routing {
     /// 1. **For cached upstream (None)**: Returns current cached upstream if set
     /// 2. **For non-RSU targets**: Uses downstream observations across all heartbeats
     /// 3. **For RSU targets**: Applies latency-based scoring with hysteresis:
-    ///    - Prefers lower latency (min + avg scoring)
-    ///    - Applies 10% improvement threshold to prevent flapping
+    ///    - Prefers lower average latency (avg scoring)
+    ///    - Applies 30% improvement threshold to prevent flapping
     ///    - Falls back to hop-count when latency unavailable
     ///    - Deterministic tie-breaking by MAC address
     ///
     /// Hysteresis: Only switches from cached route when:
     /// - New route has ≥1 fewer hops, OR
-    /// - New route has ≥10% better latency score
+    /// - New route has ≥30% better average latency score
     ///
     /// Returns None if no route exists.
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
@@ -756,8 +756,8 @@ impl Routing {
         }
         // Optionally incorporate hysteresis against the currently cached upstream.
         // We will compute the usual "best" candidate, but if it differs from the
-        // cached upstream we only switch when it's better by a margin (>=10% lower
-        // latency score) or uses at least one fewer hop. Otherwise, we keep the
+        // cached upstream we only switch when it's better by a margin (>=30% lower
+        // average latency) or uses at least one fewer hop. Otherwise, we keep the
         // current next hop to avoid flapping.
         let cached = self.get_cached_upstream();
         let mut upstream_routes: Vec<_> = self
@@ -812,11 +812,10 @@ impl Routing {
                 .get(&best_mac)
                 .copied()
                 .expect("best_mac must exist in latency_candidates");
-            let best_score = if best_min == u128::MAX || best_avg == u128::MAX {
-                u128::MAX
-            } else {
-                best_min + best_avg
-            };
+            // Score = avg only; avoids the "sticky minimum" problem where one lucky
+            // fading burst to a far RSU would permanently bias the score.
+            let _ = best_min; // kept in destructuring for clarity but not used in score
+            let best_score = best_avg;
 
             // If cached is set but isn't in latency candidates (no latency observed yet),
             // prefer a measured candidate when available. The previous behavior kept
@@ -855,7 +854,7 @@ impl Routing {
             // If we have a cached upstream that is also a candidate for this RSU,
             // apply hysteresis: stick to cached unless the new one is clearly better.
             if let Some(cached_mac) = cached {
-                if let Some((cached_min, cached_sum, cached_n, cached_hops)) =
+                if let Some((_cached_min, cached_sum, cached_n, cached_hops)) =
                     latency_candidates.get(&cached_mac).copied()
                 {
                     let cached_avg = if cached_n > 0 {
@@ -863,11 +862,8 @@ impl Routing {
                     } else {
                         u128::MAX
                     };
-                    let cached_score = if cached_min == u128::MAX || cached_avg == u128::MAX {
-                        u128::MAX
-                    } else {
-                        cached_min + cached_avg
-                    };
+                    // Score = avg only; symmetric with best_score above.
+                    let cached_score = cached_avg;
 
                     // If best is the cached, just return it.
                     if best_mac == cached_mac {
@@ -884,7 +880,7 @@ impl Routing {
 
                     // Switching conditions:
                     // - strictly fewer hops by at least 1
-                    // - or latency score better by >=10%
+                    // - or average latency better by >=30%
                     let fewer_hops = best_hops < cached_hops;
                     let latency_better_enough =
                         if cached_score == u128::MAX && best_score != u128::MAX {
@@ -892,8 +888,8 @@ impl Routing {
                         } else if cached_score == u128::MAX || best_score == u128::MAX {
                             false
                         } else {
-                            // new_score <= cached_score * 0.9 (10% or more better)
-                            best_score.saturating_mul(10) < cached_score.saturating_mul(9)
+                            // new_avg <= cached_avg * 0.7 (30% or more better)
+                            best_score.saturating_mul(10) < cached_score.saturating_mul(7)
                         };
 
                     if !(fewer_hops || latency_better_enough) {
