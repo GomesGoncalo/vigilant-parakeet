@@ -252,15 +252,27 @@ impl Routing {
                 }
             }
             (Some(old), Some(new)) if old.mac != new.mac => {
-                tracing::info!(
-                    from = %from_mac,
-                    to = %to_mac,
-                    through = %new,
-                    was_through = %old,
-                    old_hops = old.hops,
-                    new_hops = new.hops,
-                    "Route changed",
-                );
+                if is_info {
+                    tracing::info!(
+                        from = %from_mac,
+                        to = %to_mac,
+                        through = %new,
+                        was_through = %old,
+                        old_hops = old.hops,
+                        new_hops = new.hops,
+                        "Route changed",
+                    );
+                } else {
+                    tracing::debug!(
+                        from = %from_mac,
+                        to = %to_mac,
+                        through = %new,
+                        was_through = %old,
+                        old_hops = old.hops,
+                        new_hops = new.hops,
+                        "Route changed",
+                    );
+                }
             }
             _ => {}
         }
@@ -637,7 +649,9 @@ impl Routing {
         let reply = Ok(Some(vec![ReplyType::WireFlat(wire)]));
 
         let new_route = self.get_route_to(Some(sender));
-        Self::log_route_change(old_route, new_route, mac, sender, true, "Route discovered");
+        // Downstream OBU route updates are debug-level; the important INFO event
+        // is "Upstream selected/changed" emitted by select_and_cache_upstream.
+        Self::log_route_change(old_route, new_route, mac, sender, false, "Route discovered");
 
         if sender != pkt.from()? {
             let new_route_from = self.get_route_to(Some(pkt.from()?));
@@ -959,19 +973,30 @@ impl Routing {
     /// Returns the selected route, or None if no route exists.
     pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
         let route = self.get_route_to(Some(mac))?;
-        let was_cached = self.cache.get_cached_upstream().is_some();
+        let old_upstream = self.cache.get_cached_upstream();
 
         // Store primary cached upstream and source
         self.cache.set_upstream(route.mac, mac);
 
-        // Log when first upstream is selected (important milestone for OBU)
-        if !was_cached {
-            tracing::info!(
-                upstream = %route.mac,
-                source = %mac,
-                hops = route.hops,
-                "Upstream selected"
-            );
+        match old_upstream {
+            None => {
+                tracing::info!(
+                    upstream = %route.mac,
+                    source = %mac,
+                    hops = route.hops,
+                    "Upstream selected"
+                );
+            }
+            Some(old_mac) if old_mac != route.mac => {
+                tracing::info!(
+                    upstream = %route.mac,
+                    was_upstream = %old_mac,
+                    source = %mac,
+                    hops = route.hops,
+                    "Upstream changed"
+                );
+            }
+            _ => {}
         }
         // Also attempt to populate an ordered list of N-best candidates for fast failover.
         let n_best = self.cache.candidates_count();

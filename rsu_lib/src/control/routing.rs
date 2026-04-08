@@ -204,7 +204,7 @@ impl Routing {
         match (old_route, new_route) {
             (None, new_route) => {
                 tracing::event!(
-                    Level::INFO,
+                    Level::DEBUG,
                     from = %address,
                     to = %sender,
                     through = %new_route,
@@ -215,7 +215,7 @@ impl Routing {
             (Some(old_route), new_route) => {
                 if old_route.mac != new_route.mac {
                     tracing::event!(
-                        Level::INFO,
+                        Level::DEBUG,
                         from = %address,
                         to = %sender,
                         through = %new_route,
