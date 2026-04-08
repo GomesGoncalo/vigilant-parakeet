@@ -683,8 +683,8 @@
                             edges.push({ data: { source: name, target: info.upstream.node_name } });
                         }
                     }
+                    if (edges.length) _lastEdges = edges;
                 }
-                if (edges.length) _lastEdges = edges;
 
                 window.__vp_render_map(positions, _lastEdges, _lastNodeTypes);
             } catch(e) {
