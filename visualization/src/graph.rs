@@ -85,12 +85,16 @@ pub fn graph(props: &GraphProps) -> Html {
             geo_positions.clone(),
         ),
         move |(_n, _c, _u, _s, _g)| {
-            // compute RSUs and OBUs
+            // compute RSUs and OBUs (skip Server nodes — they are infrastructure, not displayed)
             let mut rsus = Vec::new();
             let mut obus = Vec::new();
             for n in &nodes {
                 if let Some(t) = pick_node_type(&node_info, n) {
-                    if t.to_lowercase() == "rsu" {
+                    let tl = t.to_lowercase();
+                    if tl == "server" {
+                        continue; // exclude from graph display
+                    }
+                    if tl == "rsu" {
                         rsus.push(n.clone());
                         continue;
                     }
