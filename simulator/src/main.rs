@@ -16,6 +16,8 @@ use sim_args::SimArgs;
 mod channel;
 mod interface_builder;
 mod metrics;
+#[cfg(feature = "mobility")]
+mod mobility;
 mod namespace;
 mod node_factory;
 mod node_interfaces;
@@ -74,29 +76,31 @@ async fn main() -> Result<()> {
         }
     }
 
-    let simulator = std::sync::Arc::new(Simulator::new(&args, |name, config| {
-        let Some(config) = config.get("config_path") else {
-            bail!("no config for node");
-        };
+    let simulator = std::sync::Arc::new(
+        Simulator::new(&args, |name, config| {
+            let Some(config) = config.get("config_path") else {
+                bail!("no config for node");
+            };
 
-        let config = config.to_string();
+            let config = config.to_string();
 
-        let settings = Config::builder()
-            .add_source(config::File::with_name(&config))
-            .build()?;
-        tracing::debug!(?settings, "Node configuration loaded");
+            let settings = Config::builder()
+                .add_source(config::File::with_name(&config))
+                .build()?;
+            tracing::debug!(?settings, "Node configuration loaded");
 
-        // Parse node type from config
-        let node_type = NodeType::from_str(&settings.get_string("node_type")?, true)
-            .map_err(|e| anyhow::anyhow!(e))?;
+            // Parse node type from config
+            let node_type = NodeType::from_str(&settings.get_string("node_type")?, true)
+                .map_err(|e| anyhow::anyhow!(e))?;
 
-        // Create node with all its interfaces, passing node name for tracing instrumentation
-        let result = create_node_from_settings(node_type, &settings, name.to_string())?;
+            // Create node with all its interfaces, passing node name for tracing instrumentation
+            let result = create_node_from_settings(node_type, &settings, name.to_string())?;
 
-        // Return complete NodeInterfaces (no more dummy tuns needed!)
-        Ok((result.device, result.interfaces, result.node))
-    })?);
-
+            // Return complete NodeInterfaces (no more dummy tuns needed!)
+            Ok((result.device, result.interfaces, result.node))
+        })
+        .await?,
+    );
     // Note: Server nodes are started synchronously in their namespace context during creation
     // via Server::start() in create_node_from_settings(), ensuring the socket binds within
     // the correct network namespace before returning

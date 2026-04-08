@@ -33,11 +33,14 @@ server_lib = { path = "../server_lib/" }
 human_format = "*"
 unicode-segmentation = "*"
 unicode-width = "*"
+reqwest = { version = "*", features = ["json"], optional = true }
+petgraph = { version = "*", optional = true }
 
 [features]
 webview = [ "dep:warp", "dep:serde_json", "node_lib/stats" ]
 tui = [ "dep:ratatui", "dep:crossterm" ]
 test_helpers = [ "common/test_helpers", "node_lib/test_helpers", "obu_lib/test_helpers", "rsu_lib/test_helpers" ]
+mobility = [ "dep:reqwest", "dep:petgraph", "dep:serde_json" ]
 
 [dev-dependencies]
 serde_json = "*"

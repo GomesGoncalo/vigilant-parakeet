@@ -13,6 +13,11 @@ use itertools::Itertools;
 use node_lib::{Node, PACKET_BUFFER_SIZE};
 use server_lib::Server;
 use std::{collections::HashMap, sync::Arc};
+#[cfg(feature = "mobility")]
+use {
+    crate::mobility::{position::NodePosition, MobilityConfig, MobilityManager, NodeGeoConfig},
+    tokio::sync::RwLock,
+};
 
 #[cfg(test)]
 mod simulator_tests {
@@ -93,6 +98,15 @@ pub struct Simulator {
     node_namespace_map: HashMap<String, usize>,
     /// Real-time simulation metrics
     metrics: Arc<crate::metrics::SimulatorMetrics>,
+    /// Shared geographic positions updated by the mobility manager (if enabled).
+    #[cfg(feature = "mobility")]
+    positions: Arc<RwLock<HashMap<String, NodePosition>>>,
+    /// Override queue: HTTP layer posts (lat, lon) here; tick loop replans.
+    #[cfg(feature = "mobility")]
+    override_queue: Arc<tokio::sync::Mutex<HashMap<String, (f64, f64)>>>,
+    /// Mobility manager (held here so run() can spawn its tick loop).
+    #[cfg(feature = "mobility")]
+    mobility_manager: tokio::sync::Mutex<Option<MobilityManager>>,
 }
 
 type CallbackReturn = Result<(Arc<Device>, crate::node_interfaces::NodeInterfaces, SimNode)>;
@@ -229,7 +243,7 @@ impl Simulator {
         Ok((channels, namespaces, node_map, node_namespace_map))
     }
 
-    pub fn new<F>(args: &SimArgs, callback: F) -> Result<Self>
+    pub async fn new<F>(args: &SimArgs, callback: F) -> Result<Self>
     where
         F: Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
     {
@@ -244,16 +258,118 @@ impl Simulator {
         let total_channels: usize = channels.values().map(|m| m.len()).sum();
         metrics.set_active_channels(total_channels as u64);
 
+        #[cfg(feature = "mobility")]
+        let (positions, override_queue, mobility_option) =
+            Self::maybe_init_mobility(&args.config_file, &nodes).await;
+
         Ok(Self {
             namespaces,
             channels,
             nodes,
             node_namespace_map,
             metrics,
+            #[cfg(feature = "mobility")]
+            positions,
+            #[cfg(feature = "mobility")]
+            override_queue,
+            #[cfg(feature = "mobility")]
+            mobility_manager: tokio::sync::Mutex::new(mobility_option),
         })
     }
 
+    /// Parse optional mobility config and per-node geo configs, then init the
+    /// MobilityManager if `mobility.enabled` is set.
+    #[cfg(feature = "mobility")]
+    async fn maybe_init_mobility(
+        config_file: &str,
+        nodes: &HashMap<String, (Arc<Device>, crate::node_interfaces::NodeInterfaces, SimNode)>,
+    ) -> (
+        Arc<RwLock<HashMap<String, NodePosition>>>,
+        Arc<tokio::sync::Mutex<HashMap<String, (f64, f64)>>>,
+        Option<MobilityManager>,
+    ) {
+        use config::Config;
+
+        let config_result = Config::builder()
+            .add_source(config::File::with_name(config_file))
+            .build();
+
+        let mob_config: MobilityConfig = match config_result {
+            Ok(cfg) => cfg.get::<MobilityConfig>("mobility").unwrap_or_default(),
+            Err(_) => MobilityConfig::default(),
+        };
+
+        if !mob_config.enabled {
+            return (
+                Arc::new(RwLock::new(HashMap::new())),
+                Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+                None,
+            );
+        }
+
+        // Build per-node geo configs from individual node YAML files.
+        // We read only lat/lon; missing values are treated as None.
+        let mut node_configs: HashMap<String, (String, NodeGeoConfig)> = HashMap::new();
+
+        // Extract node type from SimNode and try to read lat/lon from their config files.
+        // We re-read the simulator config to get config_path per node.
+        let top_config = Config::builder()
+            .add_source(config::File::with_name(config_file))
+            .build()
+            .ok();
+
+        for (name, (_device, _ifaces, sim_node)) in nodes {
+            let node_type = match sim_node {
+                SimNode::Obu(_) => "Obu",
+                SimNode::Rsu(_) => "Rsu",
+                SimNode::Server(_) => "Server",
+            };
+
+            let mut geo = NodeGeoConfig::default();
+
+            if let Some(ref cfg) = top_config {
+                // Try to get config_path from nodes.<name>.config_path
+                if let Ok(node_cfg_path) = cfg.get_string(&format!("nodes.{name}.config_path")) {
+                    if let Ok(node_cfg) = Config::builder()
+                        .add_source(config::File::with_name(&node_cfg_path))
+                        .build()
+                    {
+                        geo.lat = node_cfg.get_float("lat").ok();
+                        geo.lon = node_cfg.get_float("lon").ok();
+                    }
+                }
+            }
+
+            node_configs.insert(name.clone(), (node_type.to_string(), geo));
+        }
+
+        match MobilityManager::new(mob_config, node_configs).await {
+            Ok(mgr) => {
+                let pos = mgr.get_positions();
+                let oq = mgr.get_override_queue();
+                (pos, oq, Some(mgr))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to initialise MobilityManager — mobility disabled");
+                (
+                    Arc::new(RwLock::new(HashMap::new())),
+                    Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+                    None,
+                )
+            }
+        }
+    }
+
     pub async fn run(&self) -> Result<()> {
+        // Spawn mobility tick loop if the manager was initialised.
+        #[cfg(feature = "mobility")]
+        {
+            if let Some(mgr) = self.mobility_manager.lock().await.take() {
+                tracing::info!("Starting mobility tick loop");
+                tokio::spawn(mgr.run_loop());
+            }
+        }
+
         let mut future_set = self
             .channels
             .values()
@@ -316,6 +432,26 @@ impl Simulator {
     /// Get real-time simulation metrics.
     pub fn get_metrics(&self) -> Arc<crate::metrics::SimulatorMetrics> {
         self.metrics.clone()
+    }
+
+    /// Get the shared positions map updated by the mobility manager.
+    #[cfg(feature = "mobility")]
+    pub fn get_positions(&self) -> Arc<RwLock<HashMap<String, NodePosition>>> {
+        self.positions.clone()
+    }
+
+    /// Get a reference to the mobility manager mutex for position overrides.
+    #[cfg(feature = "mobility")]
+    #[allow(dead_code)]
+    fn mobility_manager(&self) -> &tokio::sync::Mutex<Option<MobilityManager>> {
+        &self.mobility_manager
+    }
+
+    /// Get the position override queue — write (name, lat, lon) here to replan a vehicle.
+    #[cfg(feature = "mobility")]
+    pub fn get_override_queue(&self) -> Arc<tokio::sync::Mutex<HashMap<String, (f64, f64)>>> {
+        // The queue lives inside the MobilityManager; we hold a pre-extracted Arc.
+        self.override_queue.clone()
     }
 
     /// Return a clone of the created nodes with full interface information
