@@ -246,3 +246,59 @@ async fn test_latency_measurement_with_mocked_time() {
         "OBU should measure fast path latency correctly (~10ms)"
     );
 }
+
+/// Regression: when the RSSI table is attached but empty (fading task not yet
+/// run), the guard must keep the first-selected RSU stable instead of letting
+/// every subsequent heartbeat evict it.
+#[test]
+fn rssi_guard_keeps_cached_rsu_when_table_empty_at_startup() {
+    use node_lib::messages::{
+        control::heartbeat::Heartbeat, control::Control, message::Message, packet_type::PacketType,
+    };
+    use std::collections::HashMap;
+    use std::sync::{Arc, RwLock};
+
+    let args = crate::test_helpers::mk_test_obu_args();
+    let boot = Instant::now();
+    let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+    // Attach an EMPTY RSSI table (simulates startup before fading task runs).
+    let rssi_table: crate::control::routing::RssiTable = Arc::new(RwLock::new(HashMap::new()));
+    routing.set_rssi_table(rssi_table);
+
+    let our_mac: MacAddress = [0xAAu8; 6].into();
+    let rsu1: MacAddress = [0x11u8; 6].into();
+    let rsu2: MacAddress = [0x22u8; 6].into();
+
+    // First heartbeat from RSU1 — should be selected as upstream.
+    let hb1 = Heartbeat::new(Duration::from_millis(1), 1u32, rsu1);
+    let msg1 = Message::new(
+        rsu1,
+        [0xFFu8; 6].into(),
+        PacketType::Control(Control::Heartbeat(hb1)),
+    );
+    let _ = routing
+        .handle_heartbeat(&msg1, our_mac)
+        .expect("hb1 handled");
+
+    let upstream_after_rsu1 = routing.get_cached_upstream();
+    assert!(upstream_after_rsu1.is_some(), "should have selected RSU1");
+
+    // Second heartbeat from RSU2 — with an empty RSSI table the old code would
+    // evict RSU1 (rssi_cached defaulted to -100 < -95).  The fix must keep RSU1.
+    let hb2 = Heartbeat::new(Duration::from_millis(1), 2u32, rsu2);
+    let msg2 = Message::new(
+        rsu2,
+        [0xFFu8; 6].into(),
+        PacketType::Control(Control::Heartbeat(hb2)),
+    );
+    let _ = routing
+        .handle_heartbeat(&msg2, our_mac)
+        .expect("hb2 handled");
+
+    let upstream_after_rsu2 = routing.get_cached_upstream();
+    assert_eq!(
+        upstream_after_rsu2, upstream_after_rsu1,
+        "cached upstream must not change when RSSI table is empty (startup)"
+    );
+}

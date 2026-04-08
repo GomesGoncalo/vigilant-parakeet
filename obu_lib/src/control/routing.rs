@@ -1049,11 +1049,20 @@ impl Routing {
                 let keep_cached = if let Some(ref rssi_tbl) = self.rssi_table {
                     let tbl = rssi_tbl.read().expect("rssi table lock");
                     let rssi_incoming = *tbl.get(&mac).unwrap_or(&-100.0_f32);
-                    let rssi_cached = *tbl.get(&cached_source).unwrap_or(&-100.0_f32);
-                    // -95 dBm is near the edge of usable range (~3 km free-space at
-                    // 5.9 GHz with 23 dBm TX).  Below that the cached RSU is effectively
-                    // gone, so we let the guard fall through.
-                    rssi_cached > -95.0 && rssi_incoming <= rssi_cached + 3.0
+                    // Distinguish "not yet measured" from "measured as very weak".
+                    // If the cached RSU has no entry (table empty at startup, before
+                    // the fading task has run), keep it rather than treating it as
+                    // gone — the -100 dBm fallback would fail the -95 dBm liveness
+                    // check and cause every arriving heartbeat to evict the cached RSU.
+                    match tbl.get(&cached_source) {
+                        None => true, // no measurement yet — keep cached RSU stable
+                        Some(&rssi_cached) => {
+                            // -95 dBm is near the edge of usable range (~3 km free-space
+                            // at 5.9 GHz with 23 dBm TX).  Below that the cached RSU is
+                            // effectively gone, so we let the guard fall through.
+                            rssi_cached > -95.0 && rssi_incoming <= rssi_cached + 3.0
+                        }
+                    }
                 } else {
                     let q_incoming = self.rsu_reception_quality(mac);
                     let q_cached = self.rsu_reception_quality(cached_source);

@@ -815,6 +815,11 @@ impl Server {
         signing_keypair: Option<&SigningKeypair>,
         dh_signing_allowlist: &RwLock<HashMap<MacAddress, Vec<u8>>>,
     ) {
+        tracing::info!(
+            obu = %ke_fwd.obu_mac,
+            rsu = %ke_fwd.rsu_mac,
+            "Received KeyExchangeForward from RSU"
+        );
         let allowlist = dh_signing_allowlist.read().await;
         // Parse the KeyExchangeInit payload
         let ke_init = match node_lib::messages::control::key_exchange::KeyExchangeInit::try_from(
@@ -951,10 +956,10 @@ impl Server {
             let store = dh_keys.read().await;
             if let Some(existing) = store.get(&ke_fwd.obu_mac) {
                 if existing.key_id == key_id {
-                    tracing::trace!(
+                    tracing::debug!(
                         obu = %ke_fwd.obu_mac,
                         key_id = key_id,
-                        "Duplicate KeyExchangeInit for same key_id, ignoring"
+                        "Duplicate KeyExchangeInit for established key_id — ignoring, but NOT re-sending reply"
                     );
                     return;
                 }
@@ -1114,6 +1119,12 @@ impl Server {
                 obu = %ke_fwd.obu_mac,
                 error = %e,
                 "Failed to send KeyExchangeResponse to RSU"
+            );
+        } else {
+            tracing::info!(
+                obu = %ke_fwd.obu_mac,
+                rsu_addr = %src_addr,
+                "Sent KeyExchangeResponse back to RSU"
             );
         }
     }

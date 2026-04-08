@@ -19,7 +19,7 @@ nodes:
   obu2:
     config_path: examples/simple/obu2.yaml
 
-connections:
+topology:
   # rsu1 <-> obu1 (direct, zero loss)
   rsu1:
     obu1:
