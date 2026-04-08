@@ -134,20 +134,43 @@ pub fn graph(props: &GraphProps) -> Html {
                 }
             }
 
-            // derive edge list (from->to) using channels map; if empty, derive from upstream
+            // derive edge list (from->to) using channels map; if empty, derive from upstream.
+            // Filter out: (a) any node with ":cloud" suffix (infra channels), (b) server nodes.
+            let is_display_node = |name: &str| -> bool {
+                if name.contains(":cloud") {
+                    return false;
+                }
+                if let Some(t) = pick_node_type(&node_info, name) {
+                    if t.to_lowercase() == "server" {
+                        return false;
+                    }
+                }
+                true
+            };
             let mut edges = Vec::new();
             if !channels.is_empty() {
                 for (from, inner) in &channels {
+                    if !is_display_node(from) {
+                        continue;
+                    }
                     for to in inner.keys() {
+                        if !is_display_node(to) {
+                            continue;
+                        }
                         edges.push((from.clone(), to.clone()));
                     }
                 }
             } else {
                 for (n, info) in &node_info {
+                    if !is_display_node(n) {
+                        continue;
+                    }
                     // node_info is JSON-like here; read upstream via get("upstream")
                     if let Some(up) = info.get("upstream") {
                         if let Some(un) = up.get("node_name").and_then(|v| v.as_str()) {
-                            edges.push((n.clone(), un.to_string()));
+                            if is_display_node(un) {
+                                edges.push((n.clone(), un.to_string()));
+                            }
                         }
                     }
                 }
