@@ -26,6 +26,7 @@ use node_lib::messages::{
     message::Message,
     packet_type::PacketType,
 };
+use node_lib::control::client_cache::ClientCache;
 use routing::Routing;
 use session::Session;
 use std::collections::VecDeque;
@@ -82,6 +83,15 @@ pub struct Obu {
     /// the cache never grows stale: old nonces expire along with the messages that
     /// carried them, so there is no fixed-size window that an attacker could outlast.
     seen_revocation_nonces: RevocationNonceCache,
+    /// Downstream client cache for relay-mode operation.
+    ///
+    /// When this OBU acts as an intermediate relay (forwarding a `KeyExchangeInit`
+    /// from a downstream OBU up toward an RSU), it records the mapping
+    /// `ke_init.sender() → msg.from()` here.  On the return path, when a
+    /// `KeyExchangeReply` arrives destined for a downstream OBU, this cache is
+    /// consulted first so the reply can be forwarded immediately — even before the
+    /// heartbeat-reply-based downstream routing table has been populated.
+    downstream_client_cache: Arc<ClientCache>,
 }
 
 impl Obu {
@@ -139,6 +149,7 @@ impl Obu {
             signing_keypair,
             rekey_notify,
             seen_revocation_nonces,
+            downstream_client_cache: Arc::new(ClientCache::new()),
         });
 
         tracing::info!(
@@ -749,7 +760,7 @@ impl Obu {
     fn handle_key_exchange_init(
         &self,
         ke_init: &KeyExchangeInit<'_>,
-        _msg: &Message<'_>,
+        msg: &Message<'_>,
     ) -> Result<Option<Vec<ReplyType>>> {
         // OBUs forward KeyExchangeInit up the tree toward the server.
         let routing = self
@@ -760,6 +771,14 @@ impl Obu {
             tracing::debug!("No upstream route, dropping KeyExchangeInit");
             return Ok(None);
         };
+
+        // Record the downstream path so we can route the reply back without
+        // relying solely on the heartbeat-reply-based routing table, which may
+        // not yet have an entry for the initiating OBU when the exchange starts.
+        if let Ok(from_mac) = msg.from() {
+            self.downstream_client_cache
+                .store_mac(ke_init.sender(), from_mac);
+        }
 
         // Preserve all fields (algorithm, key material, signature) when forwarding.
         let init = ke_init.clone_into_owned();
@@ -950,14 +969,22 @@ impl Obu {
         let dest = ke_reply.sender();
         if dest != self.device.mac_address() {
             // Not for us — forward down the tree toward the target OBU.
-            let routing = self
-                .routing
-                .read()
-                .expect("routing table read lock poisoned");
-            let Some(next_hop) = routing.get_route_to(Some(dest)) else {
-                tracing::debug!(
+            //
+            // Prefer the downstream_client_cache over the routing table: it is
+            // populated when we forward a KeyExchangeInit upstream, so it is
+            // available immediately even before heartbeat-reply-based routing
+            // entries exist for the downstream OBU.
+            let next_hop_mac = self.downstream_client_cache.get(dest).or_else(|| {
+                let routing = self
+                    .routing
+                    .read()
+                    .expect("routing table read lock poisoned");
+                routing.get_route_to(Some(dest)).map(|r| r.mac)
+            });
+            let Some(next_hop_mac) = next_hop_mac else {
+                tracing::warn!(
                     dest = %dest,
-                    "No route to forward KeyExchangeReply, dropping"
+                    "No route to forward KeyExchangeReply (not in downstream cache or routing table), dropping"
                 );
                 return Ok(None);
             };
@@ -966,13 +993,13 @@ impl Obu {
             let reply = ke_reply.clone_into_owned();
             let fwd = Message::new(
                 self.device.mac_address(),
-                next_hop.mac,
+                next_hop_mac,
                 PacketType::Control(Control::KeyExchangeReply(reply)),
             );
             let wire: Vec<u8> = (&fwd).into();
             tracing::debug!(
                 dest = %dest,
-                via = %next_hop.mac,
+                via = %next_hop_mac,
                 signed = ke_reply.is_signed(),
                 "Forwarding KeyExchangeReply down the tree"
             );
