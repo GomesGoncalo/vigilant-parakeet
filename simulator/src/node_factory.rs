@@ -212,9 +212,13 @@ pub fn create_node_from_settings(
             .and_then(|v| u64::try_from(v).ok())
             .unwrap_or(5_000);
 
-        // Create virtual interface (for decapsulated data traffic) — OBU only
+        // Create virtual interface (for decapsulated data traffic) — OBU only.
+        // /24 netmask creates a connected subnet route so the kernel can ARP
+        // for other nodes (e.g. 10.0.0.1) via this interface instead of
+        // immediately returning "Destination Host Unreachable".
         let virtual_tun = InterfaceBuilder::new("virtual")
             .with_ip(ip)
+            .with_netmask(std::net::Ipv4Addr::new(255, 255, 255, 0))
             .with_mtu(mtu as u16)
             .build_tap()?;
 
