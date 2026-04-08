@@ -453,7 +453,7 @@ impl Obu {
                                         key_id = key_id,
                                         mode = mode,
                                         dh_group = %obu.crypto_config.dh_group,
-                                        "Sent DH KeyExchangeInit to server (via RSU)"
+                                        "Sent DH KeyExchangeInit upstream"
                                     );
                                 }
                             }
@@ -768,7 +768,10 @@ impl Obu {
             .read()
             .expect("routing table read lock poisoned");
         let Some(upstream) = routing.get_route_to(None) else {
-            tracing::debug!("No upstream route, dropping KeyExchangeInit");
+            tracing::warn!(
+                obu = %ke_init.sender(),
+                "No upstream route — dropping KeyExchangeInit (relay OBU has no path to server)"
+            );
             return Ok(None);
         };
 
@@ -788,11 +791,11 @@ impl Obu {
             PacketType::Control(Control::KeyExchangeInit(init)),
         );
         let wire: Vec<u8> = (&fwd).into();
-        tracing::debug!(
+        tracing::info!(
             obu = %ke_init.sender(),
             via = %upstream.mac,
             signed = ke_init.is_signed(),
-            "Forwarding KeyExchangeInit up the tree"
+            "Forwarding KeyExchangeInit upstream"
         );
         Ok(Some(vec![ReplyType::WireFlat(wire)]))
     }
