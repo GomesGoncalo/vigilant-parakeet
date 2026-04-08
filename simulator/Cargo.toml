@@ -33,7 +33,7 @@ server_lib = { path = "../server_lib/" }
 human_format = "*"
 unicode-segmentation = "*"
 unicode-width = "*"
-reqwest = { version = "*", features = ["json"], optional = true }
+reqwest = { version = "*", features = ["json", "form"], optional = true }
 petgraph = { version = "*", optional = true }
 
 [features]

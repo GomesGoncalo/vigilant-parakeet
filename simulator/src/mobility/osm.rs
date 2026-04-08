@@ -119,7 +119,7 @@ async fn query_overpass(bbox: BoundingBox) -> Result<(Vec<OsmNode>, Vec<OsmWay>)
 
     let response = client
         .post("https://overpass-api.de/api/interpreter")
-        .body(query)
+        .form(&[("data", &query)])
         .send()
         .await
         .context("sending Overpass API request")?;
