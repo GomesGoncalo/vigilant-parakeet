@@ -470,12 +470,16 @@ impl Obu {
                     // reply_timeout_ms so we wake promptly to detect the timeout and
                     // retransmit, rather than waiting the full 12-hour rekey interval
                     // before retrying a failed initial exchange.
+                    // When no upstream was available, also use a short retry so we
+                    // attempt again as soon as the first heartbeat populates the routing
+                    // table (typically within one hello_periodicity).
+                    let no_upstream = obu.cached_upstream_mac().is_none();
                     let exchange_pending = obu
                         .dh_key_store
                         .read()
                         .map(|g| g.has_pending(server_virtual_mac()))
                         .unwrap_or(false);
-                    let sleep_duration = if exchange_pending {
+                    let sleep_duration = if exchange_pending || no_upstream {
                         Duration::from_millis(reply_timeout_ms)
                     } else {
                         rekey_interval
