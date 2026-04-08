@@ -134,9 +134,22 @@ impl RoadGraph {
     }
 
     /// Pick a random node from the graph.
+    ///
+    /// Only considers nodes that have at least one outgoing edge — isolated
+    /// nodes (e.g. bbox-filtered bridge endpoints with all neighbours removed)
+    /// are excluded so vehicles are never placed off-road.
     pub fn random_node(&self, rng: &mut impl Rng) -> NodeIndex {
-        let idx = rng.random_range(0..self.graph.node_count());
-        NodeIndex::new(idx)
+        let routable: Vec<NodeIndex> = self
+            .graph
+            .node_indices()
+            .filter(|&n| self.graph.edges(n).next().is_some())
+            .collect();
+        if routable.is_empty() {
+            // Fallback: graph has no edges at all — pick any node.
+            NodeIndex::new(rng.random_range(0..self.graph.node_count()))
+        } else {
+            routable[rng.random_range(0..routable.len())]
+        }
     }
 
     /// Compute road-network distance in metres between two nodes using Dijkstra.

@@ -109,7 +109,18 @@ impl MobilityManager {
             .ok_or_else(|| anyhow::anyhow!("mobility.bbox is required when mobility is enabled"))?;
         let origin = RoadGraph::origin_for_bbox(&bbox);
 
-        let (osm_nodes, osm_ways) = fetch_osm(bbox, &config.osm_cache).await?;
+        let (mut osm_nodes, osm_ways) = fetch_osm(bbox, &config.osm_cache).await?;
+
+        // Drop nodes outside the bounding box. The Overpass query uses (._;>) which
+        // pulls in every node referenced by a matching way, including bridge endpoints
+        // that extend outside the bbox (e.g. into the Douro river). Filtering here
+        // keeps vehicles on roads that are visually within the area of interest.
+        osm_nodes.retain(|n| {
+            n.lat >= bbox.min_lat
+                && n.lat <= bbox.max_lat
+                && n.lon >= bbox.min_lon
+                && n.lon <= bbox.max_lon
+        });
 
         if osm_nodes.is_empty() {
             bail!("No OSM nodes found for the given bounding box — check connectivity or bbox");
