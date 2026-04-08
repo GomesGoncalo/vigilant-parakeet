@@ -284,7 +284,6 @@ fn app() -> Html {
     let is_graph = *active_tab == "graph";
     let graph_panel_style = if is_graph { "" } else { "display:none" };
     let map_panel_style = if is_graph { "display:none" } else { "" };
-    let has_positions = !(*geo_positions).is_empty();
 
     html! {
         <>
@@ -302,11 +301,6 @@ fn app() -> Html {
             <div id="vp-panel-map" style={map_panel_style}>
                 <div style="position:relative;width:100%;height:calc(100vh - 38px);">
                     <div id="map" style="width:100%;height:100%;"></div>
-                    if !has_positions {
-                        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#111;color:#888;font-size:13px;z-index:1000;pointer-events:none;">
-                            {"Waiting for mobility data — run simulator with --features webview,mobility and mobility.enabled: true"}
-                        </div>
-                    }
                 </div>
             </div>
         </>
