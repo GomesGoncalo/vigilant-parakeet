@@ -179,13 +179,37 @@ impl Simulator {
 
         // Second pass: create bidirectional cloud channels for RSU ↔ Server connections.
         //
-        // Cloud channels relay raw Ethernet frames (including ARP and IP/UDP) between
-        // the cloud TAP interfaces of each endpoint.  This simulates the internet link
-        // between RSUs and the infrastructure server.
-        //
-        // Keys use the "<nodename>:cloud" format to avoid collision with VANET channel
-        // keys.  MAC filtering is disabled on cloud channels (all-zeros sentinel MAC)
-        // because the link is point-to-point and must pass all traffic.
+        // First honour any explicit topology entries (preserves custom latency/loss),
+        // then auto-create cloud channels for any RSU↔Server pair not yet connected.
+        // This means the topology: section is fully optional — cloud connectivity is
+        // always established automatically.
+        let zero_params = common::channel_parameters::ChannelParameters {
+            latency: std::time::Duration::ZERO,
+            loss: 0.0,
+            jitter: std::time::Duration::ZERO,
+        };
+        let no_filter_mac = mac_address::MacAddress::new([0u8; 6]);
+
+        // Helper closure — create bidirectional cloud channel if not already present.
+        let add_cloud_channel =
+            |channels: &mut HashMap<String, HashMap<String, Arc<Channel>>>,
+             from_node: &str,
+             to_node: &str,
+             params: common::channel_parameters::ChannelParameters,
+             from_cloud: &Arc<common::tun::Tun>,
+             to_cloud: &Arc<common::tun::Tun>| {
+                let from_key = format!("{}:cloud", from_node);
+                let to_key = format!("{}:cloud", to_node);
+                channels.entry(from_key.clone()).or_default().entry(to_key.clone()).or_insert_with(|| {
+                    Channel::new(params, no_filter_mac, to_cloud.clone(), &from_key, &to_key)
+                });
+                channels.entry(to_key.clone()).or_default().entry(from_key.clone()).or_insert_with(|| {
+                    Channel::new(params, no_filter_mac, from_cloud.clone(), &to_key, &from_key)
+                });
+                tracing::info!(from = %from_node, to = %to_node, "Created bidirectional cloud channel");
+            };
+
+        // Explicit topology entries (custom params).
         for (from_node, connections) in &topology_config.connections {
             for (to_node, params) in connections {
                 let (Some(from_entry), Some(to_entry)) =
@@ -196,8 +220,6 @@ impl Simulator {
 
                 let from_is_server = matches!(from_entry.2, SimNode::Server(_));
                 let to_is_server = matches!(to_entry.2, SimNode::Server(_));
-
-                // Only create cloud channels when at least one side is a Server node.
                 if !from_is_server && !to_is_server {
                     continue;
                 }
@@ -213,32 +235,53 @@ impl Simulator {
                     continue;
                 };
 
-                let from_key = format!("{}:cloud", from_node);
-                let to_key = format!("{}:cloud", to_node);
-                let no_filter_mac = mac_address::MacAddress::new([0u8; 6]);
-
-                // from_node → to_node: reads from to_node's cloud TAP
-                channels.entry(from_key.clone()).or_default().insert(
-                    to_key.clone(),
-                    Channel::new(*params, no_filter_mac, to_cloud.clone(), &from_key, &to_key),
+                add_cloud_channel(
+                    &mut channels,
+                    from_node,
+                    to_node,
+                    *params,
+                    from_cloud,
+                    to_cloud,
                 );
+            }
+        }
 
-                // to_node → from_node: reads from from_node's cloud TAP (ARP replies, etc.)
-                channels.entry(to_key.clone()).or_default().insert(
-                    from_key.clone(),
-                    Channel::new(
-                        *params,
-                        no_filter_mac,
-                        from_cloud.clone(),
-                        &to_key,
-                        &from_key,
-                    ),
-                );
+        // Auto-connect any RSU↔Server pair not yet wired (no topology entry needed).
+        let server_names: Vec<String> = node_map
+            .iter()
+            .filter(|(_, (_, _, sn))| matches!(sn, SimNode::Server(_)))
+            .map(|(n, _)| n.clone())
+            .collect();
+        let rsu_names: Vec<String> = node_map
+            .iter()
+            .filter(|(_, (_, _, sn))| matches!(sn, SimNode::Rsu(_)))
+            .map(|(n, _)| n.clone())
+            .collect();
 
-                tracing::info!(
-                    from = %from_node,
-                    to = %to_node,
-                    "Created bidirectional cloud channel"
+        for rsu in &rsu_names {
+            for srv in &server_names {
+                let from_key = format!("{}:cloud", rsu);
+                let to_key = format!("{}:cloud", srv);
+                if channels.get(&from_key).and_then(|m| m.get(&to_key)).is_some() {
+                    continue; // already added via explicit topology
+                }
+                let (Some(rsu_entry), Some(srv_entry)) =
+                    (node_map.get(rsu), node_map.get(srv))
+                else {
+                    continue;
+                };
+                let (Some(rsu_cloud), Some(srv_cloud)) =
+                    (rsu_entry.1.cloud.as_ref(), srv_entry.1.cloud.as_ref())
+                else {
+                    continue;
+                };
+                add_cloud_channel(
+                    &mut channels,
+                    rsu,
+                    srv,
+                    zero_params,
+                    rsu_cloud,
+                    srv_cloud,
                 );
             }
         }
@@ -482,7 +525,10 @@ impl Simulator {
                         if let (Some(fp), Some(tp)) = (pos.get(from), pos.get(to)) {
                             let d = crate::fading::haversine_m(fp.lat, fp.lon, tp.lat, tp.lon);
                             let loss = crate::fading::nakagami_loss(d, &cfg);
-                            channel.set_loss(loss);
+                            // Scale latency by distance so routing prefers closer RSUs.
+                            let latency_ms =
+                                ((d / 100.0) * cfg.latency_ms_per_100m).round() as u64;
+                            channel.set_fading_params(loss, latency_ms);
                         }
                     }
                 }

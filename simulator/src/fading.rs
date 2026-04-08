@@ -52,6 +52,11 @@ pub struct NakagamiConfig {
     #[serde(default = "default_max_range_m")]
     pub max_range_m: f64,
 
+    /// Latency added per 100 m of distance (ms). Gives the routing protocol a
+    /// distance-based metric so it prefers the nearest RSU.  Default: 2 ms/100 m.
+    #[serde(default = "default_latency_ms_per_100m")]
+    pub latency_ms_per_100m: f64,
+
     /// How often (milliseconds) to recompute fading for all channels.
     #[serde(default = "default_update_ms")]
     pub update_ms: u64,
@@ -72,6 +77,9 @@ fn default_snr_thresh_db() -> f64 {
 fn default_max_range_m() -> f64 {
     500.0
 }
+fn default_latency_ms_per_100m() -> f64 {
+    2.0
+}
 fn default_update_ms() -> u64 {
     200
 }
@@ -85,6 +93,7 @@ impl Default for NakagamiConfig {
             snr_0_db: default_snr_0_db(),
             snr_thresh_db: default_snr_thresh_db(),
             max_range_m: default_max_range_m(),
+            latency_ms_per_100m: default_latency_ms_per_100m(),
             update_ms: default_update_ms(),
         }
     }
