@@ -608,6 +608,7 @@ impl Rsu {
         };
 
         // Construct VANET KeyExchangeReply message and send
+        let key_id = ke_reply.key_id();
         let msg = Message::new(
             device.mac_address(),
             next_hop,
@@ -625,7 +626,8 @@ impl Rsu {
             tracing::info!(
                 dest = %dest_mac,
                 next_hop = %next_hop,
-                "Relayed KeyExchangeReply from server to OBU"
+                key_id = key_id,
+                "Relayed KeyExchangeReply from server to OBU on VANET"
             );
         }
     }

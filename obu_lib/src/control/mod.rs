@@ -955,8 +955,19 @@ impl Obu {
     fn handle_key_exchange_reply(
         &self,
         ke_reply: &KeyExchangeReply<'_>,
-        _msg: &Message<'_>,
+        msg: &Message<'_>,
     ) -> Result<Option<Vec<ReplyType>>> {
+        // Log receipt unconditionally so we can confirm delivery regardless of
+        // whether encryption is enabled, the key_id matches, or the reply is
+        // for this node vs a downstream relay target.
+        tracing::info!(
+            key_id = ke_reply.key_id(),
+            dest = %ke_reply.sender(),
+            my_mac = %self.device.mac_address(),
+            wire_from = ?msg.from().ok(),
+            "KeyExchangeReply received on VANET"
+        );
+
         if !self.args.obu_params.enable_encryption {
             return Ok(None);
         }
@@ -974,7 +985,8 @@ impl Obu {
             // populated when we forward a KeyExchangeInit upstream, so it is
             // available immediately even before heartbeat-reply-based routing
             // entries exist for the downstream OBU.
-            let next_hop_mac = self.downstream_client_cache.get(dest).or_else(|| {
+            let cache_hit = self.downstream_client_cache.get(dest);
+            let next_hop_mac = cache_hit.or_else(|| {
                 let routing = self
                     .routing
                     .read()
@@ -984,6 +996,7 @@ impl Obu {
             let Some(next_hop_mac) = next_hop_mac else {
                 tracing::warn!(
                     dest = %dest,
+                    key_id = ke_reply.key_id(),
                     "No route to forward KeyExchangeReply (not in downstream cache or routing table), dropping"
                 );
                 return Ok(None);
@@ -997,11 +1010,11 @@ impl Obu {
                 PacketType::Control(Control::KeyExchangeReply(reply)),
             );
             let wire: Vec<u8> = (&fwd).into();
-            tracing::debug!(
+            tracing::info!(
                 dest = %dest,
                 via = %next_hop_mac,
-                signed = ke_reply.is_signed(),
-                "Forwarding KeyExchangeReply down the tree"
+                key_id = ke_reply.key_id(),
+                "Relaying KeyExchangeReply down the tree"
             );
             return Ok(Some(vec![ReplyType::WireFlat(wire)]));
         }
