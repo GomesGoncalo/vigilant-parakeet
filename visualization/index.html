@@ -379,7 +379,11 @@
         document.getElementById('vp-panel-graph').style.display = (name === 'graph') ? 'block' : 'none';
         document.getElementById('vp-panel-map').style.display = (name === 'map') ? 'block' : 'none';
         if (name === 'map' && window.__vp_leaflet_map) {
-            setTimeout(() => { try { window.__vp_leaflet_map.invalidateSize(); } catch(e){} }, 50);
+            setTimeout(() => {
+                try { window.__vp_leaflet_map.invalidateSize(); } catch(e){}
+                // Re-fit to nodes every time the map tab is opened
+                window.__vp_fit_to_nodes();
+            }, 80);
         }
     };
 
@@ -475,19 +479,32 @@
                 }
             }
 
-            // Fit bounds on first data arrival
-            if (!window.__vp_map_fitted && names.length > 1) {
-                try {
-                    const lls = names
-                        .map(n => positions[n])
-                        .filter(p => p && !isNaN(p.lat))
-                        .map(p => [p.lat, p.lon]);
-                    if (lls.length > 1) {
-                        map.fitBounds(lls, { padding: [40, 40] });
-                        window.__vp_map_fitted = true;
-                    }
-                } catch(e) {}
+            // Always store latest positions for re-centering
+            window.__vp_last_positions = positions;
+
+            // Fit to nodes on first data arrival (when map tab is visible)
+            if (!window.__vp_map_fitted) {
+                const mapPanel = document.getElementById('vp-panel-map');
+                if (mapPanel && mapPanel.style.display !== 'none') {
+                    window.__vp_fit_to_nodes();
+                    window.__vp_map_fitted = true;
+                }
             }
+        };
+
+        // Fit the map to all current node positions (safe to call anytime)
+        window.__vp_fit_to_nodes = function() {
+            if (!leafletMap || !window.__vp_last_positions) return;
+            try {
+                const lls = Object.values(window.__vp_last_positions)
+                    .filter(p => p && !isNaN(p.lat) && !isNaN(p.lon))
+                    .map(p => [p.lat, p.lon]);
+                if (lls.length === 1) {
+                    leafletMap.setView(lls[0], 15);
+                } else if (lls.length > 1) {
+                    leafletMap.fitBounds(lls, { padding: [50, 50] });
+                }
+            } catch(e) {}
         };
     })();
     </script>
