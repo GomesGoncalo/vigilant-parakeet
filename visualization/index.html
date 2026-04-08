@@ -479,6 +479,58 @@
             arrow.head.setIcon(arrowHeadIcon(bearing(fromLL, toLL)));
         }
 
+        // ── Smooth marker animation ────────────────────────────────────────────────
+        // Lerps each marker from its current on-screen position to the latest
+        // target over ANIM_DURATION ms using a cubic ease-out, then keeps edge
+        // arrows in sync on every frame.
+
+        const ANIM_DURATION = 950; // ms — slightly less than the 1 s poll interval
+        const markerAnims = {};    // name → { fromLat, fromLon, toLat, toLon, startTime }
+        let _rafId = null;
+
+        function _animStep(now) {
+            let anyActive = false;
+            for (const name of Object.keys(markerAnims)) {
+                const a = markerAnims[name];
+                const raw = Math.min((now - a.startTime) / ANIM_DURATION, 1.0);
+                // cubic ease-out: feels natural for vehicle movement
+                const t = 1 - Math.pow(1 - raw, 3);
+                const lat = a.fromLat + (a.toLat - a.fromLat) * t;
+                const lon = a.fromLon + (a.toLon - a.fromLon) * t;
+                nodeMarkers[name].setLatLng([lat, lon]);
+                if (raw < 1.0) {
+                    anyActive = true;
+                } else {
+                    delete markerAnims[name];
+                }
+            }
+            // Keep edge arrows aligned with whatever position markers are at right now
+            for (const [key, arrow] of Object.entries(edgeArrows)) {
+                const [src, tgt] = key.split('|');
+                const fm = nodeMarkers[src], tm = nodeMarkers[tgt];
+                if (!fm || !tm) continue;
+                const fll = fm.getLatLng(), tll = tm.getLatLng();
+                updateArrow(arrow, [fll.lat, fll.lng], [tll.lat, tll.lng]);
+            }
+            _rafId = anyActive ? requestAnimationFrame(_animStep) : null;
+        }
+
+        // Start or redirect a marker towards (toLat, toLon).
+        // Always begins from the current on-screen position so mid-animation
+        // redirections never produce a visible jump.
+        function _smoothMove(name, toLat, toLon) {
+            const marker = nodeMarkers[name];
+            if (!marker) return;
+            const cur = marker.getLatLng();
+            if (Math.abs(cur.lat - toLat) < 1e-9 && Math.abs(cur.lng - toLon) < 1e-9) return;
+            markerAnims[name] = {
+                fromLat: cur.lat, fromLon: cur.lng,
+                toLat, toLon,
+                startTime: performance.now()
+            };
+            if (!_rafId) _rafId = requestAnimationFrame(_animStep);
+        }
+
         // ── Map init ───────────────────────────────────────────────────────────────
 
         function ensureMap() {
@@ -523,7 +575,7 @@
                           + `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}${speedStr}${brgStr}`;
 
                 if (nodeMarkers[name]) {
-                    nodeMarkers[name].setLatLng(ll);
+                    _smoothMove(name, p.lat, p.lon);
                     nodeMarkers[name].setTooltipContent(tip);
                     // Refresh icon to update label (speed etc. don't change the icon HTML but type might)
                 } else {
