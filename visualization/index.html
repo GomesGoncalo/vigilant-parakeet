@@ -375,13 +375,13 @@
 <body>
     <script>
     // Tab switcher (called from Yew-rendered buttons via onclick)
+    // NOTE: panel show/hide is owned by Yew; we only handle Leaflet side-effects here.
     window.vpSwitchTab = function(name) {
-        document.getElementById('vp-panel-graph').style.display = (name === 'graph') ? 'block' : 'none';
-        document.getElementById('vp-panel-map').style.display = (name === 'map') ? 'block' : 'none';
-        if (name === 'map' && window.__vp_leaflet_map) {
+        if (name === 'map') {
             setTimeout(() => {
-                try { window.__vp_leaflet_map.invalidateSize(); } catch(e){}
-                // Reset fitted flag so we re-center every time the tab is opened
+                if (window.__vp_leaflet_map) {
+                    try { window.__vp_leaflet_map.invalidateSize(); } catch(e){}
+                }
                 window.__vp_map_fitted = false;
                 window.__vp_fit_to_nodes();
             }, 80);

@@ -300,7 +300,8 @@ fn app() -> Html {
                 <Graph nodes={(*nodes).clone()} channels={(*channels).clone()} node_info={(*node_info).clone()} stats={(*stats).clone()} geo_positions={(*geo_positions).clone()} />
             </div>
             <div id="vp-panel-map" style={map_panel_style}>
-                <div id="map" style="width:100%;height:100%;position:relative;">
+                <div style="position:relative;width:100%;height:calc(100vh - 38px);">
+                    <div id="map" style="width:100%;height:100%;"></div>
                     if !has_positions {
                         <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#111;color:#888;font-size:13px;z-index:1000;pointer-events:none;">
                             {"Waiting for mobility data — run simulator with --features webview,mobility and mobility.enabled: true"}
