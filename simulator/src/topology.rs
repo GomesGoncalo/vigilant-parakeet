@@ -71,8 +71,11 @@ impl TopologyConfig {
     fn parse_topology_connections(
         config: &Config,
     ) -> Result<HashMap<String, HashMap<String, ChannelParameters>>> {
-        let topology = config
-            .get_table("topology")?
+        let raw = match config.get_table("topology") {
+            Ok(t) => t,
+            Err(_) => return Ok(HashMap::new()),
+        };
+        let topology = raw
             .iter()
             .filter_map(|(key, val)| {
                 val.clone().into_table().ok().map(|v| {

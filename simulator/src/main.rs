@@ -14,6 +14,8 @@ mod sim_args;
 use sim_args::SimArgs;
 
 mod channel;
+#[cfg(feature = "mobility")]
+mod fading;
 mod interface_builder;
 mod metrics;
 #[cfg(feature = "mobility")]

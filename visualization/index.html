@@ -397,7 +397,7 @@
         // ── Icon builders ──────────────────────────────────────────────────────────
 
         function makeNodeIcon(name, type) {
-            const isRsu = type === 'rsu';
+            const isRsu = type.toLowerCase() === 'rsu';
             const bg = isRsu ? '#f97316' : '#0ea5e9';
             const border = isRsu ? '#c2410c' : '#0369a1';
 
@@ -506,13 +506,13 @@
             const names = Object.keys(positions || {});
             if (names.length === 0) return;
 
-            // ── Nodes ──
+            // ── Nodes ── (only render nodes with a known display type)
             for (const name of names) {
                 const p = positions[name];
                 if (!p || typeof p.lat !== 'number') continue;
 
-                const nt = (node_types && node_types[name])
-                    ? node_types[name].toLowerCase() : 'obu';
+                const nt = node_types && node_types[name];
+                if (!nt) continue;  // server or unknown — skip
                 const ll = [p.lat, p.lon];
 
                 const speedStr = p.speed > 0.1 ? ` · ${p.speed.toFixed(1)} m/s` : '';
@@ -586,10 +586,15 @@
         let _lastEdges = [];
 
         function _inferNodeType(name) {
+            // Server nodes are infrastructure — never show on map
+            if (name.toLowerCase().startsWith('server')) return null;
             // Prefer WASM-provided node_info, fall back to name prefix heuristic
             if (window.__vp_last_node_info) {
                 const ni = window.__vp_last_node_info[name];
-                if (ni && ni.node_type) return ni.node_type;
+                if (ni && ni.node_type) {
+                    if (ni.node_type.toLowerCase() === 'server') return null;
+                    return ni.node_type;
+                }
             }
             if (name.toLowerCase().startsWith('rsu')) return 'Rsu';
             if (name.toLowerCase().startsWith('obu')) return 'Obu';
@@ -606,10 +611,11 @@
                 const positions = await posRes.json();
                 if (!positions || !Object.keys(positions).length) return;
 
-                // Build node_types map from names
+                // Build node_types map from names — null means hidden (e.g. server)
                 const node_types = {};
                 for (const name of Object.keys(positions)) {
-                    node_types[name] = _inferNodeType(name);
+                    const t = _inferNodeType(name);
+                    if (t !== null) node_types[name] = t;
                 }
                 _lastNodeTypes = node_types;
 

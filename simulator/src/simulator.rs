@@ -15,7 +15,10 @@ use server_lib::Server;
 use std::{collections::HashMap, sync::Arc};
 #[cfg(feature = "mobility")]
 use {
+    crate::fading::NakagamiConfig,
     crate::mobility::{position::NodePosition, MobilityConfig, MobilityManager, NodeGeoConfig},
+    common::channel_parameters::ChannelParameters,
+    std::time::Duration,
     tokio::sync::RwLock,
 };
 
@@ -107,6 +110,9 @@ pub struct Simulator {
     /// Mobility manager (held here so run() can spawn its tick loop).
     #[cfg(feature = "mobility")]
     mobility_manager: tokio::sync::Mutex<Option<MobilityManager>>,
+    /// Nakagami-m fading config — present when fading is enabled.
+    #[cfg(feature = "mobility")]
+    nakagami_config: Option<NakagamiConfig>,
 }
 
 type CallbackReturn = Result<(Arc<Device>, crate::node_interfaces::NodeInterfaces, SimNode)>;
@@ -247,8 +253,21 @@ impl Simulator {
     where
         F: Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
     {
-        let (channels, namespaces, nodes, node_namespace_map) =
+        #[cfg_attr(not(feature = "mobility"), allow(unused_mut))]
+        let (mut channels, namespaces, nodes, node_namespace_map) =
             Self::parse_topology(&args.config_file, callback)?;
+
+        // Parse optional Nakagami-m fading config and build full-mesh channels.
+        #[cfg(feature = "mobility")]
+        let nakagami_config = {
+            let cfg = Self::parse_nakagami_config(&args.config_file);
+            if let Some(ref c) = cfg {
+                if c.enabled {
+                    Self::build_full_mesh_channels(&mut channels, &nodes);
+                }
+            }
+            cfg
+        };
 
         // Initialize metrics
         let metrics = Arc::new(crate::metrics::SimulatorMetrics::new());
@@ -269,12 +288,75 @@ impl Simulator {
             node_namespace_map,
             metrics,
             #[cfg(feature = "mobility")]
+            nakagami_config,
+            #[cfg(feature = "mobility")]
             positions,
             #[cfg(feature = "mobility")]
             override_queue,
             #[cfg(feature = "mobility")]
             mobility_manager: tokio::sync::Mutex::new(mobility_option),
         })
+    }
+
+    /// Parse optional `nakagami:` section from the config file.
+    #[cfg(feature = "mobility")]
+    fn parse_nakagami_config(config_file: &str) -> Option<NakagamiConfig> {
+        let cfg = config::Config::builder()
+            .add_source(config::File::with_name(config_file))
+            .build()
+            .ok()?;
+        match cfg.get::<NakagamiConfig>("nakagami") {
+            Ok(c) if c.enabled => Some(c),
+            Ok(_) => None,
+            Err(_) => None,
+        }
+    }
+
+    /// Create directed VANET channels for every ordered non-server pair `(A → B)` that
+    /// doesn't already have a channel.  Initial loss = 0 (will be updated by fading task).
+    #[cfg(feature = "mobility")]
+    fn build_full_mesh_channels(
+        channels: &mut HashMap<String, HashMap<String, Arc<Channel>>>,
+        nodes: &HashMap<String, (Arc<Device>, crate::node_interfaces::NodeInterfaces, SimNode)>,
+    ) {
+        let default_params = ChannelParameters {
+            latency: Duration::ZERO,
+            loss: 0.0,
+            jitter: Duration::ZERO,
+        };
+
+        let node_list: Vec<_> = nodes
+            .iter()
+            .filter(|(_, (_, _, sim_node))| !matches!(sim_node, SimNode::Server(_)))
+            .map(|(name, (device, interfaces, _))| {
+                (name.clone(), device.clone(), interfaces.vanet().cloned())
+            })
+            .collect();
+
+        for (from, from_dev, _) in &node_list {
+            for (to, _to_dev, to_vanet) in &node_list {
+                if from == to {
+                    continue;
+                }
+                if channels.get(from).and_then(|m| m.get(to)).is_some() {
+                    continue;
+                }
+                let Some(to_tun) = to_vanet.as_ref() else {
+                    continue;
+                };
+                let ch = Channel::new(
+                    default_params,
+                    from_dev.mac_address(),
+                    to_tun.clone(),
+                    from,
+                    to,
+                );
+                channels
+                    .entry(from.clone())
+                    .or_default()
+                    .insert(to.clone(), ch);
+            }
+        }
     }
 
     /// Parse optional mobility config and per-node geo configs, then init the
@@ -368,6 +450,43 @@ impl Simulator {
                 tracing::info!("Starting mobility tick loop");
                 tokio::spawn(mgr.run_loop());
             }
+        }
+
+        // Spawn Nakagami-m fading task if enabled (requires mobility positions).
+        #[cfg(feature = "mobility")]
+        if let Some(ref nak_cfg) = self.nakagami_config {
+            tracing::info!("Starting Nakagami-m fading task");
+            let positions = self.positions.clone();
+            let cfg = nak_cfg.clone();
+            // Collect only VANET channels (exclude ":cloud" keys).
+            let vanet_channels: Vec<(String, String, Arc<Channel>)> = self
+                .channels
+                .iter()
+                .filter(|(from, _)| !from.contains(":cloud"))
+                .flat_map(|(from, to_map)| {
+                    to_map
+                        .iter()
+                        .filter(|(to, _)| !to.contains(":cloud"))
+                        .map(|(to, ch)| (from.clone(), to.clone(), ch.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+
+            let interval = Duration::from_millis(cfg.update_ms);
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(interval);
+                loop {
+                    ticker.tick().await;
+                    let pos = positions.read().await;
+                    for (from, to, channel) in &vanet_channels {
+                        if let (Some(fp), Some(tp)) = (pos.get(from), pos.get(to)) {
+                            let d = crate::fading::haversine_m(fp.lat, fp.lon, tp.lat, tp.lon);
+                            let loss = crate::fading::nakagami_loss(d, &cfg);
+                            channel.set_loss(loss);
+                        }
+                    }
+                }
+            });
         }
 
         let mut future_set = self
