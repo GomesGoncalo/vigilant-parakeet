@@ -161,7 +161,7 @@ At each loss level, the routing score $s_m = mu_m^min + overline(mu)_m$ was
 sampled every 500 ms for 30 seconds (60 samples per loss level) and the
 mean and coefficient of variation (CV) of the score were recorded. The CV
 measures route instability: a high CV indicates that the score oscillates,
-which combined with the 10% hysteresis threshold can cause route flipping.
+which combined with the hysteresis threshold can cause route flipping.
 
 // TODO: insert figure showing routing score mean and CV vs. loss rate
 
@@ -170,13 +170,68 @@ channel latency. At higher loss rates, packet loss increases RTT variance
 (because lost packets force retransmission before the RSU can respond to a
 HeartbeatReply, biasing observed RTTs upward). The hysteresis threshold
 prevents route flips due to transient variance: a new candidate must be at
-least 10% better than the cached route before a switch occurs.
+least the configured hysteresis fraction better than the cached route before a
+switch occurs.
 
 The hop-count fallback becomes active when no latency measurements are recorded
 within `hello_history` slots. At 100% loss on the primary link, OBU₂ loses all
 measurements for OBU₁ and falls back to hop-count-based routing,
 automatically promoting an alternative path if one exists.
 
+== Nakagami-m fading experiments (preliminary plan)
+
+A planned experiment to characterise routing stability under Nakagami-m fading
+is described here. These runs produce the preliminary results to be inserted
+into this chapter after execution.
+
+Experiment design:
+
++ Topology: Linear-3 (RSU — OBU₁ — OBU₂) to exercise two-hop forwarding and
+  latency accumulation.
++ Channel baseline: latency 10 ms, loss 0%, per-link Nakagami-m fading added
+  to the RSU–OBU channels.
++ Fading parameters: m ∈ {0.5, 0.9, 1.0, 2.0, 5.0} (severe to mild fading);
+  sample granularity: per-packet and per-10 ms timeslot variants.
++ Metrics: route convergence time, routing-score mean and CV, N-best failover
+  restore time, and Key Exchange success rate (fraction of completed
+  handshakes within a 500 ms contact window).
++ Repetitions: 10 independent runs per (m, granularity) configuration to bound
+  stochastic variability.
+
+Run commands (example):
+
+```sh
+# build simulator
+cargo build -p simulator --release --features "webview,stats"
+
+# start simulator with topology file that enables Nakagami fading (examples/nakagami_linear3.yaml)
+sudo RUST_LOG="node=info" ./target/release/simulator --config-file examples/nakagami_linear3.yaml --pretty &
+SIM_PID=$!
+
+# run measurement collector (script collects /metrics every 100 ms for 60 s)
+./scripts/collect_metrics.sh http://localhost:3030/metrics nakagami_m${m}_gran${granularity}.json
+
+# stop simulator
+kill $SIM_PID
+```
+
+Analysis plan:
+
++ Compute mean and CV of routing score per run and aggregate across repeats.
++ Plot convergence CDFs and median failover restore times per m value.
++ Compare Key Exchange success probability as a function of fading severity
+  and sampling granularity.
+
+Notes and caveats:
+
+- The simulator requires sudo for network namespace creation; runs above
+  assume a Linux host with network namespace support.
+- If the simulator's fading configuration syntax differs, adapt the example
+  topology YAML accordingly (see Chapter 9 for notation).
+
+After execution, populate the figures and numeric tables in this chapter with
+the collected results (mean ± stddev) and update the text with the observed
+effects of Nakagami fading on routing stability and Key Exchange reliability.
 == N-Best Failover Latency
 
 The benefit of the N-best candidate cache was measured by inducing a

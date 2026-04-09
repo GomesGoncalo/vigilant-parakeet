@@ -129,10 +129,10 @@ Several limitations should be acknowledged:
 
 Several directions are identified for future research and development:
 
-/ Dynamic mobility: Integrate a SUMO @sumo mobility trace reader to drive
-  link up/down events and channel quality changes from realistic vehicle
-  mobility patterns. This would allow evaluation of route convergence under
-  the intermittent connectivity that characterises real vehicular deployments.
+/ Dynamic mobility (implemented): An OpenStreetMap-driven mobility backend
+  and an IDM car-following model have been added (see Chapter 10). This provides
+  reproducible vehicle trajectories, lane-change and overtaking dynamics, and
+  automated link up/down events suitable for mobility-aware routing experiments.
 
 / Radio channel model (implemented): A Nakagami-m small-scale fading model
   and full-mesh/auto-cloud channel support have been added to the simulator
