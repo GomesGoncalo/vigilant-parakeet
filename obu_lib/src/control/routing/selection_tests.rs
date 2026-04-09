@@ -3,7 +3,7 @@
 //! Comprehensive tests for route selection logic including hysteresis,
 //! latency-based routing, and deterministic tie-breaking.
 
-use super::super::routing::{Routing, Target};
+use super::super::routing::{Routing, SequenceEntry, SourceHistory, Target};
 use crate::args::{ObuArgs, ObuParameters};
 use mac_address::MacAddress;
 use tokio::time::{Duration, Instant};
@@ -38,7 +38,7 @@ fn tie_break_prefers_lower_mac_when_scores_equal() {
     // Populate `routes` with downstream observations for a single RSU/seq
     let rsu_mac: MacAddress = [100u8; 6].into();
     let seq = 0u32;
-    let mut seqmap = indexmap::IndexMap::new();
+    let mut history = SourceHistory::with_capacity(2);
     let mut downstream_map: std::collections::HashMap<MacAddress, Vec<Target>> =
         std::collections::HashMap::new();
 
@@ -59,17 +59,11 @@ fn tie_break_prefers_lower_mac_when_scores_equal() {
         ],
     );
 
-    seqmap.insert(
+    history.test_insert(
         seq,
-        (
-            Duration::from_millis(0),
-            rsu_mac,
-            1u32,
-            indexmap::IndexMap::new(),
-            downstream_map,
-        ),
+        SequenceEntry { received_at: Duration::from_millis(0), next_upstream: rsu_mac, hops: 1, downstream: downstream_map },
     );
-    routing.routes.insert(rsu_mac, seqmap);
+    routing.routes.insert(rsu_mac, history);
 
     // Now ask for route to target; since scores tie, the lower MAC should win
     let route = routing.get_route_to(Some(target)).expect("route present");
@@ -88,7 +82,7 @@ fn none_latency_handling_prefers_min_and_none_ignored_in_avg() {
 
     let rsu_mac: MacAddress = [101u8; 6].into();
     let seq = 0u32;
-    let mut seqmap = indexmap::IndexMap::new();
+    let mut history = SourceHistory::with_capacity(2);
     let mut downstream_map: std::collections::HashMap<MacAddress, Vec<Target>> =
         std::collections::HashMap::new();
 
@@ -109,17 +103,11 @@ fn none_latency_handling_prefers_min_and_none_ignored_in_avg() {
         ],
     );
 
-    seqmap.insert(
+    history.test_insert(
         seq,
-        (
-            Duration::from_millis(0),
-            rsu_mac,
-            1u32,
-            indexmap::IndexMap::new(),
-            downstream_map,
-        ),
+        SequenceEntry { received_at: Duration::from_millis(0), next_upstream: rsu_mac, hops: 1, downstream: downstream_map },
     );
-    routing.routes.insert(rsu_mac, seqmap);
+    routing.routes.insert(rsu_mac, history);
 
     // Candidate with measured latency should be preferred since None is treated as MAX
     let route = routing.get_route_to(Some(target)).expect("route present");

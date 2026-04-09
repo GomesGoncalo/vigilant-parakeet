@@ -3,9 +3,8 @@
 //! Tests for failover logic and candidate list management including
 //! rebuild from latency observations and hops-only backfill.
 
-use super::super::routing::{Routing, Target};
+use super::super::routing::{Routing, SequenceEntry, SourceHistory, Target};
 use crate::args::{ObuArgs, ObuParameters};
-use indexmap::IndexMap;
 use mac_address::MacAddress;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -42,7 +41,7 @@ fn failover_rebuilds_candidates_from_latency() {
     // Prepare an RSU entry whose downstream map contains latencyed observations
     let src: MacAddress = [9u8; 6].into(); // cached_source we want rebuilt for
     let rsu: MacAddress = [100u8; 6].into();
-    let mut seqmap = IndexMap::new();
+    let mut history = SourceHistory::with_capacity(2);
     let mut downstream_map: HashMap<MacAddress, Vec<Target>> = HashMap::new();
 
     // Two candidate next-hops with measured latencies; the lower-latency one should be preferred
@@ -62,17 +61,11 @@ fn failover_rebuilds_candidates_from_latency() {
         ],
     );
 
-    seqmap.insert(
+    history.test_insert(
         0u32,
-        (
-            Duration::from_millis(0),
-            rsu,
-            1u32,
-            IndexMap::new(),
-            downstream_map,
-        ),
+        SequenceEntry { received_at: Duration::from_millis(0), next_upstream: rsu, hops: 1, downstream: downstream_map },
     );
-    routing.routes.insert(rsu, seqmap);
+    routing.routes.insert(rsu, history);
 
     // Ensure cached_candidates empty so failover path rebuilds
     routing.cache.clear();
@@ -118,34 +111,16 @@ fn select_and_cache_upstream_backfills_by_hops() {
 
     // Create two upstream routes (no latency measurements) with different hop counts
     let rsu: MacAddress = [200u8; 6].into();
-    let mut seqmap = IndexMap::new();
+    let mut history = SourceHistory::with_capacity(2);
 
     // target is the RSU itself here; populate upstream entries for this RSU
     let via_a: MacAddress = [11u8; 6].into();
     let via_b: MacAddress = [12u8; 6].into();
 
     // No downstream entries required for hops-only selection; instead insert upstream_routes
-    seqmap.insert(
-        1u32,
-        (
-            Duration::from_millis(0),
-            via_a,
-            2u32, // hops
-            IndexMap::new(),
-            HashMap::new(),
-        ),
-    );
-    seqmap.insert(
-        2u32,
-        (
-            Duration::from_millis(0),
-            via_b,
-            1u32, // fewer hops, should be preferred
-            IndexMap::new(),
-            HashMap::new(),
-        ),
-    );
-    routing.routes.insert(rsu, seqmap);
+    history.test_insert(1u32, SequenceEntry::new(Duration::from_millis(0), via_a, 2));
+    history.test_insert(2u32, SequenceEntry::new(Duration::from_millis(0), via_b, 1));
+    routing.routes.insert(rsu, history);
 
     // Now call select_and_cache_upstream and expect cached_candidates to include via_b first
     let selected = routing
@@ -233,29 +208,11 @@ fn failover_backfills_from_hops_when_no_latency() {
     let rsu: MacAddress = src;
     let via_a: MacAddress = [11u8; 6].into();
     let via_b: MacAddress = [12u8; 6].into();
-    let mut seqmap = IndexMap::new();
+    let mut history = SourceHistory::with_capacity(2);
 
-    seqmap.insert(
-        1u32,
-        (
-            Duration::from_millis(0),
-            via_a,
-            3u32, // more hops
-            IndexMap::new(),
-            HashMap::new(),
-        ),
-    );
-    seqmap.insert(
-        2u32,
-        (
-            Duration::from_millis(0),
-            via_b,
-            1u32, // fewer hops, should be preferred
-            IndexMap::new(),
-            HashMap::new(),
-        ),
-    );
-    routing.routes.insert(rsu, seqmap);
+    history.test_insert(1u32, SequenceEntry::new(Duration::from_millis(0), via_a, 3));
+    history.test_insert(2u32, SequenceEntry::new(Duration::from_millis(0), via_b, 1));
+    routing.routes.insert(rsu, history);
 
     // Set cached source so failover can rebuild
     routing.cache.clear();

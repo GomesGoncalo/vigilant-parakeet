@@ -41,6 +41,15 @@ use node_lib::{Shared, SharedDevice, SharedTun};
 type SharedKeyStore = Arc<RwLock<DhKeyStore>>;
 type RevocationNonceCache = Arc<Mutex<VecDeque<([u8; 8], std::time::Instant)>>>;
 
+/// Action to take when a DH key exchange is needed.
+#[derive(Debug, Clone, Copy)]
+enum DhAction {
+    /// No pending exchange exists — start a fresh one.
+    Initiate,
+    /// A pending exchange timed out — re-use its retry counter.
+    Reinitiate,
+}
+
 /// Decode a hex string of any length into bytes. Returns `None` on invalid hex.
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
@@ -345,13 +354,13 @@ impl Obu {
                             //   so that an OBU stuck at the edge of range doesn't retry forever
                             //   through an RSU with high packet loss.
                             // - If pending exchange still in progress, wait
-                            let action = {
+                            let action: Option<DhAction> = {
                                 let store = obu
                                     .dh_key_store
                                     .read()
                                     .expect("dh key store read lock poisoned");
                                 if !store.has_pending(server_virtual_mac()) {
-                                    Some("initiate")
+                                    Some(DhAction::Initiate)
                                 } else if store.is_pending_timed_out(server_virtual_mac(), reply_timeout_ms) {
                                     let retries = store.pending_retries(server_virtual_mac()).unwrap_or(0);
                                     // After 3 timeouts through the same RSU, rotate to the next
@@ -378,22 +387,21 @@ impl Obu {
                                             "Server DH reply timed out, re-initiating (no session — packets will be dropped until established)"
                                         );
                                     }
-                                    Some("reinitiate")
+                                    Some(DhAction::Reinitiate)
                                 } else {
                                     None // still pending, wait
                                 }
                             };
 
-                            if let Some(mode) = action {
+                            if let Some(action) = action {
                                 let (key_id, pub_key) = {
                                     let mut store = obu
                                         .dh_key_store
                                         .write()
                                         .expect("dh key store write lock poisoned");
-                                    if mode == "reinitiate" {
-                                        store.reinitiate_exchange(server_virtual_mac())
-                                    } else {
-                                        store.initiate_exchange(server_virtual_mac())
+                                    match action {
+                                        DhAction::Reinitiate => store.reinitiate_exchange(server_virtual_mac()),
+                                        DhAction::Initiate => store.initiate_exchange(server_virtual_mac()),
                                     }
                                 };
 
@@ -451,7 +459,7 @@ impl Obu {
                                     tracing::info!(
                                         via = %upstream_mac,
                                         key_id = key_id,
-                                        mode = mode,
+                                        mode = ?action,
                                         dh_group = %obu.crypto_config.dh_group,
                                         "Sent DH KeyExchangeInit upstream"
                                     );

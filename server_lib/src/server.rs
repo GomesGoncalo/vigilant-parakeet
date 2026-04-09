@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{OnceCell, RwLock};
 use tokio::time::Instant;
 use tracing::Instrument;
 
@@ -50,6 +50,24 @@ struct ObuRoute {
     rsu_addr: SocketAddr,
 }
 
+/// Shared server state passed to async tasks.
+///
+/// All fields are either `Copy` or `Arc`-wrapped, so `.clone()` is O(1).
+#[derive(Clone)]
+struct ServerCtx {
+    socket: Arc<UdpSocket>,
+    registry: Arc<RwLock<HashMap<MacAddress, Vec<MacAddress>>>>,
+    obu_routes: Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
+    tun: Option<SharedTun>,
+    enable_encryption: bool,
+    enable_dh_signatures: bool,
+    signing_keypair: Option<Arc<SigningKeypair>>,
+    dh_signing_allowlist: Arc<RwLock<HashMap<MacAddress, Vec<u8>>>>,
+    dh_keys: Arc<RwLock<DhKeyStore>>,
+    crypto_config: CryptoConfig,
+    key_ttl_ms: u64,
+}
+
 /// ServerNode receives traffic from RSU nodes over UDP via the cloud interface.
 ///
 /// The Server owns the TAP device and handles all encryption/decryption of OBU
@@ -67,8 +85,8 @@ pub struct Server {
     ip: Ipv4Addr,
     /// UDP port to listen on.
     port: u16,
-    /// UDP socket for receiving traffic from RSUs.
-    socket: Arc<Mutex<Option<Arc<UdpSocket>>>>,
+    /// UDP socket for receiving traffic from RSUs. Set once in `start()`.
+    socket: Arc<OnceCell<Arc<UdpSocket>>>,
     /// Registry: RSU VANET MAC → list of associated OBU MACs.
     registry: Arc<RwLock<HashMap<MacAddress, Vec<MacAddress>>>>,
     /// OBU routing table: virtual TAP MAC → (VANET MAC, RSU addr).
@@ -102,6 +120,17 @@ pub struct Server {
     signing_algorithm: SigningAlgorithm,
 }
 
+/// Parse the destination and source MAC addresses from an Ethernet frame.
+/// Returns `None` if the frame is shorter than 12 bytes.
+fn parse_eth_addrs(frame: &[u8]) -> Option<(MacAddress, MacAddress)> {
+    if frame.len() < 12 {
+        return None;
+    }
+    let dest: [u8; 6] = frame[..6].try_into().expect("length checked");
+    let src: [u8; 6] = frame[6..12].try_into().expect("length checked");
+    Some((MacAddress::new(dest), MacAddress::new(src)))
+}
+
 impl Server {
     /// Create a new Server that will listen on the specified IP and port.
     /// Note: The server does not start listening until `start()` is called.
@@ -109,7 +138,7 @@ impl Server {
         Self {
             ip,
             port,
-            socket: Arc::new(Mutex::new(None)),
+            socket: Arc::new(OnceCell::new()),
             registry: Arc::new(RwLock::new(HashMap::new())),
             obu_routes: Arc::new(RwLock::new(HashMap::new())),
             tun: None,
@@ -243,75 +272,37 @@ impl Server {
             );
         }
 
-        let socket = UdpSocket::bind(&bind_addr).await?;
-        let socket = Arc::new(socket);
+        let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
+        // Ignore error: if called twice, the first socket wins.
+        let _ = self.socket.set(socket.clone());
 
-        {
-            let mut sock_lock = self.socket.lock().await;
-            *sock_lock = Some(socket.clone());
-        }
+        let ctx = ServerCtx {
+            socket,
+            registry: self.registry.clone(),
+            obu_routes: self.obu_routes.clone(),
+            tun: self.tun.clone(),
+            enable_encryption: self.enable_encryption,
+            enable_dh_signatures: self.enable_dh_signatures,
+            signing_keypair: self.signing_keypair.clone(),
+            dh_signing_allowlist: self.dh_signing_allowlist.clone(),
+            dh_keys: self.dh_keys.clone(),
+            crypto_config: self.crypto_config,
+            key_ttl_ms: self.key_ttl_ms,
+        };
 
         // Spawn cloud recv task (handles registration + upstream forwarding + key exchange)
-        let socket_for_recv = socket.clone();
-        let registry = self.registry.clone();
-        let obu_routes = self.obu_routes.clone();
-        let tun_for_recv = self.tun.clone();
-        let enable_encryption = self.enable_encryption;
-        let enable_dh_signatures = self.enable_dh_signatures;
-        let signing_keypair = self.signing_keypair.clone();
-        let dh_signing_allowlist = self.dh_signing_allowlist.clone();
-        let dh_keys = self.dh_keys.clone();
-        let crypto_config = self.crypto_config;
-        let name_for_recv = node_name.clone();
-
-        let key_ttl_ms_recv = self.key_ttl_ms;
-        let recv_span = tracing::info_span!("node", name = %name_for_recv);
+        let recv_span = tracing::info_span!("node", name = %node_name);
+        let ctx_recv = ctx.clone();
         tokio::spawn(
-            async move {
-                Self::cloud_recv_loop(
-                    socket_for_recv,
-                    registry,
-                    obu_routes,
-                    tun_for_recv,
-                    enable_encryption,
-                    enable_dh_signatures,
-                    signing_keypair,
-                    dh_signing_allowlist,
-                    dh_keys,
-                    crypto_config,
-                    key_ttl_ms_recv,
-                )
-                .await;
-            }
-            .instrument(recv_span),
+            async move { Self::cloud_recv_loop(ctx_recv).await }.instrument(recv_span),
         );
 
         // Spawn TAP read task if a TUN device is available
-        if let Some(tun) = &self.tun {
-            let tun_for_tap = tun.clone();
-            let socket_for_tap = socket.clone();
-            let obu_routes_for_tap = self.obu_routes.clone();
-            let enable_enc = self.enable_encryption;
-            let dh_keys_tap = self.dh_keys.clone();
-            let crypto_config_tap = self.crypto_config;
-            let key_ttl_ms_tap = self.key_ttl_ms;
-            let name_for_tap = node_name.clone();
-
-            let tap_span = tracing::info_span!("node", name = %name_for_tap);
+        if ctx.tun.is_some() {
+            let tap_span = tracing::info_span!("node", name = %node_name);
+            let ctx_tap = ctx.clone();
             tokio::spawn(
-                async move {
-                    Self::tap_read_loop(
-                        tun_for_tap,
-                        socket_for_tap,
-                        obu_routes_for_tap,
-                        enable_enc,
-                        dh_keys_tap,
-                        crypto_config_tap,
-                        key_ttl_ms_tap,
-                    )
-                    .await;
-                }
-                .instrument(tap_span),
+                async move { Self::tap_read_loop(ctx_tap).await }.instrument(tap_span),
             );
         }
 
@@ -319,56 +310,22 @@ impl Server {
     }
 
     /// Main cloud receive loop: handles Registration, UpstreamForward, KeyExchangeForward.
-    #[allow(clippy::too_many_arguments)]
-    async fn cloud_recv_loop(
-        socket: Arc<UdpSocket>,
-        registry: Arc<RwLock<HashMap<MacAddress, Vec<MacAddress>>>>,
-        obu_routes: Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
-        tun: Option<SharedTun>,
-        enable_encryption: bool,
-        enable_dh_signatures: bool,
-        signing_keypair: Option<Arc<SigningKeypair>>,
-        dh_signing_allowlist: Arc<RwLock<HashMap<MacAddress, Vec<u8>>>>,
-        dh_keys: Arc<RwLock<DhKeyStore>>,
-        crypto_config: CryptoConfig,
-        key_ttl_ms: u64,
-    ) {
+    async fn cloud_recv_loop(ctx: ServerCtx) {
         let mut buf = vec![0u8; 65536];
         loop {
-            match socket.recv_from(&mut buf).await {
+            match ctx.socket.recv_from(&mut buf).await {
                 Ok((len, src_addr)) => {
                     let data = &buf[..len];
                     match CloudMessage::try_from_bytes(data) {
                         Some(CloudMessage::Registration(msg)) => {
-                            Self::handle_registration(&registry, &msg, src_addr).await;
+                            Self::handle_registration(&ctx.registry, &msg, src_addr).await;
                         }
                         Some(CloudMessage::UpstreamForward(fwd)) => {
-                            Self::handle_upstream(
-                                &fwd,
-                                src_addr,
-                                &obu_routes,
-                                tun.as_ref(),
-                                enable_encryption,
-                                &dh_keys,
-                                key_ttl_ms,
-                                crypto_config,
-                                &socket,
-                            )
-                            .await;
+                            Self::handle_upstream(&fwd, src_addr, &ctx).await;
                         }
                         Some(CloudMessage::KeyExchangeForward(ke_fwd)) => {
-                            if enable_encryption {
-                                Self::handle_key_exchange_forward(
-                                    &ke_fwd,
-                                    src_addr,
-                                    &dh_keys,
-                                    crypto_config,
-                                    &socket,
-                                    enable_dh_signatures,
-                                    signing_keypair.as_deref(),
-                                    &dh_signing_allowlist,
-                                )
-                                .await;
+                            if ctx.enable_encryption {
+                                Self::handle_key_exchange_forward(&ke_fwd, src_addr, &ctx).await;
                             } else {
                                 tracing::warn!(
                                     src = %src_addr,
@@ -440,18 +397,15 @@ impl Server {
     /// - **Unicast to a known OBU** (dest MAC is in `obu_routes`): forward as
     ///   `DownstreamForward` directly to that OBU's RSU (do **not** write to server TAP).
     /// - **Unicast to unknown dest** (server-destined or unknown): write to server TAP.
-    #[allow(clippy::too_many_arguments)]
-    async fn handle_upstream(
-        fwd: &UpstreamForward,
-        src_addr: SocketAddr,
-        obu_routes: &Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
-        tun: Option<&SharedTun>,
-        enable_encryption: bool,
-        dh_keys: &Arc<RwLock<DhKeyStore>>,
-        key_ttl_ms: u64,
-        crypto_config: CryptoConfig,
-        socket: &Arc<UdpSocket>,
-    ) {
+    async fn handle_upstream(fwd: &UpstreamForward, src_addr: SocketAddr, ctx: &ServerCtx) {
+        let socket = &ctx.socket;
+        let obu_routes = &ctx.obu_routes;
+        let dh_keys = &ctx.dh_keys;
+        let tun = ctx.tun.as_ref();
+        let enable_encryption = ctx.enable_encryption;
+        let key_ttl_ms = ctx.key_ttl_ms;
+        let crypto_config = ctx.crypto_config;
+
         // Decrypt the payload if encryption is enabled.
         let tap_frame = if enable_encryption {
             let key = {
@@ -486,7 +440,7 @@ impl Server {
             fwd.payload.clone()
         };
 
-        if tap_frame.len() < 12 {
+        let Some((dest_mac, virtual_tap_mac)) = parse_eth_addrs(&tap_frame) else {
             // Too short to contain an Ethernet header — pass to TAP as-is.
             if let Some(tun) = tun {
                 if let Err(e) = tun.send_all(&tap_frame).await {
@@ -494,11 +448,9 @@ impl Server {
                 }
             }
             return;
-        }
+        };
 
-        // Learn the OBU's virtual TAP MAC from the Ethernet frame source (bytes 6..12).
-        let src_mac_bytes: [u8; 6] = tap_frame[6..12].try_into().unwrap();
-        let virtual_tap_mac = MacAddress::new(src_mac_bytes);
+        // Learn the OBU's virtual TAP MAC from the Ethernet frame source.
         obu_routes.write().await.insert(
             virtual_tap_mac,
             ObuRoute {
@@ -513,10 +465,7 @@ impl Server {
             "Learned OBU route from upstream traffic"
         );
 
-        // Extract dest MAC for routing decision.
-        let dest_mac_bytes: [u8; 6] = tap_frame[..6].try_into().unwrap();
-        let dest_mac = MacAddress::new(dest_mac_bytes);
-        let is_multicast = dest_mac_bytes[0] & 0x01 != 0;
+        let is_multicast = dest_mac.bytes()[0] & 0x01 != 0;
 
         if is_multicast {
             // Multicast/broadcast: deliver to server TAP and fan-out to all OBUs.
@@ -533,38 +482,22 @@ impl Server {
                 routes
                     .iter()
                     .filter_map(|(_, route)| {
-                        let payload_for_obu = if enable_encryption {
-                            match Self::encrypt_for_obu(
+                        let payload = if enable_encryption {
+                            Self::try_encrypt_for_obu(
                                 &tap_frame,
                                 route.vanet_mac,
                                 &keys,
                                 key_ttl_ms,
                                 crypto_config,
-                            ) {
-                                Some(Ok(enc)) => enc,
-                                Some(Err(e)) => {
-                                    tracing::error!(
-                                        obu = %route.vanet_mac,
-                                        error = %e,
-                                        "Failed to re-encrypt multicast frame for OBU"
-                                    );
-                                    return None;
-                                }
-                                None => {
-                                    tracing::debug!(
-                                        obu = %route.vanet_mac,
-                                        "No DH session for OBU, skipping multicast re-encrypt"
-                                    );
-                                    return None;
-                                }
-                            }
+                                "upstream multicast",
+                            )?
                         } else {
                             tap_frame.clone()
                         };
                         let downstream = DownstreamForward::new(
                             route.vanet_mac,
                             MacAddress::new([0; 6]),
-                            payload_for_obu,
+                            payload,
                         );
                         Some((downstream.to_bytes(), route.rsu_addr, route.vanet_mac))
                     })
@@ -585,26 +518,17 @@ impl Server {
             if let Some(route) = route {
                 let payload = if enable_encryption {
                     let keys = dh_keys.read().await;
-                    match Self::encrypt_for_obu(
+                    let Some(enc) = Self::try_encrypt_for_obu(
                         &tap_frame,
                         route.vanet_mac,
                         &keys,
                         key_ttl_ms,
                         crypto_config,
-                    ) {
-                        Some(Ok(enc)) => enc,
-                        Some(Err(e)) => {
-                            tracing::error!(error = %e, "Failed to re-encrypt frame for OBU L2 switch");
-                            return;
-                        }
-                        None => {
-                            tracing::debug!(
-                                obu = %route.vanet_mac,
-                                "No DH session for OBU, dropping L2-switched frame"
-                            );
-                            return;
-                        }
-                    }
+                        "upstream unicast L2-switch",
+                    ) else {
+                        return;
+                    };
+                    enc
                 } else {
                     tap_frame.clone()
                 };
@@ -634,16 +558,15 @@ impl Server {
     }
 
     /// Read frames from TAP, encrypt, and send downstream to the appropriate RSU.
-    #[allow(clippy::too_many_arguments)]
-    async fn tap_read_loop(
-        tun: SharedTun,
-        socket: Arc<UdpSocket>,
-        obu_routes: Arc<RwLock<HashMap<MacAddress, ObuRoute>>>,
-        enable_encryption: bool,
-        dh_keys: Arc<RwLock<DhKeyStore>>,
-        crypto_config: CryptoConfig,
-        key_ttl_ms: u64,
-    ) {
+    async fn tap_read_loop(ctx: ServerCtx) {
+        let tun = ctx.tun.as_ref().expect("tap_read_loop spawned without a tun device");
+        let socket = &ctx.socket;
+        let obu_routes = &ctx.obu_routes;
+        let dh_keys = &ctx.dh_keys;
+        let enable_encryption = ctx.enable_encryption;
+        let crypto_config = ctx.crypto_config;
+        let key_ttl_ms = ctx.key_ttl_ms;
+
         let mut buf = vec![0u8; 65536];
         loop {
             let n = match tun.recv(&mut buf).await {
@@ -654,18 +577,14 @@ impl Server {
                 }
             };
 
-            if n < 14 {
-                continue; // Need at least an Ethernet header
-            }
-
             let frame = &buf[..n];
-            // Ethernet frame: first 6 bytes = destination MAC
-            let dest_mac_bytes: [u8; 6] = frame[..6].try_into().unwrap();
-            let dest_mac = MacAddress::new(dest_mac_bytes);
+            let Some((dest_mac, _src_mac)) = parse_eth_addrs(frame) else {
+                continue; // Need at least an Ethernet header
+            };
 
             // Broadcast (FF:FF:FF:FF:FF:FF) has the group bit set, so is_multicast
             // already covers it — no separate is_broadcast check needed.
-            let is_multicast = dest_mac_bytes[0] & 0x01 != 0;
+            let is_multicast = dest_mac.bytes()[0] & 0x01 != 0;
 
             if is_multicast {
                 // Snapshot routes and encrypt payloads while holding locks,
@@ -676,38 +595,22 @@ impl Server {
                     routes
                         .iter()
                         .filter_map(|(&_tap_mac, route)| {
-                            let payload_data = if enable_encryption {
-                                match Self::encrypt_for_obu(
+                            let payload = if enable_encryption {
+                                Self::try_encrypt_for_obu(
                                     frame,
                                     route.vanet_mac,
                                     &keys,
                                     key_ttl_ms,
                                     crypto_config,
-                                ) {
-                                    Some(Ok(enc)) => enc,
-                                    Some(Err(e)) => {
-                                        tracing::error!(
-                                            obu = %route.vanet_mac,
-                                            error = %e,
-                                            "Failed to encrypt broadcast downstream for OBU"
-                                        );
-                                        return None;
-                                    }
-                                    None => {
-                                        tracing::debug!(
-                                            obu = %route.vanet_mac,
-                                            "No DH session for OBU, skipping broadcast"
-                                        );
-                                        return None;
-                                    }
-                                }
+                                    "tap broadcast",
+                                )?
                             } else {
                                 frame.to_vec()
                             };
                             let fwd = DownstreamForward::new(
                                 route.vanet_mac,
-                                MacAddress::new([0; 6]), // server origin
-                                payload_data,
+                                MacAddress::new([0; 6]),
+                                payload,
                             );
                             Some((fwd.to_bytes(), route.rsu_addr, route.vanet_mac))
                         })
@@ -732,30 +635,17 @@ impl Server {
                 if let Some(route) = route {
                     let payload_data = if enable_encryption {
                         let keys = dh_keys.read().await;
-                        match Self::encrypt_for_obu(
+                        let Some(enc) = Self::try_encrypt_for_obu(
                             frame,
                             route.vanet_mac,
                             &keys,
                             key_ttl_ms,
                             crypto_config,
-                        ) {
-                            Some(Ok(enc)) => enc,
-                            Some(Err(e)) => {
-                                tracing::error!(
-                                    obu = %dest_mac,
-                                    error = %e,
-                                    "Failed to encrypt downstream for OBU"
-                                );
-                                continue;
-                            }
-                            None => {
-                                tracing::debug!(
-                                    obu = %dest_mac,
-                                    "No DH session for OBU, dropping downstream"
-                                );
-                                continue;
-                            }
-                        }
+                            "tap unicast",
+                        ) else {
+                            continue;
+                        };
+                        enc
                     } else {
                         frame.to_vec()
                     };
@@ -801,20 +691,46 @@ impl Server {
         ))
     }
 
+    /// Encrypt `frame` for `obu_mac`, logging failures and returning `None` on any error.
+    ///
+    /// Combines the three outcomes of `encrypt_for_obu` into a single `Option`:
+    /// - `Some(enc)` — ready to send
+    /// - `None` — no session or encryption error (already logged; caller should skip)
+    fn try_encrypt_for_obu(
+        frame: &[u8],
+        obu_mac: MacAddress,
+        keys: &DhKeyStore,
+        key_ttl_ms: u64,
+        crypto_config: CryptoConfig,
+        context: &str,
+    ) -> Option<Vec<u8>> {
+        match Self::encrypt_for_obu(frame, obu_mac, keys, key_ttl_ms, crypto_config) {
+            Some(Ok(enc)) => Some(enc),
+            Some(Err(e)) => {
+                tracing::error!(obu = %obu_mac, error = %e, context, "Encryption failed");
+                None
+            }
+            None => {
+                tracing::debug!(obu = %obu_mac, context, "No DH session, skipping");
+                None
+            }
+        }
+    }
+
     /// Handle a KeyExchangeForward from an RSU: generate our keypair,
     /// compute the shared secret, store the per-OBU key, and send a
     /// KeyExchangeResponse back to the RSU.
-    #[allow(clippy::too_many_arguments)]
     async fn handle_key_exchange_forward(
         ke_fwd: &crate::cloud_protocol::KeyExchangeForward,
         src_addr: SocketAddr,
-        dh_keys: &Arc<RwLock<DhKeyStore>>,
-        crypto_config: CryptoConfig,
-        socket: &Arc<UdpSocket>,
-        enable_dh_signatures: bool,
-        signing_keypair: Option<&SigningKeypair>,
-        dh_signing_allowlist: &RwLock<HashMap<MacAddress, Vec<u8>>>,
+        ctx: &ServerCtx,
     ) {
+        let dh_keys = &ctx.dh_keys;
+        let crypto_config = ctx.crypto_config;
+        let socket = &ctx.socket;
+        let enable_dh_signatures = ctx.enable_dh_signatures;
+        let signing_keypair = ctx.signing_keypair.as_deref();
+        let dh_signing_allowlist = &*ctx.dh_signing_allowlist;
         tracing::info!(
             obu = %ke_fwd.obu_mac,
             rsu = %ke_fwd.rsu_mac,
@@ -1165,8 +1081,7 @@ impl Server {
     /// Returns `None` if the server has not been started yet.
     /// Useful in tests where the server binds to port 0 (OS-assigned).
     pub async fn bound_addr(&self) -> Option<std::net::SocketAddr> {
-        let sock = self.socket.lock().await;
-        sock.as_ref()?.local_addr().ok()
+        self.socket.get()?.local_addr().ok()
     }
 
     /// Revoke the active session for a single OBU.
@@ -1227,8 +1142,7 @@ impl Server {
             } else {
                 SessionTerminatedForward::new(obu_mac)
             };
-            let sock = self.socket.lock().await;
-            if let Some(socket) = sock.as_ref() {
+            if let Some(socket) = self.socket.get() {
                 if let Err(e) = socket.send_to(&fwd.to_bytes(), rsu_addr).await {
                     tracing::warn!(
                         obu = %obu_mac,
@@ -1370,8 +1284,7 @@ mod tests {
         server.start().await?;
 
         let actual_port = {
-            let sock_lock = server.socket.lock().await;
-            sock_lock.as_ref().unwrap().local_addr()?.port()
+            server.socket.get().unwrap().local_addr()?.port()
         };
 
         let rsu_mac: MacAddress = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF].into();
@@ -1402,8 +1315,7 @@ mod tests {
         server.start().await?;
 
         let actual_port = {
-            let sock_lock = server.socket.lock().await;
-            sock_lock.as_ref().unwrap().local_addr()?.port()
+            server.socket.get().unwrap().local_addr()?.port()
         };
 
         let rsu_mac: MacAddress = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF].into();
@@ -1591,8 +1503,7 @@ mod test_helpers_tests {
         server.start().await?;
 
         let server_port = {
-            let sock = server.socket.lock().await;
-            sock.as_ref().unwrap().local_addr()?.port()
+            server.socket.get().unwrap().local_addr()?.port()
         };
 
         // RSU socket (to receive DownstreamForward)

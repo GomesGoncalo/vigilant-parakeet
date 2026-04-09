@@ -87,19 +87,32 @@ pub struct DisplayChannelStats {
     pub avg_latency_ms: f64,
 }
 
-/// Type alias for paused upstream snapshot entries:
-/// (obu_name, obu_mac, upstream_display, upstream_mac, hops, next_hop_mac)
-pub type UpstreamSnapshotEntry = (String, String, String, String, String, String);
+/// Snapshot of an OBU's upstream routing selection captured at pause time.
+#[derive(Debug, Clone)]
+pub struct UpstreamSnapshot {
+    pub obu_name: String,
+    pub obu_mac: String,
+    /// Display name or MAC of the upstream RSU/relay.
+    pub upstream_display: String,
+    pub upstream_mac: String,
+    pub hops: String,
+    pub next_hop_mac: String,
+}
 
-/// TUI state maintaining historical data for graphs
-/// Node snapshot type used across TUI tabs
-pub type NodeSnapshot = (
-    String,
-    String,
-    Option<std::net::Ipv4Addr>,
-    Option<std::net::Ipv4Addr>,
-    crate::simulator::SimNode,
-);
+/// Snapshot of a network node stored in the TUI for display and routing queries.
+#[derive(Clone)]
+pub struct NodeSnapshot {
+    /// VANET MAC address as a formatted string.
+    pub mac: String,
+    /// Node type label: `"Obu"`, `"Rsu"`, or `"Server"`.
+    pub node_type: String,
+    /// Virtual TAP IP address (OBU only).
+    pub virtual_ip: Option<std::net::Ipv4Addr>,
+    /// Cloud interface IP address.
+    pub cloud_ip: Option<std::net::Ipv4Addr>,
+    /// Live simulator node reference for routing queries.
+    pub simnode: crate::simulator::SimNode,
+}
 
 /// Map of node name -> snapshot
 pub type NodesMap = HashMap<String, NodeSnapshot>;
@@ -146,7 +159,7 @@ pub struct TuiState {
     // Concrete display snapshot for channels (precomputed throughput/latency at pause time)
     pub paused_channel_display: Option<HashMap<String, DisplayChannelStats>>,
     // Snapshot of upstream entries when paused
-    pub paused_upstreams: Option<Vec<UpstreamSnapshotEntry>>,
+    pub paused_upstreams: Option<Vec<UpstreamSnapshot>>,
     pub log_filter: LogFilter,
     pub log_input_mode: bool,
     pub log_input_buffer: String,
@@ -210,13 +223,13 @@ impl TuiState {
                 let cloud_ip = interfaces.cloud_ip;
                 (
                     name,
-                    (
-                        format!("{}", device.mac_address()),
+                    NodeSnapshot {
+                        mac: format!("{}", device.mac_address()),
                         node_type,
                         virtual_ip,
                         cloud_ip,
-                        node,
-                    ),
+                        simnode: node,
+                    },
                 )
             })
             .collect();

@@ -57,22 +57,8 @@ impl ChannelStats {
             .map(|(_, bytes)| bytes)
             .sum();
 
-        // Calculate actual time span of data
-        let oldest_timestamp = self
-            .throughput_window
-            .iter()
-            .filter(|(timestamp, _)| *timestamp >= cutoff)
-            .map(|(timestamp, _)| *timestamp)
-            .min();
-
-        if let Some(oldest) = oldest_timestamp {
-            let time_span = now.duration_since(oldest).as_secs_f64();
-            if time_span > 0.0 {
-                return total_bytes as f64 / time_span;
-            }
-        }
-
-        0.0
+        // Divide by the fixed window size so the result is stable from the start
+        total_bytes as f64 / n as f64
     }
 }
 

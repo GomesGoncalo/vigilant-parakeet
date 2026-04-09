@@ -17,6 +17,15 @@ use std::{collections::HashMap, sync::Arc};
 
 use super::TabRenderer;
 
+/// Computed display data for a single channel row (avoids re-computing during sort).
+struct ChannelDisplayRow {
+    name: String,
+    stats: ChannelStats,
+    loss_rate: f64,
+    throughput_bps: f64,
+    avg_latency_ms: f64,
+}
+
 /// State data for the Channels tab
 pub struct ChannelsTabState<'a> {
     pub metrics: &'a Arc<SimulatorMetrics>,
@@ -123,7 +132,7 @@ impl TabRenderer for ChannelsTab {
         let header = Row::new(header_cells).bottom_margin(1);
 
         // Create data rows - compute either from display snapshot (if paused) or live_stats
-        let mut channel_data: Vec<_> = live_stats
+        let mut channel_data: Vec<ChannelDisplayRow> = live_stats
             .iter()
             .map(|(name, stats)| {
                 if let Some(display) = display_map.and_then(|m| m.get(name)) {
@@ -133,14 +142,13 @@ impl TabRenderer for ChannelsTab {
                     } else {
                         0.0
                     };
-                    (
-                        name.clone(),
-                        // create a lightweight clone of the original stats for compatibility (not used for time-based calc)
-                        ChannelStats { ..stats.clone() },
+                    ChannelDisplayRow {
+                        name: name.clone(),
+                        stats: stats.clone(),
                         loss_rate,
-                        display.throughput_bps,
-                        display.avg_latency_ms,
-                    )
+                        throughput_bps: display.throughput_bps,
+                        avg_latency_ms: display.avg_latency_ms,
+                    }
                 } else {
                     let total = stats.packets_sent + stats.packets_dropped;
                     let loss_rate = if total > 0 {
@@ -154,60 +162,65 @@ impl TabRenderer for ChannelsTab {
                     } else {
                         0.0
                     };
-                    (
-                        name.clone(),
-                        stats.clone(),
+                    ChannelDisplayRow {
+                        name: name.clone(),
+                        stats: stats.clone(),
                         loss_rate,
                         throughput_bps,
                         avg_latency_ms,
-                    )
+                    }
                 }
             })
             .collect();
 
-        // Sort based on current sort mode
-        // Apply sorting and respect direction
+        // Sort based on current sort mode and direction
         match state.channel_sort_mode {
             ChannelSortMode::Loss => {
-                channel_data
-                    .sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+                channel_data.sort_by(|a, b| {
+                    a.loss_rate.partial_cmp(&b.loss_rate).unwrap_or(std::cmp::Ordering::Equal)
+                });
                 if state.channel_sort_direction == SortDirection::Desc {
                     channel_data.reverse();
                 }
             }
             ChannelSortMode::Throughput => {
-                channel_data
-                    .sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
+                channel_data.sort_by(|a, b| {
+                    a.throughput_bps
+                        .partial_cmp(&b.throughput_bps)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
                 if state.channel_sort_direction == SortDirection::Desc {
                     channel_data.reverse();
                 }
             }
             ChannelSortMode::Latency => {
-                channel_data
-                    .sort_by(|a, b| a.4.partial_cmp(&b.4).unwrap_or(std::cmp::Ordering::Equal));
+                channel_data.sort_by(|a, b| {
+                    a.avg_latency_ms
+                        .partial_cmp(&b.avg_latency_ms)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
                 if state.channel_sort_direction == SortDirection::Desc {
                     channel_data.reverse();
                 }
             }
             ChannelSortMode::Name => {
                 if state.channel_sort_direction == SortDirection::Asc {
-                    channel_data.sort_by(|a, b| a.0.cmp(&b.0));
+                    channel_data.sort_by(|a, b| a.name.cmp(&b.name));
                 } else {
-                    channel_data.sort_by(|a, b| b.0.cmp(&a.0));
+                    channel_data.sort_by(|a, b| b.name.cmp(&a.name));
                 }
             }
         }
 
         let rows: Vec<Row> = channel_data
             .iter()
-            .map(
-                |(channel, stats, loss_rate, throughput_bps, avg_latency_ms)| {
-                    let total = stats.packets_sent + stats.packets_dropped;
+            .map(|row| {
+                let total = row.stats.packets_sent + row.stats.packets_dropped;
 
                     // Color code the loss rate
-                    let loss_color = if *loss_rate < 1.0 {
+                    let loss_color = if row.loss_rate < 1.0 {
                         Color::Green
-                    } else if *loss_rate < 10.0 {
+                    } else if row.loss_rate < 10.0 {
                         Color::Yellow
                     } else {
                         Color::Red
@@ -215,24 +228,24 @@ impl TabRenderer for ChannelsTab {
 
                     // Show ratio in addition to percentage for clarity
                     let rate_display = if total > 0 {
-                        format!("{:.1}% ({}/{})", loss_rate, stats.packets_dropped, total)
+                        format!("{:.1}% ({}/{})", row.loss_rate, row.stats.packets_dropped, total)
                     } else {
                         "N/A".to_string()
                     };
 
                     // Format throughput in human-readable units (bits/sec -> Kbps/Mbps/Gbps)
-                    let throughput_display = format_bits_per_sec(*throughput_bps);
+                    let throughput_display = format_bits_per_sec(row.throughput_bps);
 
                     // Format latency
-                    let latency_display = if stats.packets_delayed > 0 {
-                        format!("{:.2} ms", avg_latency_ms)
+                    let latency_display = if row.stats.packets_delayed > 0 {
+                        format!("{:.2} ms", row.avg_latency_ms)
                     } else {
                         "N/A".to_string()
                     };
 
                     // Build cells and apply highlight style to the active sort column
                     {
-                        let mut cell_channel = Cell::from(channel.to_string());
+                        let mut cell_channel = Cell::from(row.name.clone());
                         let mut cell_loss = Cell::from(rate_display)
                             .style(Style::default().fg(loss_color).add_modifier(Modifier::BOLD));
                         let mut cell_throughput = Cell::from(throughput_display);
