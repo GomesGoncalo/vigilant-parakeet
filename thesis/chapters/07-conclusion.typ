@@ -92,39 +92,44 @@ where the full security property is required.
 
 == Limitations
 
-Several limitations should be acknowledged:
+Several limitations remain despite the implemented extensions; the list
+below highlights the most important caveats that affect experiment fidelity
+and security conclusions.
 
-- *No radio channel model*: The simulator models channel quality as static
-  per-link latency and loss parameters. Real vehicular channels exhibit
-  time-varying fading and Doppler effects that are not captured.
+- *Approximate radio model*: The simulator now implements Nakagami-m
+  small-scale fading (Chapter 9) and converts sampled amplitudes to
+  instantaneous SNR/PEP. However, the model is still an approximation: it
+  does not fully emulate frequency-selective fading, explicit Doppler spectra,
+  antenna patterns, or MIMO spatial correlation present in real radios.
 
-- *No mobility model*: Node positions are fixed for the duration of a
-  simulation run. Dynamic topology changes (vehicles joining and leaving
-  radio range) are emulated only through manual channel parameter updates
-  via the API.
+- *Mobility realism trade-offs*: OSM-driven trajectories with IDM (Chapter
+  10) produce realistic longitudinal and lane-change dynamics, but they are
+  not a substitute for trace-driven or SUMO-coupled microscopic scenarios for
+  every use case; integrating SUMO remains a useful next step for richer
+  traffic-control interaction.
 
-- *Single-machine simulation*: All nodes share the host kernel and
-  CPU. At high node counts the shared thread pool may introduce scheduling
-  artefacts that would not appear in a distributed deployment.
+- *Single-machine scaling*: The simulator runs all nodes on one host and
+  shares kernel/network resources. At very large node counts scheduling and
+  timing artifacts may appear; a distributed execution mode would reduce
+  these host-sharing effects.
 
-- *TOFU first-contact vulnerability*: In TOFU authentication mode, an active
-  adversary present during the very first key exchange can impersonate either
-  endpoint by substituting a different Ed25519 signing key. PKI mode closes
-  this gap but requires out-of-band key provisioning.
+- *Control-plane authentication gap*: Heartbeat and HeartbeatReply messages
+  remain unauthenticated; the RSU replay window detects replays but does not
+  cryptographically prevent crafted fresh messages. HMAC or TESLA-style
+  authentication remains a priority future improvement.
 
-- *No certificate revocation*: The PKI allowlist is a static YAML map.
-  A compromised OBU identity cannot be invalidated without redeploying the
-  server configuration. There is no support for short-lived certificates,
-  certificate revocation lists (CRLs), or online revocation checking.
+- *Operational PKI features absent*: While PKI-mode and signed handshakes
+  are supported, there is no automatic certificate provisioning, short-lived
+  pseudonymous certs, or online revocation (CRL/OCSP). Revocation requires
+  manual server configuration updates in the current deployment model.
 
-- *Control-plane messages unauthenticated*: Heartbeat and HeartbeatReply
-  messages carry no HMAC or signature. While HeartbeatReply replay is
-  detected at the RSU via a sliding receive window (@sec-routing-protocol),
-  an adversary can still *inject* fresh-looking control messages or
-  manipulate routing tables through crafted (rather than replayed) messages
-  without cryptographic detection, as described in @l3-security-vehicular.
+- *TOFU first-contact vulnerability*: Trust-on-first-use remains the
+  default and carries the known risk that an active attacker at first contact
+  can impersonate an endpoint; PKI mitigates this but requires provisioning.
 
-
+These limitations should be borne in mind when interpreting experimental
+results; where possible the evaluation emphasises relative comparisons (A vs
+B) rather than absolute performance claims.
 == Future Work
 
 Several directions are identified for future research and development:
