@@ -167,10 +167,10 @@ impl TabRenderer for UpstreamsTab {
                         upstream_display.to_string()
                     } else {
                         // Lookup by name
-                        if let Some((_, (umac, _ntype, _v, _c, _snode))) =
+                        if let Some((_, node)) =
                             state.nodes.iter().find(|(n, _)| *n == &upstream_display)
                         {
-                            format!("{} ({})", upstream_display, umac)
+                            format!("{} ({})", upstream_display, node.mac)
                         } else {
                             upstream_display.to_string()
                         }

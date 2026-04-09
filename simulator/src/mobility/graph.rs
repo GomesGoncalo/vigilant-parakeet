@@ -8,7 +8,7 @@ use anyhow::{bail, Result};
 use petgraph::algo::dijkstra;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
-use rand::Rng;
+use rand::{Rng, RngExt};
 use std::collections::HashMap;
 
 /// Equirectangular projection constants.

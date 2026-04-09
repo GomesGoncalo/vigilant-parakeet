@@ -134,7 +134,7 @@ impl MobilityManager {
             "Road graph ready"
         );
 
-        let mut rng = SmallRng::from_os_rng();
+        let mut rng = SmallRng::from_rng(&mut rand::rng());
         let positions = Arc::new(RwLock::new(HashMap::new()));
         let mut vehicles: HashMap<String, VehicleState> = HashMap::new();
         let mut fixed: HashMap<String, (f64, f64)> = HashMap::new();
@@ -232,7 +232,7 @@ impl MobilityManager {
 
     /// Advance all vehicles by `dt` seconds.
     async fn tick(&mut self, dt: f64) {
-        let mut rng = SmallRng::from_os_rng();
+        let mut rng = SmallRng::from_rng(&mut rand::rng());
 
         // Apply any pending position overrides from the HTTP layer.
         let overrides: HashMap<String, (f64, f64)> = {
