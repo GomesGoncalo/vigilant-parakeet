@@ -48,6 +48,34 @@ Vehicular channels exhibit:
 These properties motivate the use of lightweight, beacon-based routing rather
 than heavy link-state or distance-vector protocols.
 
+== Small-scale fading and channel models
+
+Small-scale fading — rapid fluctuations of received signal amplitude caused by
+multipath interference and motion — is a central impairment in vehicular
+radio channels. The Nakagami-m distribution is a flexible model commonly used
+to represent fading envelopes: `m = 1` corresponds to Rayleigh fading, `m < 1` models
+severe fading, and `m > 1` models milder fading or a dominant line-of-sight
+component. Modelling small-scale fading at packet timescales allows a
+simulator to capture transient link outages and variability that affect
+routing stability and ephemeral session establishment.
+
+The simulator used in this work supports Nakagami-m sampling at configurable
+granularities (per-packet or per-timeslot) and converts sampled amplitudes to
+instantaneous SNRs used in a packet error probability model (see Chapter 9).
+
+== Mobility models
+
+Reproducible mobility is critical for fair, repeatable routing experiments.
+Microscopic car-following models, such as the Intelligent Driver Model (IDM),
+simulate vehicle acceleration and gap-keeping behaviour and produce realistic
+lane-change and platooning dynamics. IDM parameters (desired speed, time gap,
+braking deceleration) allow experiments to control traffic density and the
+duration of radio contacts between OBUs.
+
+This work integrates an OSM-driven mobility backend with an IDM implementation
+to generate deterministic vehicle trajectories and lane-change events for use
+in mobility-aware routing studies (see Chapter 10).
+
 === Physical Layer Technologies
 
 Two dominant air-interface standards have been deployed for vehicular

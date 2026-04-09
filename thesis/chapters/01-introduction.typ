@@ -85,6 +85,22 @@ The primary contributions of this work are:
 - *A browser-based visualisation dashboard* consuming a real-time HTTP metrics
   API exposed by the simulator.
 
+- *Time-varying radio model and mobility*: the simulator supports a
+  Nakagami-m small-scale fading model (configurable m and sampling granularity)
+  and an OpenStreetMap-driven mobility backend with an IDM car-following model
+  for realistic vehicle trajectories and reproducible experiments.
+
+- *RSSI-aware and reworked routing*: the heartbeat-based routing protocol was
+  extended with configurable scoring modes (min+mean, avg-only), RSSI-aware
+  selection, and stronger hysteresis to mitigate RSU flapping under fading and
+  mobility (details in Chapters 4 and 8).
+
+- *Key-exchange robustness improvements*: downstream client caching, reply
+  forwarding via a ClientCache, and prompt DH retry behaviours improve session
+  establishment reliability under churn and high-loss conditions; the core
+  security architecture (X25519 / ML-KEM-768, HKDF, AEAD) remains central to
+  the design.
+
 - *An empirical evaluation* of routing behaviour across a range of topologies,
   latency profiles, and packet-loss rates.
 

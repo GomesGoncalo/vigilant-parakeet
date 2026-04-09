@@ -226,6 +226,31 @@ X25519: the OBU cannot verify that the encapsulated secret was chosen freshly
 
 == Key Derivation
 
+== Key-exchange robustness
+
+Several practical improvements were implemented to increase the reliability of
+Key Exchange in the presence of loss and churn:
+
++ Downstream Client Cache: RSUs maintain a small per-OBU client cache that
+  records recent downstream recipients. KeyExchangeReply messages are routed
+  via this ClientCache to ensure replies are forwarded to the correct downstream
+  interface even when the immediate upstream has changed since the Init was sent.
+
++ Reply routing and forwarding fixes: KeyExchangeReply forwarding was hardened
+  to avoid loops and to prefer cached downstream entries when available. These
+  fixes reduce stray reply drops and improve session establishment reliability
+  in multi-hop scenarios.
+
++ Prompt retry behaviour: OBUs aggressively retry DH/ KEM exchange attempts at
+  startup when no upstream is yet cached, and after short send-timeouts during
+  early boot. This reduces time-to-establish in high-loss scenarios or when the
+  initial route is not yet stabilised.
+
+These robustness features are documented in the code (`obu_lib::control::mod`,
+`rsu_lib::control::mod`) and exposed via the admin console for debugging (the
+`sessions` and `routes` commands).
+
+
 The raw shared secret — 32 bytes from either X25519 or ML-KEM-768 — is not
 used directly as a symmetric key. Instead, it is passed through HKDF @hkdf:
 

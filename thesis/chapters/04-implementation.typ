@@ -108,64 +108,46 @@ When an OBU receives a `Heartbeat`:
 
 === Route Selection Metric
 
-`get_route_to(Some(target))` in `obu_lib::control::routing` proceeds as
-follows.
+See Chapter 8 for the full description of the routing rework and RSSI-aware
+selection. The implementation in `obu_lib::control::routing` supports
+a configurable set of scoring modes and a conservative hysteresis policy to
+reduce flapping in time-varying channels.
 
-When latency measurements are available, each candidate next-hop $m$ is
-scored by:
+Latency-based scoring (default): when latency measurements are available,
+each candidate next-hop m is scored by the composite metric
 
-$ s_m = mu_m^min + overline(mu)_m $
+`s_m = mu_m^min + overline(mu)_m`
 
-where $mu_m^min$ is the minimum observed round-trip latency to $m$ (in
-microseconds) and $overline(mu)_m$ is the mean latency across all recorded
-observations to $m$, both derived from the `PerHopInfo` entries stored in the
-`RoutingTable` (`HashMap<MacAddress, IndexMap<u32, PerHopInfo>>`). The
-candidate with the lowest score is selected. Using both the minimum and the
-mean penalises candidates that are occasionally fast but highly variable, while
-still rewarding consistently low-latency paths. Round-trip times are computed
-at the RSU as `Instant::now().duration_since(boot) - duration`, where `duration`
-is the RSU uptime embedded in the original Heartbeat, and propagated back to the
-OBU in its reply. Ties in the integer microsecond score are broken
-deterministically by MAC address lexicographic order, ensuring a stable
-selection across equivalent candidates.
+where `mu_m^min` is the minimum observed round-trip latency to m (microseconds)
+and `overline(mu)_m` is the mean latency across recorded observations. Combining
+minimum and mean penalises candidates that are occasionally fast but highly
+variable while rewarding consistently low-latency paths.
 
-When no latency measurements have been recorded yet (e.g.\ at startup before
-any HeartbeatReply timing has been collected), the algorithm falls back to
-preferring the candidate with the fewest advertised hops.
+RSSI-based selection (optional): an alternative RSU-selection mode uses
+smoothed RSSI samples collected by OBUs to compute a normalised RSSI score.
+A combined score is formed as a weighted sum of the normalised latency score
+and `(1 - RSSI)`, permitting policies such as "prefer a strong RSU unless
+latency advantage exceeds X%".
 
-The *cached upstream* is retained via a 10% hysteresis threshold: the
-algorithm only switches to a new candidate if its score is at least 10%
-lower than the cached candidate's score, or if it has strictly fewer hops.
-This prevents frequent route flipping caused by transient latency variance
-without preventing recovery from genuinely better paths.
+Configurable scoring modes: the implementation supports `min+mean` (default)
+and `avg-only` (use only the mean latency) to reduce sensitivity to minima when
+sampling noise dominates.
 
-Implementation details:
-- `get_route_to(Some(target))` is pure and computes scores from read-only heartbeat state.
-- `select_and_cache_upstream()` performs the single write to update the cached upstream and stores an N-best ordered list (default N=3) for fast failover.
-- Failover promotes the head of the N-best list if the active upstream fails or exhibits timeouts. Each candidate includes timestamped measurements so stale entries age out.
+Hysteresis and flapping prevention: the cached upstream is protected by a
+conservative hysteresis threshold (default 30% in current builds): a switch
+occurs only when the new candidate's score is sufficiently better or when it
+strictly reduces hop count. This policy reduces oscillation under mobility and
+small-scale fading.
 
-=== N-Best Candidate Caching
+N-best caching and failover: on each primary-route update the top N candidates
+(default N=3) are cached in rank order. `failover_cached_upstream()` promotes
+the head of this list on send errors or timeouts, making failover O(1) and
+avoiding an immediate heartbeat cycle for route repair.
 
-`select_and_cache_upstream(mac)` scores every known next-hop candidate using
-the same `s_m = mu_m^min + overline(mu)_m` metric as the primary selection,
-then stores the top `cached_candidates` (default: 3) in a ranked
-`Vec<CachedCandidate>`. Each `CachedCandidate` carries the next-hop MAC, the
-score used for ordering, and the measurement timestamp that was current at
-selection time.
-
-`failover_cached_upstream()` is called when the active upstream fails (e.g.\
-a send error or a timeout). It promotes the head of the candidate list to
-primary and removes it from the list, all under a single write-lock acquisition
-and with no re-scan of the routing table. This makes failover O(1) in the
-common case.
-
-The candidate list is implicitly age-bounded by `hello_history`: the routing
-table is itself an `IndexMap` bounded to `hello_history` entries per RSU–sender
-pair. When entries are evicted by new heartbeats, their associated latency
-samples disappear; a candidate whose samples have all aged out will score worse
-than a fresh candidate at the next `select_and_cache_upstream` call. The list
-is rebuilt in full on every primary-route update triggered by the 10%
-hysteresis threshold check.
+Implementation notes:
+- `get_route_to(Some(target))` remains a pure function reading routing state.
+- `select_and_cache_upstream()` performs the single write to update the cached upstream and rebuild the N-best list.
+- The routing behaviour is driven by YAML flags exposed per-OBU (scoring mode, RSSI weight, hysteresis fraction).
 
 === Loop Prevention
 
@@ -441,6 +423,36 @@ upstream relay MAC and the N-best candidate list. When a failover occurs
 (primary candidate promoted to head, new head selected), the UI highlights
 the changed entry for one rendering cycle. This makes the failover mechanism
 observable in real time during manual experiments.
+
+Additional visualization enhancements
+
+The Leaflet map tab implements smooth marker animation using a requestAnimationFrame
+(rAF) driven interpolation between successive `/node_info` polls. Each OBU/RSU
+marker tracks the last known position, the most recent position, and a target
+timestamp. On each rAF tick the renderer computes a time-aligned interpolated
+position and calls `marker.setLatLng(...)`, providing visually smooth motion
+independent of the polling frequency. This reduces visual jitter when the
+poll interval is coarse relative to vehicle movement.
+
+Marker rendering is optimised for large node counts: custom icon bitmaps are
+cached and reused; marker layers are grouped by node type; and directional
+routing arrows are rendered using a lightweight canvas overlay (arrow polylines
+with simple arrowheads) rather than heavyweight SVG per-edge geometry. Edge
+colour encodes a composite health metric (green=good, amber=degraded, red=bad)
+derived from channel latency and loss, enabling at-a-glance topology health
+assessment.
+
+For performance-sensitive paths the dashboard bypasses the Yew/WASM render
+cycle and issues a native JavaScript `fetch('/node_info')` to obtain node
+positions and routing state. This JS-native polling path updates the Leaflet
+layers directly and only manipulates the DOM via minimal imperative calls,
+reducing WASM round-trips and improving responsiveness on lower-power clients.
+
+The map tab filters server and cloud nodes from the display by default, and
+re-centres the viewport on visible vehicular nodes when the tab is activated.
+Tooltips and a per-node popup provide routing history, recent RSSI samples
+(if available), and the N-best candidate list with timestamps, making the map
+a first-class debugging surface for routing and Key Exchange experiments.
 
 === Architectural Separation
 
