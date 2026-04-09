@@ -129,18 +129,6 @@ Several limitations should be acknowledged:
 
 Several directions are identified for future research and development:
 
-/ Dynamic mobility (implemented): An OpenStreetMap-driven mobility backend
-  and an IDM car-following model have been added (see Chapter 10). This provides
-  reproducible vehicle trajectories, lane-change and overtaking dynamics, and
-  automated link up/down events suitable for mobility-aware routing experiments.
-
-/ Radio channel model (implemented): A Nakagami-m small-scale fading model
-  and full-mesh/auto-cloud channel support have been added to the simulator
-  (see Chapter 9). This replaces the earlier static per-link latency/loss
-  parametrisation with a time-varying radio model that captures small-scale
-  fading and spatial variability, enabling experiments that evaluate routing
-  and Key Exchange reliability under realistic fading regimes.
-
 / Heartbeat authentication: Apply HMAC @rfc2104 to unicast HeartbeatReply
   messages using the established DH session key, and investigate the TESLA
   @tesla delayed key disclosure protocol for broadcast Heartbeat messages.
