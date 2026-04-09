@@ -16,6 +16,10 @@ pub struct GraphProps {
     // library for wasm tests.
     pub node_info: std::collections::HashMap<String, JsonValue>,
     pub stats: std::collections::HashMap<String, JsonValue>,
+    // geo_positions: name -> { lat, lon, speed, bearing } from /positions endpoint.
+    // Empty when mobility is not running; when populated the Leaflet map is updated.
+    #[prop_or_default]
+    pub geo_positions: std::collections::HashMap<String, JsonValue>,
 }
 
 fn bezier_points(
@@ -65,6 +69,7 @@ pub fn graph(props: &GraphProps) -> Html {
     let channels = props.channels.clone();
     let node_info = props.node_info.clone();
     let stats = props.stats.clone();
+    let geo_positions = props.geo_positions.clone();
 
     // persistent previous snapshot for delta computation (bytes-like sums)
     let last_snapshot = use_state(std::collections::BTreeMap::<String, f64>::new);
@@ -77,14 +82,19 @@ pub fn graph(props: &GraphProps) -> Html {
             channels.clone(),
             node_info.clone(),
             stats.clone(),
+            geo_positions.clone(),
         ),
-        move |(_n, _c, _u, _s)| {
-            // compute RSUs and OBUs
+        move |(_n, _c, _u, _s, _g)| {
+            // compute RSUs and OBUs (skip Server nodes — they are infrastructure, not displayed)
             let mut rsus = Vec::new();
             let mut obus = Vec::new();
             for n in &nodes {
                 if let Some(t) = pick_node_type(&node_info, n) {
-                    if t.to_lowercase() == "rsu" {
+                    let tl = t.to_lowercase();
+                    if tl == "server" {
+                        continue; // exclude from graph display
+                    }
+                    if tl == "rsu" {
                         rsus.push(n.clone());
                         continue;
                     }
@@ -124,20 +134,43 @@ pub fn graph(props: &GraphProps) -> Html {
                 }
             }
 
-            // derive edge list (from->to) using channels map; if empty, derive from upstream
+            // derive edge list (from->to) using channels map; if empty, derive from upstream.
+            // Filter out: (a) any node with ":cloud" suffix (infra channels), (b) server nodes.
+            let is_display_node = |name: &str| -> bool {
+                if name.contains(":cloud") {
+                    return false;
+                }
+                if let Some(t) = pick_node_type(&node_info, name) {
+                    if t.to_lowercase() == "server" {
+                        return false;
+                    }
+                }
+                true
+            };
             let mut edges = Vec::new();
             if !channels.is_empty() {
                 for (from, inner) in &channels {
+                    if !is_display_node(from) {
+                        continue;
+                    }
                     for to in inner.keys() {
+                        if !is_display_node(to) {
+                            continue;
+                        }
                         edges.push((from.clone(), to.clone()));
                     }
                 }
             } else {
                 for (n, info) in &node_info {
+                    if !is_display_node(n) {
+                        continue;
+                    }
                     // node_info is JSON-like here; read upstream via get("upstream")
                     if let Some(up) = info.get("upstream") {
                         if let Some(un) = up.get("node_name").and_then(|v| v.as_str()) {
-                            edges.push((n.clone(), un.to_string()));
+                            if is_display_node(un) {
+                                edges.push((n.clone(), un.to_string()));
+                            }
                         }
                     }
                 }
@@ -791,6 +824,33 @@ pub fn graph(props: &GraphProps) -> Html {
                         args.push(&to_value(&nodes_arr).unwrap());
                         args.push(&to_value(&edges_arr).unwrap());
                         let _ = func.apply(&JsValue::NULL, &args);
+                    }
+                }
+
+                // Call __vp_render_map with geo positions when mobility is active
+                if !geo_positions.is_empty() {
+                    let render_map =
+                        js_sys::Reflect::get(&win, &JsValue::from_str("__vp_render_map"));
+                    if let Ok(r) = render_map {
+                        if r.is_function() {
+                            let func: js_sys::Function = r.dyn_into().unwrap();
+                            // Build node_types map { name -> type_str }
+                            let mut node_types: serde_json::Map<String, JsonValue> =
+                                serde_json::Map::new();
+                            for name in &nodes {
+                                if let Some(nt) = pick_node_type(&node_info, name) {
+                                    node_types
+                                        .insert(name.clone(), JsonValue::String(nt.to_string()));
+                                }
+                            }
+                            let args = js_sys::Array::new();
+                            args.push(&to_value(&geo_positions).unwrap_or(JsValue::NULL));
+                            args.push(&to_value(&edges_arr).unwrap_or(JsValue::NULL));
+                            args.push(
+                                &to_value(&JsonValue::Object(node_types)).unwrap_or(JsValue::NULL),
+                            );
+                            let _ = func.apply(&JsValue::NULL, &args);
+                        }
                     }
                 }
             }

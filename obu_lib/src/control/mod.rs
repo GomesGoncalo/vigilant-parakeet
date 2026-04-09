@@ -15,6 +15,7 @@ use common::{device::Device, network_interface::NetworkInterface};
 use dh_key_store::DhKeyStore;
 use mac_address::MacAddress;
 use node::ReplyType;
+use node_lib::control::client_cache::ClientCache;
 use node_lib::crypto::{sig_algo_from_id, CryptoConfig, SigningAlgorithm, SigningKeypair};
 use node_lib::messages::{
     control::{
@@ -39,6 +40,15 @@ use node_lib::{Shared, SharedDevice, SharedTun};
 
 type SharedKeyStore = Arc<RwLock<DhKeyStore>>;
 type RevocationNonceCache = Arc<Mutex<VecDeque<([u8; 8], std::time::Instant)>>>;
+
+/// Action to take when a DH key exchange is needed.
+#[derive(Debug, Clone, Copy)]
+enum DhAction {
+    /// No pending exchange exists — start a fresh one.
+    Initiate,
+    /// A pending exchange timed out — re-use its retry counter.
+    Reinitiate,
+}
 
 /// Decode a hex string of any length into bytes. Returns `None` on invalid hex.
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
@@ -82,6 +92,15 @@ pub struct Obu {
     /// the cache never grows stale: old nonces expire along with the messages that
     /// carried them, so there is no fixed-size window that an attacker could outlast.
     seen_revocation_nonces: RevocationNonceCache,
+    /// Downstream client cache for relay-mode operation.
+    ///
+    /// When this OBU acts as an intermediate relay (forwarding a `KeyExchangeInit`
+    /// from a downstream OBU up toward an RSU), it records the mapping
+    /// `ke_init.sender() → msg.from()` here.  On the return path, when a
+    /// `KeyExchangeReply` arrives destined for a downstream OBU, this cache is
+    /// consulted first so the reply can be forwarded immediately — even before the
+    /// heartbeat-reply-based downstream routing table has been populated.
+    downstream_client_cache: Arc<ClientCache>,
 }
 
 impl Obu {
@@ -139,6 +158,7 @@ impl Obu {
             signing_keypair,
             rekey_notify,
             seen_revocation_nonces,
+            downstream_client_cache: Arc::new(ClientCache::new()),
         });
 
         tracing::info!(
@@ -182,6 +202,19 @@ impl Obu {
             Obu::dh_rekey_task(obu.clone())?;
         }
         Ok(obu)
+    }
+
+    /// Attach a live RSSI table for proximity-based RSU selection.
+    ///
+    /// The table maps neighbor MAC addresses to their received signal strength in dBm.
+    /// It is populated by the simulator fading task (from computed distances) or by a
+    /// real radio driver.  Once attached, `select_and_cache_upstream` uses RSSI as the
+    /// primary RSU selection metric with a 3 dB hysteresis.
+    pub fn set_rssi_table(&self, table: routing::RssiTable) {
+        self.routing
+            .write()
+            .expect("routing table write lock poisoned")
+            .set_rssi_table(table);
     }
 
     /// Return the cached upstream MAC if present.
@@ -287,9 +320,13 @@ impl Obu {
             async move {
                 // Initial delay to allow routing to establish
                 tokio::time::sleep(Duration::from_millis(500)).await;
+                tracing::info!(
+                    upstream = ?obu.cached_upstream_mac(),
+                    "DH rekey task starting (initial delay elapsed)"
+                );
 
                 loop {
-                    if let Some(upstream_mac) = obu.cached_upstream_mac() {
+                    if let Some(mut upstream_mac) = obu.cached_upstream_mac() {
                         // Use server_virtual_mac() for key store lookups — the key
                         // is with the server, not with a specific RSU/peer.
                         let needs_exchange = {
@@ -313,37 +350,58 @@ impl Obu {
                             // Determine what action to take:
                             // - If no pending exchange, initiate a new one
                             // - If pending exchange timed out, re-initiate (preserving retry count)
+                            //   After 3 consecutive timeouts, failover to the next-best RSU candidate
+                            //   so that an OBU stuck at the edge of range doesn't retry forever
+                            //   through an RSU with high packet loss.
                             // - If pending exchange still in progress, wait
-                            let action = {
+                            let action: Option<DhAction> = {
                                 let store = obu
                                     .dh_key_store
                                     .read()
                                     .expect("dh key store read lock poisoned");
                                 if !store.has_pending(server_virtual_mac()) {
-                                    Some("initiate")
+                                    Some(DhAction::Initiate)
                                 } else if store.is_pending_timed_out(server_virtual_mac(), reply_timeout_ms) {
                                     let retries = store.pending_retries(server_virtual_mac()).unwrap_or(0);
-                                    tracing::warn!(
-                                        via = %upstream_mac,
-                                        retry = retries + 1,
-                                        "Server DH reply timed out, re-initiating (no session — packets will be dropped until established)"
-                                    );
-                                    Some("reinitiate")
+                                    // After 3 timeouts through the same RSU, rotate to the next
+                                    // candidate.  The reinitiation below will use the new upstream.
+                                    if retries >= 3 {
+                                        if let Some(new_upstream) = obu
+                                            .routing
+                                            .read()
+                                            .expect("routing read lock")
+                                            .failover_cached_upstream()
+                                        {
+                                            tracing::warn!(
+                                                old_via = %upstream_mac,
+                                                new_via = %new_upstream,
+                                                retry = retries + 1,
+                                                "DH timeout threshold reached, failing over to next RSU candidate"
+                                            );
+                                            upstream_mac = new_upstream;
+                                        }
+                                    } else {
+                                        tracing::warn!(
+                                            via = %upstream_mac,
+                                            retry = retries + 1,
+                                            "Server DH reply timed out, re-initiating (no session — packets will be dropped until established)"
+                                        );
+                                    }
+                                    Some(DhAction::Reinitiate)
                                 } else {
                                     None // still pending, wait
                                 }
                             };
 
-                            if let Some(mode) = action {
+                            if let Some(action) = action {
                                 let (key_id, pub_key) = {
                                     let mut store = obu
                                         .dh_key_store
                                         .write()
                                         .expect("dh key store write lock poisoned");
-                                    if mode == "reinitiate" {
-                                        store.reinitiate_exchange(server_virtual_mac())
-                                    } else {
-                                        store.initiate_exchange(server_virtual_mac())
+                                    match action {
+                                        DhAction::Reinitiate => store.reinitiate_exchange(server_virtual_mac()),
+                                        DhAction::Initiate => store.initiate_exchange(server_virtual_mac()),
                                     }
                                 };
 
@@ -398,21 +456,44 @@ impl Obu {
                                         "Failed to send DH KeyExchangeInit (for server)"
                                     );
                                 } else {
-                                    tracing::debug!(
+                                    tracing::info!(
                                         via = %upstream_mac,
                                         key_id = key_id,
+                                        mode = ?action,
                                         dh_group = %obu.crypto_config.dh_group,
-                                        "Sent DH KeyExchangeInit to server (via RSU)"
+                                        "Sent DH KeyExchangeInit upstream"
                                     );
                                 }
                             }
                         }
+                    } else {
+                        tracing::warn!(
+                            "DH rekey task: no upstream RSU cached yet — skipping exchange until next wakeup"
+                        );
                     }
 
                     // Wait for either the normal rekey interval or an early wake-up
                     // triggered by receiving a SessionTerminated notice.
+                    // When a DH exchange is in-flight, use a short sleep equal to
+                    // reply_timeout_ms so we wake promptly to detect the timeout and
+                    // retransmit, rather than waiting the full 12-hour rekey interval
+                    // before retrying a failed initial exchange.
+                    // When no upstream was available, also use a short retry so we
+                    // attempt again as soon as the first heartbeat populates the routing
+                    // table (typically within one hello_periodicity).
+                    let no_upstream = obu.cached_upstream_mac().is_none();
+                    let exchange_pending = obu
+                        .dh_key_store
+                        .read()
+                        .map(|g| g.has_pending(server_virtual_mac()))
+                        .unwrap_or(false);
+                    let sleep_duration = if exchange_pending || no_upstream {
+                        Duration::from_millis(reply_timeout_ms)
+                    } else {
+                        rekey_interval
+                    };
                     tokio::select! {
-                        _ = tokio::time::sleep(rekey_interval) => {}
+                        _ = tokio::time::sleep(sleep_duration) => {}
                         _ = rekey_notify.notified() => {
                             tracing::debug!("DH rekey task woken early by SessionTerminated");
                         }
@@ -691,7 +772,7 @@ impl Obu {
     fn handle_key_exchange_init(
         &self,
         ke_init: &KeyExchangeInit<'_>,
-        _msg: &Message<'_>,
+        msg: &Message<'_>,
     ) -> Result<Option<Vec<ReplyType>>> {
         // OBUs forward KeyExchangeInit up the tree toward the server.
         let routing = self
@@ -699,9 +780,20 @@ impl Obu {
             .read()
             .expect("routing table read lock poisoned");
         let Some(upstream) = routing.get_route_to(None) else {
-            tracing::debug!("No upstream route, dropping KeyExchangeInit");
+            tracing::warn!(
+                obu = %ke_init.sender(),
+                "No upstream route — dropping KeyExchangeInit (relay OBU has no path to server)"
+            );
             return Ok(None);
         };
+
+        // Record the downstream path so we can route the reply back without
+        // relying solely on the heartbeat-reply-based routing table, which may
+        // not yet have an entry for the initiating OBU when the exchange starts.
+        if let Ok(from_mac) = msg.from() {
+            self.downstream_client_cache
+                .store_mac(ke_init.sender(), from_mac);
+        }
 
         // Preserve all fields (algorithm, key material, signature) when forwarding.
         let init = ke_init.clone_into_owned();
@@ -711,11 +803,11 @@ impl Obu {
             PacketType::Control(Control::KeyExchangeInit(init)),
         );
         let wire: Vec<u8> = (&fwd).into();
-        tracing::debug!(
+        tracing::info!(
             obu = %ke_init.sender(),
             via = %upstream.mac,
             signed = ke_init.is_signed(),
-            "Forwarding KeyExchangeInit up the tree"
+            "Forwarding KeyExchangeInit upstream"
         );
         Ok(Some(vec![ReplyType::WireFlat(wire)]))
     }
@@ -878,8 +970,19 @@ impl Obu {
     fn handle_key_exchange_reply(
         &self,
         ke_reply: &KeyExchangeReply<'_>,
-        _msg: &Message<'_>,
+        msg: &Message<'_>,
     ) -> Result<Option<Vec<ReplyType>>> {
+        // Log receipt unconditionally so we can confirm delivery regardless of
+        // whether encryption is enabled, the key_id matches, or the reply is
+        // for this node vs a downstream relay target.
+        tracing::info!(
+            key_id = ke_reply.key_id(),
+            dest = %ke_reply.sender(),
+            my_mac = %self.device.mac_address(),
+            wire_from = ?msg.from().ok(),
+            "KeyExchangeReply received on VANET"
+        );
+
         if !self.args.obu_params.enable_encryption {
             return Ok(None);
         }
@@ -892,14 +995,24 @@ impl Obu {
         let dest = ke_reply.sender();
         if dest != self.device.mac_address() {
             // Not for us — forward down the tree toward the target OBU.
-            let routing = self
-                .routing
-                .read()
-                .expect("routing table read lock poisoned");
-            let Some(next_hop) = routing.get_route_to(Some(dest)) else {
-                tracing::debug!(
+            //
+            // Prefer the downstream_client_cache over the routing table: it is
+            // populated when we forward a KeyExchangeInit upstream, so it is
+            // available immediately even before heartbeat-reply-based routing
+            // entries exist for the downstream OBU.
+            let cache_hit = self.downstream_client_cache.get(dest);
+            let next_hop_mac = cache_hit.or_else(|| {
+                let routing = self
+                    .routing
+                    .read()
+                    .expect("routing table read lock poisoned");
+                routing.get_route_to(Some(dest)).map(|r| r.mac)
+            });
+            let Some(next_hop_mac) = next_hop_mac else {
+                tracing::warn!(
                     dest = %dest,
-                    "No route to forward KeyExchangeReply, dropping"
+                    key_id = ke_reply.key_id(),
+                    "No route to forward KeyExchangeReply (not in downstream cache or routing table), dropping"
                 );
                 return Ok(None);
             };
@@ -908,15 +1021,15 @@ impl Obu {
             let reply = ke_reply.clone_into_owned();
             let fwd = Message::new(
                 self.device.mac_address(),
-                next_hop.mac,
+                next_hop_mac,
                 PacketType::Control(Control::KeyExchangeReply(reply)),
             );
             let wire: Vec<u8> = (&fwd).into();
-            tracing::debug!(
+            tracing::info!(
                 dest = %dest,
-                via = %next_hop.mac,
-                signed = ke_reply.is_signed(),
-                "Forwarding KeyExchangeReply down the tree"
+                via = %next_hop_mac,
+                key_id = ke_reply.key_id(),
+                "Relaying KeyExchangeReply down the tree"
             );
             return Ok(Some(vec![ReplyType::WireFlat(wire)]));
         }

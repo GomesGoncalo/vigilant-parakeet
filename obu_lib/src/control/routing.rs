@@ -41,8 +41,10 @@ use anyhow::{bail, Result};
 use indexmap::IndexMap;
 use mac_address::MacAddress;
 use node_lib::messages::{control::Control, message::Message, packet_type::PacketType};
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use tokio::time::{Duration, Instant};
+
+use crate::control::routing_utils::NextHopStats;
 
 // ============================================================================
 // Type Definitions
@@ -51,32 +53,131 @@ use tokio::time::{Duration, Instant};
 /// Action to take when forwarding a HeartbeatReply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForwardAction {
-    /// next_upstream == message.sender() with no viable alternative — drop.
-    Bail,
     /// pkt.from == next_upstream — would bounce, skip forwarding.
     SkipForward,
     /// Safe to forward toward next_upstream.
     Forward,
-    /// next_upstream == sender (would loop), but cached/alternative upstream
-    /// provides a viable forwarding path.
+    /// next_upstream == sender (would loop), forwarding via alternative upstream.
     ForwardCached,
 }
 
-// Type aliases for complex routing table structures
-/// Per-hop routing information with latency measurements
-type PerHopInfo = (
-    Duration,
-    MacAddress,
-    u32,
-    IndexMap<Duration, MacAddress>,
-    HashMap<MacAddress, Vec<Target>>,
-);
+/// One heartbeat sequence's routing state.
+///
+/// Records when we received a particular sequence, which neighbor forwarded
+/// it, the hop count from the source, and any downstream latency observations
+/// collected from heartbeat replies correlated to this sequence.
+#[derive(Debug)]
+struct SequenceEntry {
+    /// Wall-clock time (relative to node boot) when this sequence arrived.
+    received_at: Duration,
+    /// MAC of the neighbor that forwarded this heartbeat sequence to us.
+    next_upstream: MacAddress,
+    /// Hop count from the heartbeat source to this node for this sequence.
+    hops: u32,
+    /// Per-sender latency observations: sender MAC → list of reply targets.
+    downstream: HashMap<MacAddress, Vec<Target>>,
+}
 
-/// Routing table indexed by sequence number
-type SequenceMap = IndexMap<u32, PerHopInfo>;
+impl SequenceEntry {
+    fn new(received_at: Duration, next_upstream: MacAddress, hops: u32) -> Self {
+        Self {
+            received_at,
+            next_upstream,
+            hops,
+            downstream: HashMap::default(),
+        }
+    }
 
-/// Complete routing table for all known nodes
-type RoutingTable = HashMap<MacAddress, SequenceMap>;
+    /// Record a downstream latency observation for a HeartbeatReply.
+    ///
+    /// Appends two `Target` entries:
+    /// - One for `sender` (the OBU that originated the reply), carrying the
+    ///   measured round-trip `latency`.
+    /// - One for `forwarder` (the immediate peer that delivered the reply),
+    ///   with no latency measurement (adjacency-only).
+    fn record_observation(
+        &mut self,
+        sender: MacAddress,
+        sender_hops: u32,
+        forwarder: MacAddress,
+        latency: Duration,
+    ) {
+        self.downstream.entry(sender).or_default().push(Target {
+            hops: sender_hops,
+            mac: forwarder,
+            latency: Some(latency),
+        });
+        self.downstream.entry(forwarder).or_default().push(Target {
+            hops: 1,
+            mac: forwarder,
+            latency: None,
+        });
+    }
+}
+
+/// Bounded, insertion-ordered heartbeat history for one source node.
+///
+/// Wraps an `IndexMap<seq_id, SequenceEntry>` with capacity-bounded insertion
+/// semantics: [`observe`](SourceHistory::observe) handles rollback detection,
+/// oldest-entry eviction, and deduplication in one call.
+///
+/// Implements `Deref<Target = IndexMap<u32, SequenceEntry>>` so all read-path
+/// callers (`iter`, `values`, `get`, `len`, …) work transparently.
+struct SourceHistory {
+    seqs: IndexMap<u32, SequenceEntry>,
+}
+
+impl SourceHistory {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            seqs: IndexMap::with_capacity(capacity),
+        }
+    }
+
+    /// Record sequence `seq_id` with `entry`.
+    ///
+    /// - **Rollback**: if `seq_id` < the oldest stored sequence, clears history
+    ///   (the RSU restarted its counter).
+    /// - **Eviction**: when at capacity, removes the oldest entry to make room.
+    /// - **Dedup**: if `seq_id` is already present, skips insertion.
+    ///
+    /// Returns `true` when the sequence was already recorded (duplicate).
+    fn observe(&mut self, seq_id: u32, entry: SequenceEntry) -> bool {
+        if self.seqs.first().is_some_and(|(x, _)| x > &seq_id) {
+            self.seqs.clear();
+        }
+        if self.seqs.len() == self.seqs.capacity() && self.seqs.capacity() > 0 {
+            self.seqs.swap_remove_index(0);
+        }
+        if self.seqs.contains_key(&seq_id) {
+            return true;
+        }
+        self.seqs.insert(seq_id, entry);
+        false
+    }
+
+    /// Insert directly without rollback/eviction logic (test setup only).
+    #[cfg(test)]
+    fn test_insert(&mut self, seq_id: u32, entry: SequenceEntry) {
+        self.seqs.insert(seq_id, entry);
+    }
+}
+
+impl std::ops::Deref for SourceHistory {
+    type Target = IndexMap<u32, SequenceEntry>;
+    fn deref(&self) -> &Self::Target {
+        &self.seqs
+    }
+}
+
+impl std::ops::DerefMut for SourceHistory {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.seqs
+    }
+}
+
+/// Routing table: source MAC → bounded heartbeat sequence history.
+type RoutingTable = HashMap<MacAddress, SourceHistory>;
 
 #[derive(Debug)]
 pub(crate) struct Target {
@@ -105,8 +206,58 @@ mod regression_tests;
 #[path = "routing/selection_tests.rs"]
 mod selection_tests;
 
-#[derive(Debug)]
-#[allow(clippy::type_complexity)]
+/// Per-neighbor RSSI table (MAC → received signal strength in dBm).
+///
+/// Populated by the simulator fading task (distance-based) or a real radio
+/// driver (hardware-reported RSSI). When present, RSU selection uses RSSI as
+/// the primary quality metric instead of the heartbeat reception-ratio.
+pub type RssiTable = std::sync::Arc<std::sync::RwLock<HashMap<MacAddress, f32>>>;
+
+// ============================================================================
+// Route construction helpers
+// ============================================================================
+
+/// Compute average latency in µs from aggregated stats, or `u128::MAX` if
+/// there are no measurements.
+fn stats_avg(s: &NextHopStats) -> u128 {
+    if s.count > 0 {
+        s.sum_us / (s.count as u128)
+    } else {
+        u128::MAX
+    }
+}
+
+/// Convert a raw µs average to an `Option<Duration>` (`None` for `u128::MAX`).
+fn finite_duration(avg_us: u128) -> Option<Duration> {
+    if avg_us == u128::MAX {
+        None
+    } else {
+        Some(Duration::from_micros(avg_us as u64))
+    }
+}
+
+/// Build a `Route` from the standard (mac, hops, avg_us) triple.
+fn make_route(mac: MacAddress, hops: u32, avg_us: u128) -> Route {
+    Route {
+        mac,
+        hops,
+        latency: finite_duration(avg_us),
+    }
+}
+
+/// Return `true` when `new_avg` is significantly better than `cached_avg`
+/// (at least 30% lower, or any finite measurement beats an unmeasured cached).
+fn is_significantly_better(new_avg: u128, cached_avg: u128) -> bool {
+    if cached_avg == u128::MAX && new_avg != u128::MAX {
+        true // prefer any measurement over none
+    } else if cached_avg == u128::MAX || new_avg == u128::MAX {
+        false
+    } else {
+        // new_avg <= cached_avg * 0.7
+        new_avg.saturating_mul(10) < cached_avg.saturating_mul(7)
+    }
+}
+
 pub struct Routing {
     args: ObuArgs,
     boot: Instant,
@@ -114,6 +265,8 @@ pub struct Routing {
     cache: RoutingCache,
     // Track distinct neighbors that forwarded heartbeats for a given source (e.g., RSU)
     source_neighbors: HashMap<MacAddress, HashSet<MacAddress>>,
+    /// Live RSSI readings, injected by the simulator or a real radio driver.
+    rssi_table: Option<RssiTable>,
 }
 
 impl Routing {
@@ -127,6 +280,7 @@ impl Routing {
             routes: HashMap::default(),
             cache: RoutingCache::new(args.obu_params.cached_candidates),
             source_neighbors: HashMap::default(),
+            rssi_table: None,
         })
     }
 
@@ -145,76 +299,118 @@ impl Routing {
         self.cache.get_cached_candidates()
     }
 
-    /// Rotate to the next cached candidate (promote the next candidate to primary).
-    /// Returns the newly promoted primary if any.
-    pub fn failover_cached_upstream(&self) -> Option<MacAddress> {
-        self.cache.failover(|src, n_best| {
-            // Rebuild candidates based on routing table
-            let mut cands = Vec::new();
+    /// Attach a live RSSI table.
+    ///
+    /// Once set, `select_and_cache_upstream` uses RSSI (dBm) as the primary
+    /// RSU selection metric: a higher value means stronger signal / closer RSU.
+    /// A 3 dB hysteresis prevents unnecessary handoffs between equally-good RSUs.
+    pub fn set_rssi_table(&mut self, table: RssiTable) {
+        self.rssi_table = Some(table);
+    }
 
-            // Compute latency-based candidates first
-            let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> =
-                HashMap::default();
-            for (_rsu, seqs) in self.routes.iter() {
-                for (_seq, (_dur, _mac, _hops, _r, downstream)) in seqs.iter() {
-                    if let Some(vec) = downstream.get(&src) {
-                        for route in vec.iter() {
-                            if let Some(lat) = route.latency.map(|x| x.as_micros()) {
-                                let entry = latency_candidates.entry(route.mac).or_insert((
-                                    u128::MAX,
-                                    0u128,
-                                    0u32,
-                                    route.hops,
-                                ));
-                                if entry.0 > lat {
-                                    entry.0 = lat;
-                                }
-                                entry.1 += lat;
-                                entry.2 += 1;
-                                entry.3 = route.hops;
-                            }
-                        }
+    /// Build an ordered list of up to `n_best` candidate next-hops for `src`.
+    ///
+    /// Priority order:
+    /// 1. Latency-scored candidates (measured, best avg first)
+    /// 2. Hop-count-ordered candidates (unmeasured backfill)
+    /// 3. Known source neighbors
+    /// 4. The source itself as a last resort
+    fn build_candidate_list(&self, src: MacAddress, n_best: usize) -> Vec<MacAddress> {
+        let mut out: Vec<MacAddress> = Vec::with_capacity(n_best);
+
+        let latency_stats = self.collect_downstream_stats(src);
+        if !latency_stats.is_empty() {
+            let scored =
+                crate::control::routing_utils::score_and_sort_latency_candidates(latency_stats);
+            for c in scored {
+                if out.len() >= n_best {
+                    break;
+                }
+                out.push(c.mac);
+            }
+        }
+
+        // Backfill with hop-ordered next-hops not already present.
+        if out.len() < n_best {
+            let mut hop_routes: Vec<_> = self
+                .routes
+                .iter()
+                .flat_map(|(rsu_mac, seqs)| {
+                    seqs.iter()
+                        .map(move |(_, e)| (rsu_mac, &e.next_upstream, &e.hops))
+                })
+                .filter(|(rsu_mac, _, _)| *rsu_mac == &src)
+                .collect();
+            hop_routes.sort_by_key(|(_, _, hops)| *hops);
+            let mut seen: HashSet<MacAddress> = out.iter().copied().collect();
+            for (_rsu, mac, _hops) in hop_routes {
+                if seen.insert(*mac) {
+                    out.push(*mac);
+                    if out.len() >= n_best {
+                        break;
                     }
                 }
             }
-            if !latency_candidates.is_empty() {
-                // Use the shared helper to score and sort candidates deterministically.
-                let scored_full = crate::control::routing_utils::score_and_sort_latency_candidates(
-                    latency_candidates,
-                );
-                cands = scored_full
-                    .into_iter()
-                    .map(|(_score, _hops, mac, _avg)| mac)
-                    .take(n_best)
-                    .collect();
-            }
-            // Backfill with hop-based ordering if needed
-            if cands.len() < n_best {
-                let mut upstream_routes: Vec<_> = self
-                    .routes
-                    .iter()
-                    .flat_map(|(rsu_mac, seqs)| {
-                        seqs.iter()
-                            .map(move |(seq, (_, mac, hops, _, _))| (seq, rsu_mac, mac, hops))
-                    })
-                    .filter(|(_, rsu_mac, mac, _)| rsu_mac == &&src && *mac != &src)
-                    .collect();
-                upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
-                let mut seen: std::collections::HashSet<MacAddress> =
-                    cands.iter().copied().collect();
-                for (_seq, _rsu, mac_ref, _hops) in upstream_routes.into_iter() {
-                    if !seen.contains(mac_ref) {
-                        seen.insert(*mac_ref);
-                        cands.push(*mac_ref);
-                        if cands.len() >= n_best {
+        }
+
+        // Add known neighbors that forwarded heartbeats for this source.
+        if out.len() < n_best {
+            if let Some(neigh) = self.source_neighbors.get(&src) {
+                for &cand in neigh.iter() {
+                    if !out.contains(&cand) {
+                        out.push(cand);
+                        if out.len() >= n_best {
                             break;
                         }
                     }
                 }
             }
+        }
 
-            cands
-        })
+        // Last resort: the source itself.
+        if out.len() < n_best && !out.contains(&src) {
+            out.push(src);
+        }
+
+        out
+    }
+
+    /// Aggregate downstream observations for `target` across all recorded
+    /// heartbeat sequences, returning per-next-hop latency statistics.
+    ///
+    /// Only observations that carry a latency measurement are included.
+    fn collect_downstream_stats(&self, target: MacAddress) -> HashMap<MacAddress, NextHopStats> {
+        let mut stats: HashMap<MacAddress, NextHopStats> = HashMap::new();
+        for (_rsu, seqs) in self.routes.iter() {
+            for (_seq, e) in seqs.iter() {
+                if let Some(vec) = e.downstream.get(&target) {
+                    for route in vec.iter() {
+                        if let Some(lat_us) = route.latency.map(|d| d.as_micros()) {
+                            let e = stats.entry(route.mac).or_insert(NextHopStats {
+                                min_us: u128::MAX,
+                                sum_us: 0,
+                                count: 0,
+                                hops: route.hops,
+                            });
+                            if lat_us < e.min_us {
+                                e.min_us = lat_us;
+                            }
+                            e.sum_us += lat_us;
+                            e.count += 1;
+                            e.hops = route.hops;
+                        }
+                    }
+                }
+            }
+        }
+        stats
+    }
+
+    /// Rotate to the next cached candidate (promote the next candidate to primary).
+    /// Returns the newly promoted primary if any.
+    pub fn failover_cached_upstream(&self) -> Option<MacAddress> {
+        self.cache
+            .failover(|src, n_best| self.build_candidate_list(src, n_best))
     }
 
     /// Test helper: directly set cached candidates and primary for tests.
@@ -252,15 +448,27 @@ impl Routing {
                 }
             }
             (Some(old), Some(new)) if old.mac != new.mac => {
-                tracing::info!(
-                    from = %from_mac,
-                    to = %to_mac,
-                    through = %new,
-                    was_through = %old,
-                    old_hops = old.hops,
-                    new_hops = new.hops,
-                    "Route changed",
-                );
+                if is_info {
+                    tracing::info!(
+                        from = %from_mac,
+                        to = %to_mac,
+                        through = %new,
+                        was_through = %old,
+                        old_hops = old.hops,
+                        new_hops = new.hops,
+                        "Route changed",
+                    );
+                } else {
+                    tracing::debug!(
+                        from = %from_mac,
+                        to = %to_mac,
+                        through = %new,
+                        was_through = %old,
+                        old_hops = old.hops,
+                        new_hops = new.hops,
+                        "Route changed",
+                    );
+                }
             }
             _ => {}
         }
@@ -287,67 +495,26 @@ impl Routing {
 
         let old_route = self.get_route_to(Some(message.source()));
         let old_route_from = self.get_route_to(Some(pkt.from()?));
-        let entry = self
+
+        let capacity = usize::try_from(self.args.obu_params.hello_history)?;
+        let duration = Instant::now().duration_since(self.boot);
+
+        // Record this sequence for the heartbeat source; learn if it's a duplicate.
+        let seen_seq = self
             .routes
             .entry(message.source())
-            .or_insert(IndexMap::with_capacity(usize::try_from(
-                self.args.obu_params.hello_history,
-            )?));
-
-        if entry.first().is_some_and(|(x, _)| x > &message.id()) {
-            entry.clear();
-        }
-
-        if entry.len() == entry.capacity() && entry.capacity() > 0 {
-            entry.swap_remove_index(0);
-        }
-
-        let seen_seq = entry.get(&message.id()).is_some();
-        let duration = Instant::now().duration_since(self.boot);
-        if !seen_seq {
-            entry.insert(
+            .or_insert_with(|| SourceHistory::with_capacity(capacity))
+            .observe(
                 message.id(),
-                (
-                    duration,
-                    pkt.from()?,
-                    message.hops(),
-                    IndexMap::new(),
-                    HashMap::default(),
-                ),
+                SequenceEntry::new(duration, pkt.from()?, message.hops()),
             );
-        }
-        // entry is no longer used after this point; NLL ends the borrow here so
-        // entry_from can take its own mutable borrow of self.routes below.
 
-        let entry_from = self
-            .routes
+        // Always record an adjacency entry for the neighbor that forwarded this
+        // heartbeat (pkt.from), even when the source seq is a duplicate.
+        self.routes
             .entry(pkt.from()?)
-            .or_insert(IndexMap::with_capacity(usize::try_from(
-                self.args.obu_params.hello_history,
-            )?));
-
-        if entry_from.first().is_some_and(|(x, _)| x > &message.id()) {
-            entry_from.clear();
-        }
-
-        if entry_from.len() == entry_from.capacity() && entry_from.capacity() > 0 {
-            entry_from.swap_remove_index(0);
-        }
-
-        // Always ensure we have an adjacency entry for the neighbor that forwarded
-        // this heartbeat sequence (pkt.from). Insert if absent for this seq id.
-        if !entry_from.contains_key(&message.id()) {
-            entry_from.insert(
-                message.id(),
-                (
-                    duration,
-                    pkt.from()?,
-                    1,
-                    IndexMap::new(),
-                    HashMap::default(),
-                ),
-            );
-        }
+            .or_insert_with(|| SourceHistory::with_capacity(capacity))
+            .observe(message.id(), SequenceEntry::new(duration, pkt.from()?, 1));
 
         // Track that `pkt.from()` forwarded a heartbeat for `message.source()`
         self.source_neighbors
@@ -406,16 +573,103 @@ impl Routing {
         ]))
     }
 
+    /// Decide how to forward a HeartbeatReply, handling the mutual-loop race.
+    ///
+    /// Three possible outcomes (returned as `(ForwardAction, forward_to)`):
+    /// - `Forward` — normal case, forward to `next_upstream`.
+    /// - `SkipForward` — reply arrived from the node we'd send to; drop forwarding
+    ///   to prevent an immediate bounce.
+    /// - `ForwardCached` — `next_upstream == sender` (loop race); we found an
+    ///   alternative upstream to use instead.
+    ///
+    /// Bails with `"loop detected"` when `next_upstream == sender` and no
+    /// safe alternative upstream exists.
+    fn decide_reply_forward(
+        next_upstream: MacAddress,
+        pkt_from: MacAddress,
+        sender: MacAddress,
+        source: MacAddress,
+        seq_id: u32,
+        source_history: &SourceHistory,
+        cached_upstream: Option<MacAddress>,
+    ) -> Result<(ForwardAction, MacAddress)> {
+        if next_upstream == sender {
+            // Mutual-loop race: two peer OBUs each recorded the other as next_upstream
+            // for this seq before either saw the RSU's own broadcast. Try alternatives:
+            //  1. Globally-cached upstream (from prior, unaffected seqs)
+            //  2. Any other next_upstream from a different seq entry for this RSU
+            //  3. The RSU source itself (direct link, if available)
+            let alt = cached_upstream
+                .filter(|&c| c != sender && c != pkt_from)
+                .or_else(|| {
+                    source_history.values().find_map(|e| {
+                        (e.next_upstream != sender && e.next_upstream != pkt_from)
+                            .then_some(e.next_upstream)
+                    })
+                })
+                .or_else(|| (source != sender && source != pkt_from).then_some(source));
+
+            match alt {
+                Some(alt_mac) => {
+                    tracing::debug!(
+                        pkt_from = %pkt_from,
+                        sender = %sender,
+                        next_upstream = %next_upstream,
+                        via = %alt_mac,
+                        "seq next_upstream would loop; forwarding via alternative"
+                    );
+                    Ok((ForwardAction::ForwardCached, alt_mac))
+                }
+                None => {
+                    #[cfg(feature = "stats")]
+                    node_lib::metrics::inc_loop_detected();
+                    let snapshot = source_history.get(&seq_id).map(|e| {
+                        e.downstream
+                            .iter()
+                            .map(|(mac, v)| format!("{}:{}", mac, v.len()))
+                            .collect::<Vec<_>>()
+                    });
+                    tracing::warn!(
+                        pkt_from = %pkt_from,
+                        sender = %sender,
+                        next_upstream = %next_upstream,
+                        source = %source,
+                        seq = seq_id,
+                        downstream = ?snapshot,
+                        "Routing loop detected, dropping packet"
+                    );
+                    bail!("loop detected");
+                }
+            }
+        } else if pkt_from == next_upstream {
+            tracing::debug!(
+                pkt_from = %pkt_from,
+                sender = %sender,
+                next_upstream = %next_upstream,
+                "Skipping forward to prevent loop"
+            );
+            Ok((ForwardAction::SkipForward, next_upstream))
+        } else {
+            tracing::trace!(
+                pkt_from = %pkt_from,
+                sender = %sender,
+                next_upstream = %next_upstream,
+                "Heartbeat reply forwarding"
+            );
+            Ok((ForwardAction::Forward, next_upstream))
+        }
+    }
+
     /// Process an incoming HeartbeatReply message.
     ///
-    /// This function:
-    /// 1. Records latency measurements in downstream observations
-    /// 2. Detects routing loops (bail if reply came from upstream)
-    /// 3. Prevents immediate bounce-back (skip forward if reply from next hop)
-    /// 4. Updates route selection with fresh latency data
-    /// 5. Forwards the reply toward the next upstream node
+    /// Pipeline:
+    /// 1. **Parse** — validate packet type, extract message fields.
+    /// 2. **Lookup** — retrieve the recorded `next_upstream` for this seq.
+    /// 3. **Decide** — determine forward action via `decide_reply_forward`.
+    /// 4. **Observe** — record latency measurement in downstream stats.
+    /// 5. **Emit** — serialize forward wire and log route changes.
     ///
-    /// Returns wire-format message for forwarding, or None if loop detected or would bounce.
+    /// Returns wire-format message for forwarding, or None if forwarding is skipped.
     pub fn handle_heartbeat_reply(
         &mut self,
         pkt: &Message,
@@ -425,208 +679,61 @@ impl Routing {
             bail!("this is supposed to be a HeartBeat Reply");
         };
 
-        let old_route = self.get_route_to(Some(message.sender()));
-        let old_route_from = self.get_route_to(Some(pkt.from()?));
-        let Some(source_entries) = self.routes.get_mut(&message.source()) else {
-            bail!("we don't know how to reach that source");
-        };
-
-        // Read the recorded duration and next_upstream immutably so we can
-        // decide action without holding a mutable borrow of the routing
-        // structures. We'll perform downstream updates in a short mutable
-        // scope below.
-        let next_upstream_copy = {
-            let Some((_, next_upstream, _, _, _)) = source_entries.get(&message.id()) else {
-                bail!("no recollection of the next hop for this route");
-            };
-            *next_upstream
-        };
-
-        // Note: avoid forwarding the HeartbeatReply back to the node it came
-        // from. If `pkt.from()` equals our recorded `next_upstream`, sending a
-        // reply to `next_upstream` would immediately bounce the packet back and
-        // can create a forwarding loop. We'll still record downstream
-        // observations below, but skip forwarding in that case.
-
-        // Decide action and emit a trace-level log so we can inspect decisions
-        // in live runs.
         let pkt_from = pkt.from()?;
         let sender = message.sender();
+        let source = message.source();
 
-        // When the seq-specific next_upstream equals the reply sender a direct forward
-        // would loop.  Try three alternatives before bailing:
-        //
-        //  1. Globally-cached upstream (set by select_and_cache_upstream on prior seqs)
-        //  2. Any other next_upstream recorded in a different seq entry for this RSU
-        //  3. The RSU source itself (forward directly; works whenever obu5 has a link to RSU)
-        //
-        // This handles the mutual-loop race where two peer OBUs relay the same heartbeat
-        // to each other before either receives the RSU's own broadcast, causing each to
-        // record the other as next_upstream for that seq.  The race is most common when
-        // the direct RSU→obu5 link has packet loss (loss: 0.2 in the example topology),
-        // so obu5 falls back to a peer relay and both peers' next_upstream values point at
-        // each other.
-        let (action, forward_to) = if next_upstream_copy == sender {
-            let alt = self
-                .cache
-                .get_cached_upstream()
-                .filter(|&c| c != sender && c != pkt_from)
-                .or_else(|| {
-                    // Scan all recorded seq entries for this RSU for any non-looping upstream.
-                    source_entries.values().find_map(|(_, mac, _, _, _)| {
-                        if *mac != sender && *mac != pkt_from {
-                            Some(*mac)
-                        } else {
-                            None
-                        }
-                    })
-                })
-                .or_else(|| {
-                    // Last resort: forward directly to the RSU source.
-                    let rsu_mac = message.source();
-                    if rsu_mac != sender && rsu_mac != pkt_from {
-                        Some(rsu_mac)
-                    } else {
-                        None
-                    }
-                });
+        let old_route = self.get_route_to(Some(sender));
+        let old_route_from = self.get_route_to(Some(pkt_from));
 
-            if let Some(alt_mac) = alt {
-                (ForwardAction::ForwardCached, alt_mac)
-            } else {
-                (ForwardAction::Bail, next_upstream_copy)
-            }
-        } else if pkt_from == next_upstream_copy {
-            (ForwardAction::SkipForward, next_upstream_copy)
-        } else {
-            (ForwardAction::Forward, next_upstream_copy)
-        };
+        // Stage 2 — Lookup: retrieve next_upstream and decide forward action.
+        // Stage 3 — Observe: record latency measurement.
+        // Both stages share `source_history`; drop its borrow before stage 4.
+        let (action, forward_to) = {
+            let Some(source_history) = self.routes.get_mut(&source) else {
+                bail!("we don't know how to reach that source");
+            };
 
-        // Log the decision at appropriate level
-        match action {
-            ForwardAction::Bail => {} // Will be logged as warn below
-            ForwardAction::SkipForward => {
-                tracing::debug!(
-                    pkt_from = %pkt_from,
-                    message_sender = %sender,
-                    next_upstream = %next_upstream_copy,
-                    "Skipping forward to prevent loop"
-                );
-            }
-            ForwardAction::ForwardCached => {
-                tracing::debug!(
-                    pkt_from = %pkt_from,
-                    message_sender = %sender,
-                    next_upstream = %next_upstream_copy,
-                    cached_upstream = %forward_to,
-                    "seq next_upstream would loop; forwarding via cached upstream"
-                );
-            }
-            ForwardAction::Forward => {
-                tracing::trace!(
-                    pkt_from = %pkt_from,
-                    message_sender = %sender,
-                    next_upstream = %next_upstream_copy,
-                    "Heartbeat reply forwarding"
-                );
-            }
-        }
+            // Lookup: read next_upstream for this seq.
+            let next_upstream = {
+                let Some(entry) = source_history.get(&message.id()) else {
+                    bail!("no recollection of the next hop for this route");
+                };
+                entry.next_upstream
+            };
 
-        if action == ForwardAction::Bail {
-            #[cfg(feature = "stats")]
-            node_lib::metrics::inc_loop_detected();
-            // Build a compact snapshot of downstream observations for this
-            // heartbeat sequence to aid debugging (mac -> observed targets count).
-            let downstream_snapshot: Option<Vec<String>> =
-                source_entries
-                    .get(&message.id())
-                    .map(|(_, _nu, _h, _r, downstream)| {
-                        downstream
-                            .iter()
-                            .map(|(mac, vec)| format!("{}:{}", mac, vec.len()))
-                            .collect()
-                    });
+            // Decide: determine forward action (handles loop detection).
+            let cached_upstream = self.cache.get_cached_upstream();
+            let (action, forward_to) = Self::decide_reply_forward(
+                next_upstream,
+                pkt_from,
+                sender,
+                source,
+                message.id(),
+                source_history,
+                cached_upstream,
+            )?;
 
-            tracing::warn!(
-                pkt_from = %pkt_from,
-                message_sender = %sender,
-                next_upstream = %next_upstream_copy,
-                source = %message.source(),
-                seq = message.id(),
-                downstream = ?downstream_snapshot,
-                "Routing loop detected, dropping packet"
-            );
-            bail!("loop detected");
-        }
-
-        // Update downstream observation lists inside a short mutable scope so
-        // we don't hold a mutable borrow across the subsequent `select_and_cache_upstream` call.
-        {
-            let Some((duration, _next_upstream, _, _, downstream)) =
-                source_entries.get_mut(&message.id())
-            else {
+            // Observe: record the round-trip latency for this sender.
+            let Some(entry) = source_history.get_mut(&message.id()) else {
                 bail!("no recollection of the next hop for this route");
             };
+            let latency = Instant::now().duration_since(self.boot) - entry.received_at;
+            entry.record_observation(sender, message.hops(), pkt_from, latency);
 
-            let seen_at = Instant::now().duration_since(self.boot);
-            let latency = seen_at - *duration;
-            match downstream.entry(message.sender()) {
-                Entry::Occupied(mut entry) => {
-                    let value = entry.get_mut();
+            (action, forward_to)
+        }; // source_history borrow ends here
 
-                    value.push(Target {
-                        hops: message.hops(),
-                        mac: pkt.from()?,
-                        latency: Some(latency),
-                    });
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(vec![Target {
-                        hops: message.hops(),
-                        mac: pkt.from()?,
-                        latency: Some(latency),
-                    }]);
-                }
-            };
+        // Stage 4 — Cache: update upstream selection with fresh latency data.
+        // Done before the SkipForward early-return so bounced replies still update the cache.
+        let _selected = self.select_and_cache_upstream(source);
 
-            match downstream.entry(pkt.from()?) {
-                Entry::Occupied(mut entry) => {
-                    let value = entry.get_mut();
-
-                    value.push(Target {
-                        hops: 1,
-                        mac: pkt.from()?,
-                        latency: None,
-                    });
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(vec![Target {
-                        hops: 1,
-                        mac: pkt.from()?,
-                        latency: None,
-                    }]);
-                }
-            };
-        }
-
-        // Attempt to select and cache an upstream for the original heartbeat
-        // source now that we've recorded downstream observations. Do this
-        // before the early-return below so replies that would be skipped for
-        // forwarding still cause caching.
-        let _selected = self.select_and_cache_upstream(message.source());
-
-        // If the reply arrived from the node we'd forward to, don't forward
-        // it back: that would produce an immediate bounce. Drop forwarding
-        // (but keep the recorded downstream information above).
-        // Exception: when we're using a cached upstream fallback (ForwardCached),
-        // pkt_from == next_upstream_copy is intentional — we still forward to forward_to.
         if action == ForwardAction::SkipForward {
             return Ok(None);
         }
 
-        let sender = message.sender();
-
-        // Use flat serialization for better performance (8.7x faster)
+        // Stage 5 — Emit: serialize the forwarded reply and log route changes.
+        // Use flat serialization for better performance (8.7x faster).
         let wire: Vec<u8> = (&Message::new(
             mac,
             forward_to,
@@ -636,16 +743,18 @@ impl Routing {
 
         let reply = Ok(Some(vec![ReplyType::WireFlat(wire)]));
 
+        // Downstream OBU route updates are debug-level; the important INFO event
+        // is "Upstream selected/changed" emitted by select_and_cache_upstream.
         let new_route = self.get_route_to(Some(sender));
-        Self::log_route_change(old_route, new_route, mac, sender, true, "Route discovered");
+        Self::log_route_change(old_route, new_route, mac, sender, false, "Route discovered");
 
-        if sender != pkt.from()? {
-            let new_route_from = self.get_route_to(Some(pkt.from()?));
+        if sender != pkt_from {
+            let new_route_from = self.get_route_to(Some(pkt_from));
             Self::log_route_change(
                 old_route_from,
                 new_route_from,
                 mac,
-                pkt.from()?,
+                pkt_from,
                 false,
                 "route created on heartbeat reply",
             );
@@ -660,14 +769,14 @@ impl Routing {
     /// 1. **For cached upstream (None)**: Returns current cached upstream if set
     /// 2. **For non-RSU targets**: Uses downstream observations across all heartbeats
     /// 3. **For RSU targets**: Applies latency-based scoring with hysteresis:
-    ///    - Prefers lower latency (min + avg scoring)
-    ///    - Applies 10% improvement threshold to prevent flapping
+    ///    - Prefers lower average latency (avg scoring)
+    ///    - Applies 30% improvement threshold to prevent flapping
     ///    - Falls back to hop-count when latency unavailable
     ///    - Deterministic tie-breaking by MAC address
     ///
     /// Hysteresis: Only switches from cached route when:
     /// - New route has ≥1 fewer hops, OR
-    /// - New route has ≥10% better latency score
+    /// - New route has ≥30% better average latency score
     ///
     /// Returns None if no route exists.
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
@@ -693,8 +802,8 @@ impl Routing {
             // Collect candidate next hops that lead to target_mac along with hop-count and latency.
             let mut candidates: Vec<(u32, MacAddress, u128)> = Vec::new();
             for (_rsu, seqs) in self.routes.iter() {
-                for (_seq, (_dur, _next_upstream, _hops, _r, downstream)) in seqs.iter() {
-                    if let Some(vec) = downstream.get(&target_mac) {
+                for (_seq, e) in seqs.iter() {
+                    if let Some(vec) = e.downstream.get(&target_mac) {
                         for t in vec.iter() {
                             let us = t.latency.map(|d| d.as_micros()).unwrap_or(u128::MAX);
                             candidates.push((t.hops, t.mac, us));
@@ -710,15 +819,15 @@ impl Routing {
                 .map(|(h, _, _)| *h)
                 .min()
                 .expect("candidates is non-empty, min must exist");
-            use crate::control::routing_utils::{pick_best_next_hop, NextHopStats};
+            use crate::control::routing_utils::pick_best_next_hop;
 
-            let mut per_next: std::collections::HashMap<MacAddress, NextHopStats> =
-                std::collections::HashMap::new();
+            let mut per_next: HashMap<MacAddress, NextHopStats> = HashMap::new();
             for (_h, mac, us) in candidates.into_iter().filter(|(h, _, _)| *h == min_hops) {
                 let e = per_next.entry(mac).or_insert(NextHopStats {
                     min_us: u128::MAX,
                     sum_us: 0,
                     count: 0,
+                    hops: min_hops,
                 });
                 if us < e.min_us {
                     e.min_us = us;
@@ -730,381 +839,251 @@ impl Routing {
             }
 
             let (mac, avg) = pick_best_next_hop(per_next)?;
-            return Some(Route {
-                hops: min_hops,
-                mac,
-                latency: if avg == u128::MAX {
-                    None
-                } else {
-                    Some(Duration::from_micros(avg as u64))
-                },
-            });
+            return Some(make_route(mac, min_hops, avg));
         }
-        // Optionally incorporate hysteresis against the currently cached upstream.
-        // We will compute the usual "best" candidate, but if it differs from the
-        // cached upstream we only switch when it's better by a margin (>=10% lower
-        // latency score) or uses at least one fewer hop. Otherwise, we keep the
-        // current next hop to avoid flapping.
+        // Apply hysteresis: prefer the cached upstream unless the best candidate
+        // is clearly better (≥1 fewer hop, or ≥30% lower avg latency).
         let cached = self.get_cached_upstream();
-        let mut upstream_routes: Vec<_> = self
+
+        // Build a mac → min-hops map for all relay paths toward target_mac.
+        // Used as fallback when a candidate has no latency measurements yet.
+        let upstream_hops: HashMap<MacAddress, u32> = self
             .routes
-            .iter()
-            .flat_map(|(rsu_mac, seqs)| {
-                seqs.iter()
-                    .map(move |(seq, (_, mac, hops, _, _))| (seq, rsu_mac, mac, hops))
-            })
-            .filter(|(_, rsu_mac, _, _)| rsu_mac == &&target_mac)
-            .collect();
-        upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
-
-        // Compute deterministic integer-based metrics for latency in microseconds across ALL hops.
-        // Prefer lower latency first; break ties by fewer hops.
-        // Build latency_candidates deterministically by scanning all recorded sequences
-        // (same approach as `select_and_cache_upstream`) to avoid timing/order issues.
-        let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> =
-            HashMap::default();
-        for (_rsu, seqs) in self.routes.iter() {
-            for (_seq, (_dur, _mac, _hops, _r, downstream)) in seqs.iter() {
-                if let Some(vec) = downstream.get(&target_mac) {
-                    for route in vec.iter() {
-                        if let Some(lat) = route.latency.map(|x| x.as_micros()) {
-                            let entry = latency_candidates.entry(route.mac).or_insert((
-                                u128::MAX,
-                                0u128,
-                                0u32,
-                                route.hops,
-                            ));
-                            if entry.0 > lat {
-                                entry.0 = lat;
-                            }
-                            entry.1 += lat;
-                            entry.2 += 1;
-                            entry.3 = route.hops;
-                        }
-                    }
+            .get(&target_mac)
+            .into_iter()
+            .flat_map(|seqs| seqs.values())
+            .fold(HashMap::new(), |mut m, e| {
+                let slot = m.entry(e.next_upstream).or_insert(e.hops);
+                if e.hops < *slot {
+                    *slot = e.hops;
                 }
-            }
-        }
+                m
+            });
 
-        if !latency_candidates.is_empty() {
-            // Use helper to pick the best candidate; clone the map so we can still
-            // inspect it below for cached membership/hops.
+        let latency_stats = self.collect_downstream_stats(target_mac);
+
+        if !latency_stats.is_empty() {
             let (best_mac, best_avg) =
                 crate::control::routing_utils::pick_best_from_latency_candidates(
-                    latency_candidates.clone(),
+                    latency_stats.clone(),
                 )
-                .expect("latency_candidates non-empty");
-            let (best_min, _best_sum, _best_n, best_hops) = latency_candidates
-                .get(&best_mac)
-                .copied()
-                .expect("best_mac must exist in latency_candidates");
-            let best_score = if best_min == u128::MAX || best_avg == u128::MAX {
-                u128::MAX
-            } else {
-                best_min + best_avg
-            };
+                .expect("latency_stats non-empty");
+            let best_hops = latency_stats[&best_mac].hops;
 
-            // If cached is set but isn't in latency candidates (no latency observed yet),
-            // prefer a measured candidate when available. The previous behavior kept
-            // cached unless the best had at least one fewer hop; that prevented
-            // switching when the new candidate had strictly better latency but the
-            // cached one had no latency measurements. Here we switch to the best
-            // measured candidate (when one exists). If there are no measured
-            // candidates, fall back to the hops-only hysteresis.
             if let Some(cached_mac) = cached {
-                if !latency_candidates.contains_key(&cached_mac) {
-                    // If we have a finite scored best (i.e., measured candidate),
-                    // prefer it (allow switching). Otherwise fall back to hops-only
-                    // decision as before.
-                    if best_score != u128::MAX {
-                        // best candidate is measured; let the default return of
-                        // best happen (do nothing here).
-                    } else if let Some((_, _, _, cached_hops_ref)) = upstream_routes
-                        .iter()
-                        .find(|(_, _, mac_ref, _)| **mac_ref == cached_mac)
-                    {
-                        let cached_hops = **cached_hops_ref;
-                        if best_mac != cached_mac {
-                            let fewer_hops = best_hops < cached_hops;
-                            if !fewer_hops {
-                                return Some(Route {
-                                    hops: cached_hops,
-                                    mac: cached_mac,
-                                    latency: None,
-                                });
-                            }
-                        }
+                // Early return: already on the best candidate.
+                if best_mac == cached_mac {
+                    return Some(make_route(best_mac, best_hops, best_avg));
+                }
+
+                let cached_in_stats = latency_stats.get(&cached_mac).copied();
+                let keep_cached = match cached_in_stats {
+                    Some(cs) => {
+                        // Both candidates measured: apply latency hysteresis.
+                        let cached_avg = stats_avg(&cs);
+                        !(best_hops < cs.hops || is_significantly_better(best_avg, cached_avg))
                     }
+                    None => {
+                        // Cached has no measurements. Switch if best is measured;
+                        // otherwise only switch if best has strictly fewer hops.
+                        best_avg == u128::MAX
+                            && upstream_hops
+                                .get(&cached_mac)
+                                .is_some_and(|&ch| best_hops >= ch)
+                    }
+                };
+
+                if keep_cached {
+                    let (hops, latency) = match cached_in_stats {
+                        Some(cs) => (cs.hops, finite_duration(stats_avg(&cs))),
+                        None => (
+                            *upstream_hops.get(&cached_mac).expect(
+                                "keep_cached=true with no stats implies upstream_hops has entry",
+                            ),
+                            None,
+                        ),
+                    };
+                    return Some(Route {
+                        mac: cached_mac,
+                        hops,
+                        latency,
+                    });
                 }
             }
 
-            // If we have a cached upstream that is also a candidate for this RSU,
-            // apply hysteresis: stick to cached unless the new one is clearly better.
-            if let Some(cached_mac) = cached {
-                if let Some((cached_min, cached_sum, cached_n, cached_hops)) =
-                    latency_candidates.get(&cached_mac).copied()
-                {
-                    let cached_avg = if cached_n > 0 {
-                        cached_sum / (cached_n as u128)
-                    } else {
-                        u128::MAX
-                    };
-                    let cached_score = if cached_min == u128::MAX || cached_avg == u128::MAX {
-                        u128::MAX
-                    } else {
-                        cached_min + cached_avg
-                    };
-
-                    // If best is the cached, just return it.
-                    if best_mac == cached_mac {
-                        return Some(Route {
-                            hops: best_hops,
-                            mac: best_mac,
-                            latency: if best_avg == u128::MAX {
-                                None
-                            } else {
-                                Some(Duration::from_micros(best_avg as u64))
-                            },
-                        });
-                    }
-
-                    // Switching conditions:
-                    // - strictly fewer hops by at least 1
-                    // - or latency score better by >=10%
-                    let fewer_hops = best_hops < cached_hops;
-                    let latency_better_enough =
-                        if cached_score == u128::MAX && best_score != u128::MAX {
-                            true // prefer finite measurement over unknown
-                        } else if cached_score == u128::MAX || best_score == u128::MAX {
-                            false
-                        } else {
-                            // new_score <= cached_score * 0.9 (10% or more better)
-                            best_score.saturating_mul(10) < cached_score.saturating_mul(9)
-                        };
-
-                    if !(fewer_hops || latency_better_enough) {
-                        // Keep cached
-                        return Some(Route {
-                            hops: cached_hops,
-                            mac: cached_mac,
-                            latency: if cached_avg == u128::MAX {
-                                None
-                            } else {
-                                Some(Duration::from_micros(cached_avg as u64))
-                            },
-                        });
-                    }
-                }
-            }
-
-            // Default: return the best candidate
-            return Some(Route {
-                hops: best_hops,
-                mac: best_mac,
-                latency: if best_avg == u128::MAX {
-                    None
-                } else {
-                    Some(Duration::from_micros(best_avg as u64))
-                },
-            });
+            return Some(make_route(best_mac, best_hops, best_avg));
         }
 
-        // Fallback: no latency observed yet, prefer fewer hops (original behavior)
-        if let Some((_, _, best_mac_ref, best_hops_ref)) = upstream_routes.first() {
-            let best_mac = **best_mac_ref;
-            let best_hops = **best_hops_ref;
-
-            // Apply hysteresis with hops-only info when we don't have latency.
+        // Fallback: no latency measurements yet — prefer fewer hops.
+        let best_hop = upstream_hops.iter().min_by_key(|(_, &h)| h);
+        if let Some((&best_mac, &best_hops)) = best_hop {
             if let Some(cached_mac) = cached {
-                if let Some((_, _, _, cached_hops_ref)) = upstream_routes
-                    .iter()
-                    .find(|(_, _, mac_ref, _)| **mac_ref == cached_mac)
-                {
-                    let cached_hops = **cached_hops_ref;
-                    if best_mac != cached_mac {
-                        let fewer_hops = best_hops < cached_hops; // switch only if at least one fewer hop
-                        if !fewer_hops {
+                if best_mac != cached_mac {
+                    if let Some(&cached_hops) = upstream_hops.get(&cached_mac) {
+                        if best_hops >= cached_hops {
                             return Some(Route {
-                                hops: cached_hops,
                                 mac: cached_mac,
+                                hops: cached_hops,
                                 latency: None,
                             });
                         }
                     }
                 }
             }
-
             return Some(Route {
-                hops: best_hops,
                 mac: best_mac,
+                hops: best_hops,
                 latency: None,
             });
         }
         None
     }
 
+    /// Reception quality for a given RSU source MAC: fraction of expected heartbeat
+    /// sequences that were actually received within the `hello_history` window.
+    ///
+    /// Returns:
+    /// - `1.0`  — all sequences received (great signal, nearby RSU)
+    /// - `0.0`  — no data, or the last heartbeat is stale (RSU out of range / gone)
+    /// - `0.0–1.0` — partial reception (lossy channel or RSU at range edge)
+    ///
+    /// Staleness: the heartbeat period is estimated from the observed inter-arrival
+    /// times.  If no heartbeat has been received within 3× that period the RSU is
+    /// considered stale and 0.0 is returned regardless of historic fill-rate.
+    fn rsu_reception_quality(&self, rsu_mac: MacAddress) -> f64 {
+        let seqs = match self.routes.get(&rsu_mac) {
+            Some(s) if !s.is_empty() => s,
+            _ => return 0.0,
+        };
+
+        // Estimate inter-heartbeat period from wall-clock reception times stored
+        // in each SequenceEntry.
+        let durations: Vec<Duration> = seqs.values().map(|e| e.received_at).collect();
+        let last_recv = *durations.last().unwrap_or(&Duration::ZERO);
+        let now = Instant::now().duration_since(self.boot);
+
+        let estimated_period = if durations.len() >= 2 {
+            let span = *durations.last().unwrap() - *durations.first().unwrap();
+            span / (durations.len() as u32).saturating_sub(1).max(1)
+        } else {
+            Duration::from_secs(5) // safe default: assume 5 s heartbeat period
+        };
+
+        // Treat RSU as gone if its last heartbeat is >3× the estimated period old.
+        if now > last_recv + estimated_period * 3 {
+            return 0.0;
+        }
+
+        if seqs.len() < 2 {
+            return 0.5; // insufficient history to compute a meaningful ratio
+        }
+
+        let oldest_seq = *seqs.keys().next().unwrap();
+        let newest_seq = *seqs.keys().last().unwrap();
+        // wrapping_sub handles the (unlikely) u32 rollover case
+        let span = newest_seq.wrapping_sub(oldest_seq).saturating_add(1) as f64;
+        seqs.len() as f64 / span
+    }
+
     /// Select the best route to an RSU and cache N-best candidates for failover.
     ///
     /// This function:
-    /// 1. Calls `get_route_to()` to find the best route with hysteresis
-    /// 2. Caches the selected upstream as primary
-    /// 3. Builds an ordered list of N-best candidates for fast failover
-    /// 4. Logs when first upstream is selected (important OBU milestone)
-    ///
-    /// Candidates are scored using:
-    /// - Latency-based scoring (min + avg) when measurements available
-    /// - Hop-count based backfill for unmeasured routes  
-    /// - Deterministic ordering for reproducible behavior
+    /// 1. Applies a signal-quality guard to prevent unnecessary RSU handoffs:
+    ///    - With RSSI table: switch only when incoming RSU is >3 dB stronger
+    ///      (≈40% closer), or the cached RSU has gone stale (RSSI not available).
+    ///    - Without RSSI table: falls back to reception-quality ratio (≥30% better).
+    /// 2. Calls `get_route_to()` to find the best route with hysteresis
+    /// 3. Caches the selected upstream as primary
+    /// 4. Builds an ordered list of N-best candidates for fast failover
+    /// 5. Logs when first upstream is selected (important OBU milestone)
     ///
     /// Returns the selected route, or None if no route exists.
     pub fn select_and_cache_upstream(&self, mac: MacAddress) -> Option<Route> {
+        // --- Signal-quality guard -------------------------------------------
+        // The latency-based path in get_route_to never fires for RSU targets
+        // (RSUs do not send heartbeat replies, so they never appear in the
+        // downstream observation map).  Without this guard every incoming RSU
+        // heartbeat would overwrite the cache with that RSU — causing rapid
+        // flapping between all hearable RSUs.
+        //
+        // When an RSSI table is available (simulator or real radio driver) we use
+        // signal strength in dBm as the primary quality metric: a closer RSU has
+        // a higher (less negative) RSSI.  We require the incoming RSU to be at
+        // least 3 dB stronger before switching — this corresponds to roughly 40%
+        // closer distance and is below the threshold of perceptible link degradation.
+        //
+        // Without RSSI we fall back to heartbeat reception ratio with a 30% margin.
+        if let Some(cached_source) = self.cache.get_cached_source() {
+            if cached_source != mac {
+                let keep_cached = if let Some(ref rssi_tbl) = self.rssi_table {
+                    let tbl = rssi_tbl.read().expect("rssi table lock");
+                    let rssi_incoming = *tbl.get(&mac).unwrap_or(&-100.0_f32);
+                    // Distinguish "not yet measured" from "measured as very weak".
+                    // If the cached RSU has no entry (table empty at startup, before
+                    // the fading task has run), keep it rather than treating it as
+                    // gone — the -100 dBm fallback would fail the -95 dBm liveness
+                    // check and cause every arriving heartbeat to evict the cached RSU.
+                    match tbl.get(&cached_source) {
+                        None => true, // no measurement yet — keep cached RSU stable
+                        Some(&rssi_cached) => {
+                            // -95 dBm is near the edge of usable range (~3 km free-space
+                            // at 5.9 GHz with 23 dBm TX).  Below that the cached RSU is
+                            // effectively gone, so we let the guard fall through.
+                            rssi_cached > -95.0 && rssi_incoming <= rssi_cached + 3.0
+                        }
+                    }
+                } else {
+                    let q_incoming = self.rsu_reception_quality(mac);
+                    let q_cached = self.rsu_reception_quality(cached_source);
+                    // Keep cached unless the new RSU is clearly better.
+                    // `q_cached > 0.0` — if cached has gone stale we fall through
+                    // and let get_route_to pick whatever is reachable.
+                    q_cached > 0.0 && q_incoming <= q_cached * 1.3
+                };
+
+                if keep_cached {
+                    if let Some(cached_up) = self.cache.get_cached_upstream() {
+                        return Some(Route {
+                            mac: cached_up,
+                            hops: 1, // approximate; callers ignore the return value
+                            latency: None,
+                        });
+                    }
+                }
+            }
+        }
+        // -----------------------------------------------------------------------
+
         let route = self.get_route_to(Some(mac))?;
-        let was_cached = self.cache.get_cached_upstream().is_some();
+        let old_upstream = self.cache.get_cached_upstream();
 
         // Store primary cached upstream and source
         self.cache.set_upstream(route.mac, mac);
 
-        // Log when first upstream is selected (important milestone for OBU)
-        if !was_cached {
-            tracing::info!(
-                upstream = %route.mac,
-                source = %mac,
-                hops = route.hops,
-                "Upstream selected"
-            );
-        }
-        // Also attempt to populate an ordered list of N-best candidates for fast failover.
-        let n_best = self.cache.candidates_count();
-        if let Some(candidates) = {
-            // Re-run a variant of selection to fetch multiple candidates.
-            // Call get_route_to for this mac to trigger same computation; then
-            // fall back to computing from latency_candidates in the routing
-            // internal structures. Because `get_route_to` is pure, we can
-            // compute candidates deterministically by copying the logic here.
-            // For simplicity, compute from latency and hops collected across
-            // observed routes.
-            // Recreate the latency_candidates map used by get_route_to.
-            let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> =
-                HashMap::default();
-            for (_rsu, seqs) in self.routes.iter() {
-                for (_seq, (_dur, _mac, _hops, _r, downstream)) in seqs.iter() {
-                    if let Some(vec) = downstream.get(&mac) {
-                        for route in vec.iter() {
-                            if let Some(lat) = route.latency.map(|x| x.as_micros()) {
-                                let entry = latency_candidates.entry(route.mac).or_insert((
-                                    u128::MAX,
-                                    0u128,
-                                    0u32,
-                                    route.hops,
-                                ));
-                                if entry.0 > lat {
-                                    entry.0 = lat;
-                                }
-                                entry.1 += lat;
-                                entry.2 += 1;
-                                entry.3 = route.hops;
-                            }
-                        }
-                    }
-                }
-            }
-            if !latency_candidates.is_empty() {
-                let scored_full = crate::control::routing_utils::score_and_sort_latency_candidates(
-                    latency_candidates,
+        match old_upstream {
+            None => {
+                tracing::info!(
+                    upstream = %route.mac,
+                    source = %mac,
+                    hops = route.hops,
+                    "Upstream selected"
                 );
-                let mut out: Vec<MacAddress> = scored_full
-                    .into_iter()
-                    .map(|(_score, _hops, mac, _avg)| mac)
-                    .take(n_best)
-                    .collect();
-                // If we still have capacity, backfill with hop-based candidates not already present
-                if out.len() < n_best {
-                    let mut upstream_routes: Vec<_> = self
-                        .routes
-                        .iter()
-                        .flat_map(|(rsu_mac, seqs)| {
-                            seqs.iter()
-                                .map(move |(seq, (_, mac, hops, _, _))| (seq, rsu_mac, mac, hops))
-                        })
-                        .filter(|(_, rsu_mac, _, _)| rsu_mac == &&mac)
-                        .collect();
-                    upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
-                    let mut seen: std::collections::HashSet<MacAddress> =
-                        out.iter().copied().collect();
-                    for (_seq, _rsu, mac_ref, _hops) in upstream_routes.into_iter() {
-                        if !seen.contains(mac_ref) {
-                            seen.insert(*mac_ref);
-                            out.push(*mac_ref);
-                            if out.len() >= n_best {
-                                break;
-                            }
-                        }
-                    }
-                }
-                // As a final fallback, add any recorded neighbors that forwarded heartbeats
-                // for this source (not yet included), then, if capacity remains, include the
-                // source itself.
-                if out.len() < n_best {
-                    if let Some(neigh) = self.source_neighbors.get(&mac) {
-                        for cand in neigh.iter() {
-                            if !out.contains(cand) {
-                                out.push(*cand);
-                                if out.len() >= n_best {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                if out.len() < n_best && !out.contains(&mac) {
-                    out.push(mac);
-                }
-                Some(out)
-            } else {
-                // Fallback: choose by fewest hops across upstream_routes
-                let mut upstream_routes: Vec<_> = self
-                    .routes
-                    .iter()
-                    .flat_map(|(rsu_mac, seqs)| {
-                        seqs.iter()
-                            .map(move |(seq, (_, mac, hops, _, _))| (seq, rsu_mac, mac, hops))
-                    })
-                    .filter(|(_, rsu_mac, _, _)| rsu_mac == &&mac)
-                    .collect();
-                upstream_routes.sort_by(|(_, _, _, hops), (_, _, _, bhops)| hops.cmp(bhops));
-                let mut seen = std::collections::HashSet::new();
-                let mut out = Vec::new();
-                for (_seq, _rsu, mac_ref, _hops) in upstream_routes.into_iter() {
-                    if !seen.contains(mac_ref) {
-                        seen.insert(*mac_ref);
-                        out.push(*mac_ref);
-                        if out.len() >= n_best {
-                            break;
-                        }
-                    }
-                }
-                if out.len() < n_best {
-                    if let Some(neigh) = self.source_neighbors.get(&mac) {
-                        for cand in neigh.iter() {
-                            if !out.contains(cand) {
-                                out.push(*cand);
-                                if out.len() >= n_best {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                if out.len() < n_best && !out.contains(&mac) {
-                    out.push(mac);
-                }
-                if out.is_empty() {
-                    None
-                } else {
-                    Some(out)
-                }
             }
-        } {
+            Some(old_mac) if old_mac != route.mac => {
+                tracing::info!(
+                    upstream = %route.mac,
+                    was_upstream = %old_mac,
+                    source = %mac,
+                    hops = route.hops,
+                    "Upstream changed"
+                );
+            }
+            _ => {}
+        }
+        // Build an ordered list of N-best candidates for fast failover.
+        let n_best = self.cache.candidates_count();
+        let candidates = self.build_candidate_list(mac, n_best);
+        if !candidates.is_empty() {
             // store candidates but do NOT override the already-stored primary
             // cached upstream; keep `route.mac` as the primary to preserve
             // hysteresis semantics handled by `get_route_to`.

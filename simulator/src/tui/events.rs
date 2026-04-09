@@ -290,20 +290,20 @@ fn handle_pause_toggle(state: &mut TuiState) {
 
 /// Capture upstream routing information snapshot
 fn capture_upstreams_snapshot(state: &mut TuiState) {
-    let mut ups: Vec<(String, String, String, String, String, String)> = Vec::new();
+    let mut ups: Vec<crate::tui::state::UpstreamSnapshot> = Vec::new();
 
-    for (name, (mac, ntype, _virtual_ip, _cloud_ip, simnode)) in state.nodes.iter() {
-        if ntype != "Obu" {
+    for (name, snap) in state.nodes.iter() {
+        if snap.node_type != "Obu" {
             continue;
         }
 
-        let obu_mac = mac.clone();
+        let obu_mac = snap.mac.clone();
         let mut upstream_display = "(no upstream)".to_string();
         let mut upstream_mac = "-".to_string();
         let mut hops = "-".to_string();
         let mut next_hop = "-".to_string();
 
-        if let crate::simulator::SimNode::Obu(ref o) = simnode {
+        if let crate::simulator::SimNode::Obu(ref o) = snap.simnode {
             if let Some(obu) = o.as_any().downcast_ref::<obu_lib::Obu>() {
                 if let Some(route) = obu.cached_upstream_route() {
                     upstream_mac = format!("{}", route.mac);
@@ -320,16 +320,14 @@ fn capture_upstreams_snapshot(state: &mut TuiState) {
                         }
                         depth += 1;
 
-                        if let Some((nname, (_m, ntype2, _v, _c, snode))) = state
-                            .nodes
-                            .iter()
-                            .find(|(_, (m, _, _, _, _))| **m == current_mac)
+                        if let Some((nname, nsnap)) =
+                            state.nodes.iter().find(|(_, s)| s.mac == current_mac)
                         {
-                            if ntype2 == "Rsu" {
+                            if nsnap.node_type == "Rsu" {
                                 break Some(nname.clone());
                             }
-                            if ntype2 == "Obu" {
-                                if let crate::simulator::SimNode::Obu(ref other_o) = snode {
+                            if nsnap.node_type == "Obu" {
+                                if let crate::simulator::SimNode::Obu(ref other_o) = nsnap.simnode {
                                     if let Some(other_obu) =
                                         other_o.as_any().downcast_ref::<obu_lib::Obu>()
                                     {
@@ -358,14 +356,14 @@ fn capture_upstreams_snapshot(state: &mut TuiState) {
             }
         }
 
-        ups.push((
-            name.clone(),
-            obu_mac.clone(),
+        ups.push(crate::tui::state::UpstreamSnapshot {
+            obu_name: name.clone(),
+            obu_mac: obu_mac.clone(),
             upstream_display,
             upstream_mac,
             hops,
-            next_hop,
-        ));
+            next_hop_mac: next_hop,
+        });
     }
 
     state.paused_upstreams = Some(ups);

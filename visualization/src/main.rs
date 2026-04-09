@@ -132,6 +132,10 @@ fn app() -> Html {
     let node_info = use_state(StdHashMap::<String, JsonValue>::default);
     // stats: node -> (device_stats, tun_stats) as JSON value
     let stats = use_state(StdHashMap::<String, JsonValue>::default);
+    // geo_positions: node -> { lat, lon, speed, bearing } from /positions (empty when mobility off)
+    let geo_positions = use_state(StdHashMap::<String, JsonValue>::default);
+    // active_tab: "graph" | "map"
+    let active_tab = use_state(|| "graph".to_string());
     {
         let nodes = nodes.clone();
         use_effect_with((), move |_| {
@@ -243,9 +247,62 @@ fn app() -> Html {
         });
     }
 
+    // Poll /positions endpoint for geographic coordinates (available when mobility feature is on)
+    {
+        let geo_positions = geo_positions.clone();
+        use_effect_with((), move |_| {
+            let geo_positions = geo_positions.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                loop {
+                    if let Ok(request) =
+                        Request::get("http://127.0.0.1:3030/positions").send().await
+                    {
+                        if let Ok(map) = request.json::<StdHashMap<String, JsonValue>>().await {
+                            if *geo_positions != map {
+                                geo_positions.set(map);
+                            }
+                        }
+                    }
+                    gloo_timers::future::sleep(std::time::Duration::from_millis(500)).await;
+                }
+            });
+            || ()
+        });
+    }
+
+    let active_tab_graph = active_tab.clone();
+    let active_tab_map = active_tab.clone();
+    let on_tab_graph = Callback::from(move |_| {
+        active_tab_graph.set("graph".to_string());
+        let _ = js_sys::eval("window.vpSwitchTab && window.vpSwitchTab('graph')");
+    });
+    let on_tab_map = Callback::from(move |_| {
+        active_tab_map.set("map".to_string());
+        let _ = js_sys::eval("window.vpSwitchTab && window.vpSwitchTab('map')");
+    });
+
+    let is_graph = *active_tab == "graph";
+    let graph_panel_style = if is_graph { "" } else { "display:none" };
+    let map_panel_style = if is_graph { "display:none" } else { "" };
+
     html! {
         <>
-            <Graph nodes={(*nodes).clone()} channels={(*channels).clone()} node_info={(*node_info).clone()} stats={(*stats).clone()} />
+            <div class="vp-tabs">
+                <button class={if is_graph { "vp-tab-btn active" } else { "vp-tab-btn" }} onclick={on_tab_graph}>
+                    {"Network Graph"}
+                </button>
+                <button class={if !is_graph { "vp-tab-btn active" } else { "vp-tab-btn" }} onclick={on_tab_map}>
+                    {"Map"}
+                </button>
+            </div>
+            <div id="vp-panel-graph" style={graph_panel_style}>
+                <Graph nodes={(*nodes).clone()} channels={(*channels).clone()} node_info={(*node_info).clone()} stats={(*stats).clone()} geo_positions={(*geo_positions).clone()} />
+            </div>
+            <div id="vp-panel-map" style={map_panel_style}>
+                <div style="position:relative;width:100%;height:calc(100vh - 38px);">
+                    <div id="map" style="width:100%;height:100%;"></div>
+                </div>
+            </div>
         </>
     }
 }

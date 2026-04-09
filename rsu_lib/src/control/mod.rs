@@ -283,10 +283,12 @@ impl Rsu {
                     match msg.from() {
                         Ok(from_mac) => {
                             if from_mac != obu_mac {
-                                tracing::warn!(
-                                    from = %from_mac,
-                                    claimed = %obu_mac,
-                                    "Mismatching OBU MAC in KeyExchangeInit; using payload sender()"
+                                // Normal in multi-hop mesh: the immediate sender is a relay OBU
+                                // whose MAC differs from the originating OBU in the payload.
+                                tracing::debug!(
+                                    relay = %from_mac,
+                                    obu = %obu_mac,
+                                    "KeyExchangeInit relayed via intermediate OBU"
                                 );
                             }
                         }
@@ -312,6 +314,13 @@ impl Rsu {
                                 return Ok(None);
                             }
                         };
+                    // Cache the OBU's reachability via the last-hop sender so that
+                    // handle_key_exchange_response can route the reply back even
+                    // when the heartbeat-based routing table has no entry for this
+                    // OBU yet (e.g., on first connection or after a range change).
+                    if let Ok(from_mac) = msg.from() {
+                        self.cache.store_mac(obu_mac, from_mac);
+                    }
                     if let Err(e) = self.cloud_socket.send(&fwd.to_bytes()).await {
                         tracing::warn!(
                             error = %e,
@@ -319,8 +328,9 @@ impl Rsu {
                             "Failed to forward KeyExchangeInit to server"
                         );
                     } else {
-                        tracing::debug!(
+                        tracing::info!(
                             obu = %obu_mac,
+                            via_rsu = %self.device.mac_address(),
                             "Relayed KeyExchangeInit to server"
                         );
                     }
@@ -572,27 +582,33 @@ impl Rsu {
             }
         };
 
-        // Find the next hop to the destination OBU
+        // Find the next hop to the destination OBU.
+        // Prefer the ClientCache: it was set when the KeyExchangeInit arrived and
+        // always reflects the actual forwarding path (e.g. OBU1→OBU2→RSU). The
+        // routing table may hold a stale direct-route entry that skips intermediate
+        // hops, causing the reply to be misdelivered.
         let next_hop = {
-            let routing = routing
-                .read()
-                .expect("routing table read lock poisoned during key exchange response");
-            if let Some(route) = routing.get_route_to(Some(dest_mac)) {
-                Some(route.mac)
+            let from_cache = cache.get(dest_mac);
+            if from_cache.is_some() {
+                from_cache
             } else {
-                cache.get(dest_mac)
+                let routing = routing
+                    .read()
+                    .expect("routing table read lock poisoned during key exchange response");
+                routing.get_route_to(Some(dest_mac)).map(|r| r.mac)
             }
         };
 
         let Some(next_hop) = next_hop else {
-            tracing::debug!(
+            tracing::warn!(
                 dest = %dest_mac,
-                "No route to OBU for key exchange response relay"
+                "No route/cache entry to OBU for key exchange response relay — reply dropped"
             );
             return;
         };
 
         // Construct VANET KeyExchangeReply message and send
+        let key_id = ke_reply.key_id();
         let msg = Message::new(
             device.mac_address(),
             next_hop,
@@ -607,9 +623,11 @@ impl Rsu {
                 "Failed to relay KeyExchangeReply to OBU on VANET"
             );
         } else {
-            tracing::debug!(
+            tracing::info!(
                 dest = %dest_mac,
-                "Relayed KeyExchangeReply from server to OBU"
+                next_hop = %next_hop,
+                key_id = key_id,
+                "Relayed KeyExchangeReply from server to OBU on VANET"
             );
         }
     }

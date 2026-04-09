@@ -66,8 +66,8 @@ fn render_nodes_tab(f: &mut Frame, area: Rect, state: &mut NodesTabState) {
     names.sort();
 
     for name in names.iter() {
-        if let Some((mac, ntype, v_ip, c_ip, _snode)) = state.nodes.get(name) {
-            let ip_display = match (v_ip, c_ip) {
+        if let Some(snap) = state.nodes.get(name) {
+            let ip_display = match (&snap.virtual_ip, &snap.cloud_ip) {
                 (Some(v), Some(c)) => format!("{} / {}", v, c),
                 (Some(v), None) => format!("{}", v),
                 (None, Some(c)) => format!("{}", c),
@@ -78,8 +78,8 @@ fn render_nodes_tab(f: &mut Frame, area: Rect, state: &mut NodesTabState) {
             let health_cell = Cell::from(Span::styled(health.to_string(), health_style));
             let row = Row::new(vec![
                 Cell::from(name.to_string()),
-                Cell::from(ntype.clone()),
-                Cell::from(mac.clone()),
+                Cell::from(snap.node_type.clone()),
+                Cell::from(snap.mac.clone()),
                 Cell::from(ip_display),
                 Cell::from("-"),
                 health_cell,

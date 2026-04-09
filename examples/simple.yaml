@@ -1,0 +1,39 @@
+# Minimal lossless topology for debugging DH key exchange delivery.
+#
+# Topology:
+#   server1
+#     └── rsu1  (cloud channel, auto-created)
+#           └── obu1  (direct VANET, zero loss)
+#                 └── obu2  (relay hop, zero loss — tests multi-hop KE path)
+#
+# No mobility, no Nakagami fading, no packet loss.
+# Fast hello_periodicity (1s) so routing tables populate before the first KE attempt.
+
+nodes:
+  server1:
+    config_path: examples/simple/server1.yaml
+  rsu1:
+    config_path: examples/simple/rsu1.yaml
+  obu1:
+    config_path: examples/simple/obu1.yaml
+  obu2:
+    config_path: examples/simple/obu2.yaml
+
+topology:
+  # rsu1 <-> obu1 (direct, zero loss)
+  rsu1:
+    obu1:
+      latency: 0
+      loss: 0.0
+  obu1:
+    rsu1:
+      latency: 0
+      loss: 0.0
+    # obu1 <-> obu2 (relay hop, zero loss)
+    obu2:
+      latency: 0
+      loss: 0.0
+  obu2:
+    obu1:
+      latency: 0
+      loss: 0.0

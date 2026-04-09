@@ -3,7 +3,7 @@
 //! Comprehensive tests for route selection logic including hysteresis,
 //! latency-based routing, and deterministic tie-breaking.
 
-use super::super::routing::{Routing, Target};
+use super::super::routing::{Routing, SequenceEntry, SourceHistory, Target};
 use crate::args::{ObuArgs, ObuParameters};
 use mac_address::MacAddress;
 use tokio::time::{Duration, Instant};
@@ -38,7 +38,7 @@ fn tie_break_prefers_lower_mac_when_scores_equal() {
     // Populate `routes` with downstream observations for a single RSU/seq
     let rsu_mac: MacAddress = [100u8; 6].into();
     let seq = 0u32;
-    let mut seqmap = indexmap::IndexMap::new();
+    let mut history = SourceHistory::with_capacity(2);
     let mut downstream_map: std::collections::HashMap<MacAddress, Vec<Target>> =
         std::collections::HashMap::new();
 
@@ -59,17 +59,16 @@ fn tie_break_prefers_lower_mac_when_scores_equal() {
         ],
     );
 
-    seqmap.insert(
+    history.test_insert(
         seq,
-        (
-            Duration::from_millis(0),
-            rsu_mac,
-            1u32,
-            indexmap::IndexMap::new(),
-            downstream_map,
-        ),
+        SequenceEntry {
+            received_at: Duration::from_millis(0),
+            next_upstream: rsu_mac,
+            hops: 1,
+            downstream: downstream_map,
+        },
     );
-    routing.routes.insert(rsu_mac, seqmap);
+    routing.routes.insert(rsu_mac, history);
 
     // Now ask for route to target; since scores tie, the lower MAC should win
     let route = routing.get_route_to(Some(target)).expect("route present");
@@ -88,7 +87,7 @@ fn none_latency_handling_prefers_min_and_none_ignored_in_avg() {
 
     let rsu_mac: MacAddress = [101u8; 6].into();
     let seq = 0u32;
-    let mut seqmap = indexmap::IndexMap::new();
+    let mut history = SourceHistory::with_capacity(2);
     let mut downstream_map: std::collections::HashMap<MacAddress, Vec<Target>> =
         std::collections::HashMap::new();
 
@@ -109,17 +108,16 @@ fn none_latency_handling_prefers_min_and_none_ignored_in_avg() {
         ],
     );
 
-    seqmap.insert(
+    history.test_insert(
         seq,
-        (
-            Duration::from_millis(0),
-            rsu_mac,
-            1u32,
-            indexmap::IndexMap::new(),
-            downstream_map,
-        ),
+        SequenceEntry {
+            received_at: Duration::from_millis(0),
+            next_upstream: rsu_mac,
+            hops: 1,
+            downstream: downstream_map,
+        },
     );
-    routing.routes.insert(rsu_mac, seqmap);
+    routing.routes.insert(rsu_mac, history);
 
     // Candidate with measured latency should be preferred since None is treated as MAX
     let route = routing.get_route_to(Some(target)).expect("route present");
@@ -244,5 +242,61 @@ async fn test_latency_measurement_with_mocked_time() {
     assert!(
         route.latency.unwrap() < Duration::from_millis(15),
         "OBU should measure fast path latency correctly (~10ms)"
+    );
+}
+
+/// Regression: when the RSSI table is attached but empty (fading task not yet
+/// run), the guard must keep the first-selected RSU stable instead of letting
+/// every subsequent heartbeat evict it.
+#[test]
+fn rssi_guard_keeps_cached_rsu_when_table_empty_at_startup() {
+    use node_lib::messages::{
+        control::heartbeat::Heartbeat, control::Control, message::Message, packet_type::PacketType,
+    };
+    use std::collections::HashMap;
+    use std::sync::{Arc, RwLock};
+
+    let args = crate::test_helpers::mk_test_obu_args();
+    let boot = Instant::now();
+    let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+    // Attach an EMPTY RSSI table (simulates startup before fading task runs).
+    let rssi_table: crate::control::routing::RssiTable = Arc::new(RwLock::new(HashMap::new()));
+    routing.set_rssi_table(rssi_table);
+
+    let our_mac: MacAddress = [0xAAu8; 6].into();
+    let rsu1: MacAddress = [0x11u8; 6].into();
+    let rsu2: MacAddress = [0x22u8; 6].into();
+
+    // First heartbeat from RSU1 — should be selected as upstream.
+    let hb1 = Heartbeat::new(Duration::from_millis(1), 1u32, rsu1);
+    let msg1 = Message::new(
+        rsu1,
+        [0xFFu8; 6].into(),
+        PacketType::Control(Control::Heartbeat(hb1)),
+    );
+    let _ = routing
+        .handle_heartbeat(&msg1, our_mac)
+        .expect("hb1 handled");
+
+    let upstream_after_rsu1 = routing.get_cached_upstream();
+    assert!(upstream_after_rsu1.is_some(), "should have selected RSU1");
+
+    // Second heartbeat from RSU2 — with an empty RSSI table the old code would
+    // evict RSU1 (rssi_cached defaulted to -100 < -95).  The fix must keep RSU1.
+    let hb2 = Heartbeat::new(Duration::from_millis(1), 2u32, rsu2);
+    let msg2 = Message::new(
+        rsu2,
+        [0xFFu8; 6].into(),
+        PacketType::Control(Control::Heartbeat(hb2)),
+    );
+    let _ = routing
+        .handle_heartbeat(&msg2, our_mac)
+        .expect("hb2 handled");
+
+    let upstream_after_rsu2 = routing.get_cached_upstream();
+    assert_eq!(
+        upstream_after_rsu2, upstream_after_rsu1,
+        "cached upstream must not change when RSSI table is empty (startup)"
     );
 }

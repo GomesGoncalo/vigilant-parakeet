@@ -237,15 +237,56 @@ pub fn setup_routes(
         .allow_methods(vec!["GET", "POST", "OPTIONS"])
         .allow_headers(vec!["content-type"]);
 
-    // Combine all endpoints
-    nodes_endpoint
+    let base_routes = nodes_endpoint
         .or(node_stats_endpoint)
         .or(stats_endpoint)
         .or(channels_get_endpoint)
         .or(node_info_endpoint)
         .or(channel_post_endpoint)
-        .or(metrics_endpoint)
-        .with(cors)
+        .or(metrics_endpoint);
+
+    // Combine all endpoints
+    #[cfg(not(feature = "mobility"))]
+    return base_routes.with(cors);
+
+    #[cfg(feature = "mobility")]
+    {
+        let positions = simulator.get_positions();
+        let override_queue = simulator.get_override_queue();
+
+        // GET /positions — return all current node positions as JSON
+        let positions_get_endpoint = {
+            let positions = positions.clone();
+            warp::get()
+                .and(warp::path("positions"))
+                .and(warp::path::end())
+                .then(move || {
+                    let positions = positions.clone();
+                    async move {
+                        let map = positions.read().await;
+                        warp::reply::json(&*map)
+                    }
+                })
+        };
+
+        // POST /node/<name>/position — override a node's position
+        // Body: { "lat": f64, "lon": f64 }
+        let position_post_endpoint = {
+            warp::post()
+                .and(warp::path!("node" / String / "position"))
+                .and(warp::path::end())
+                .and(warp::body::json())
+                .and_then(move |name: String, body: PositionOverride| {
+                    let override_queue = override_queue.clone();
+                    async move { position_override_fn(name, body, override_queue).await }
+                })
+        };
+
+        base_routes
+            .or(positions_get_endpoint)
+            .or(position_post_endpoint)
+            .with(cors)
+    }
 }
 
 /// Handler for POST /channel/<src>/<dst> - update channel parameters
@@ -295,6 +336,41 @@ async fn channel_post_fn(
             warp::http::StatusCode::BAD_REQUEST,
         )),
     }
+}
+
+/// Body for `POST /node/<name>/position`.
+#[cfg(feature = "mobility")]
+#[derive(serde::Deserialize)]
+struct PositionOverride {
+    lat: f64,
+    lon: f64,
+}
+
+/// Handler for `POST /node/<name>/position`.
+///
+/// Enqueues a position override that the mobility tick loop will apply on its
+/// next iteration.  For OBUs this triggers a route replan from the nearest OSM
+/// node; for RSUs/Servers it simply updates the fixed position.
+#[cfg(feature = "mobility")]
+async fn position_override_fn(
+    name: String,
+    body: PositionOverride,
+    override_queue: Arc<tokio::sync::Mutex<HashMap<String, (f64, f64)>>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    #[derive(serde::Serialize)]
+    struct StatusResponse {
+        status: &'static str,
+    }
+
+    override_queue
+        .lock()
+        .await
+        .insert(name, (body.lat, body.lon));
+
+    Ok(warp::reply::with_status(
+        warp::reply::json(&StatusResponse { status: "queued" }),
+        warp::http::StatusCode::ACCEPTED,
+    ))
 }
 
 #[cfg(test)]

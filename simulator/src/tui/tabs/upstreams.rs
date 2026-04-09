@@ -1,5 +1,5 @@
 // Upstreams tab rendering - shows OBU routing to RSUs
-use crate::tui::state::{TuiState, UpstreamSnapshotEntry};
+use crate::tui::state::{TuiState, UpstreamSnapshot};
 use ratatui::{
     layout::{Constraint, Rect},
     style::{Color, Style},
@@ -15,7 +15,7 @@ use super::TabRenderer;
 pub struct UpstreamsTabState<'a> {
     pub nodes: &'a HashMap<String, crate::tui::state::NodeSnapshot>,
     pub paused: bool,
-    pub paused_upstreams: &'a Option<Vec<UpstreamSnapshotEntry>>,
+    pub paused_upstreams: &'a Option<Vec<UpstreamSnapshot>>,
 }
 
 /// Upstreams tab renderer
@@ -48,40 +48,39 @@ impl TabRenderer for UpstreamsTab {
         // If paused and we have a snapshot, use that; otherwise compute live entries from state.nodes
         let rows: Vec<Row> = if state.paused {
             if let Some(ref ups) = state.paused_upstreams {
-                let mut entries: Vec<(String, Vec<Cell>)> = ups
+                let mut entries: Vec<(&str, Row)> = ups
                     .iter()
-                    .map(|(name, obu_mac, up_display, up_mac, hops, next_hop)| {
-                        let obu_label = format!("{} ({})", name, obu_mac);
-                        let up_label = if up_display.starts_with("(") || up_display.contains(':') {
-                            // if up_display is a mac or placeholder like (no upstream), prefer showing name + mac when possible
-                            if up_display.starts_with('(') {
+                    .map(|snap| {
+                        let obu_label = format!("{} ({})", snap.obu_name, snap.obu_mac);
+                        let up_label = if snap.upstream_display.starts_with('(')
+                            || snap.upstream_display.contains(':')
+                        {
+                            if snap.upstream_display.starts_with('(') {
                                 format!(
                                     "{} ({})",
-                                    up_display.trim_matches(|c| c == '(' || c == ')'),
-                                    up_mac
+                                    snap.upstream_display.trim_matches(|c| c == '(' || c == ')'),
+                                    snap.upstream_mac
                                 )
                             } else {
-                                format!("{} ({})", up_display, up_mac)
+                                format!("{} ({})", snap.upstream_display, snap.upstream_mac)
                             }
                         } else {
-                            format!("{} ({})", up_display, up_mac)
+                            format!("{} ({})", snap.upstream_display, snap.upstream_mac)
                         };
-                        let cells = vec![
+                        let row = Row::new(vec![
                             Cell::from(obu_label),
                             Cell::from(up_label),
-                            Cell::from(hops.clone()),
-                            Cell::from(next_hop.clone()),
-                        ];
-                        (name.clone(), cells)
+                            Cell::from(snap.hops.clone()),
+                            Cell::from(snap.next_hop_mac.clone()),
+                        ])
+                        .height(1);
+                        (snap.obu_name.as_str(), row)
                     })
                     .collect();
 
                 // Ensure alphabetical order while paused
-                entries.sort_by(|a, b| a.0.cmp(&b.0));
-                entries
-                    .into_iter()
-                    .map(|(_n, cells)| Row::new(cells).height(1))
-                    .collect()
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                entries.into_iter().map(|(_, row)| row).collect()
             } else {
                 Vec::new()
             }
@@ -89,13 +88,13 @@ impl TabRenderer for UpstreamsTab {
             // Build live entries from state.nodes where node_type == "Obu", then sort by OBU name
             let mut entries: Vec<(String, Vec<Cell>)> = Vec::new();
 
-            for (name, (mac, node_type, _virtual_ip, _cloud_ip, simnode)) in state.nodes.iter() {
-                if node_type != "Obu" {
+            for (name, snap) in state.nodes.iter() {
+                if snap.node_type != "Obu" {
                     continue;
                 }
 
                 // Build labels with MAC addresses
-                let obu_label = format!("{} ({})", name, mac);
+                let obu_label = format!("{} ({})", name, snap.mac);
 
                 // Try to downcast to Obu to get cached upstream route
                 let mut upstream_display = "(no upstream)".to_string();
@@ -103,7 +102,7 @@ impl TabRenderer for UpstreamsTab {
                 let mut next_hop = "-".to_string();
 
                 // Use SimNode's as_any to downcast to obu_lib::Obu
-                if let crate::simulator::SimNode::Obu(ref o) = simnode {
+                if let crate::simulator::SimNode::Obu(ref o) = snap.simnode {
                     // oba is Arc<dyn Node>; try downcast via as_any
                     if let Some(obu) = o.as_any().downcast_ref::<obu_lib::Obu>() {
                         if let Some(route) = obu.cached_upstream_route() {
@@ -120,16 +119,16 @@ impl TabRenderer for UpstreamsTab {
                                     break None;
                                 }
                                 depth += 1;
-                                if let Some((nname, (_m, ntype, _v, _c, snode))) = state
-                                    .nodes
-                                    .iter()
-                                    .find(|(_, (m, _, _, _, _))| **m == current_mac)
+                                if let Some((nname, nsnap)) =
+                                    state.nodes.iter().find(|(_, s)| s.mac == current_mac)
                                 {
-                                    if ntype == "Rsu" {
+                                    if nsnap.node_type == "Rsu" {
                                         break Some(nname.clone());
                                     }
-                                    if ntype == "Obu" {
-                                        if let crate::simulator::SimNode::Obu(ref other_o) = snode {
+                                    if nsnap.node_type == "Obu" {
+                                        if let crate::simulator::SimNode::Obu(ref other_o) =
+                                            nsnap.simnode
+                                        {
                                             if let Some(other_obu) =
                                                 other_o.as_any().downcast_ref::<obu_lib::Obu>()
                                             {

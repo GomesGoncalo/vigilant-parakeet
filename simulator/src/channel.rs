@@ -77,6 +77,31 @@ impl Channel {
         &self.to
     }
 
+    /// Update only the loss field without changing latency or jitter.
+    /// Used by the Nakagami-m fading task to update loss continuously.
+    #[cfg(feature = "mobility")]
+    pub fn set_loss(&self, loss: f64) {
+        let mut inner = self
+            .parameters
+            .write()
+            .expect("channel parameters lock poisoned");
+        inner.loss = loss.clamp(0.0, 1.0);
+        let _ = self.param_notify_tx.send(());
+    }
+
+    /// Update loss and latency atomically.
+    /// Used by the Nakagami-m fading task so routing prefers nearby RSUs.
+    #[cfg(feature = "mobility")]
+    pub fn set_fading_params(&self, loss: f64, latency_ms: u64) {
+        let mut inner = self
+            .parameters
+            .write()
+            .expect("channel parameters lock poisoned");
+        inner.loss = loss.clamp(0.0, 1.0);
+        inner.latency = std::time::Duration::from_millis(latency_ms);
+        let _ = self.param_notify_tx.send(());
+    }
+
     /// Update channel parameters dynamically
     ///
     /// Accepts a map of parameter names to string values:

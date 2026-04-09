@@ -9,7 +9,7 @@ use node_lib::messages::{
     packet_type::PacketType,
 };
 use std::{
-    collections::{hash_map::Entry, HashMap, VecDeque},
+    collections::{HashMap, VecDeque},
     fmt::Debug,
 };
 use tokio::time::{Duration, Instant};
@@ -72,11 +72,29 @@ impl ReplayWindow {
     }
 }
 
+/// One sent heartbeat and the replies it has collected.
+#[derive(Debug)]
+struct SentEntry {
+    /// Sequence number of the heartbeat.
+    seq_id: u32,
+    /// Per-sender latency observations collected from HeartbeatReply messages.
+    replies: HashMap<MacAddress, Vec<Target>>,
+}
+
+impl SentEntry {
+    fn new(seq_id: u32) -> Self {
+        Self {
+            seq_id,
+            replies: HashMap::default(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Routing {
     hb_seq: u32,
     boot: Instant,
-    sent: VecDeque<(u32, Duration, HashMap<MacAddress, Vec<Target>>)>,
+    sent: VecDeque<SentEntry>,
     max_history: usize,
     replay_windows: HashMap<MacAddress, ReplayWindow>,
 }
@@ -104,7 +122,7 @@ impl Routing {
         );
 
         // Handle sequence wraparound: if the first entry has a higher seq than current, clear all
-        if self.sent.front().is_some_and(|(x, _, _)| x > &message.id()) {
+        if self.sent.front().is_some_and(|e| e.seq_id > message.id()) {
             self.sent.clear();
             self.replay_windows.clear();
         }
@@ -114,18 +132,14 @@ impl Routing {
             self.sent.pop_front();
         }
 
-        self.sent
-            .push_back((message.id(), message.duration(), HashMap::default()));
-
+        self.sent.push_back(SentEntry::new(message.id()));
         self.hb_seq += 1;
 
-        let msg = Message::new(
+        Message::new(
             address,
             [255; 6].into(),
             PacketType::Control(Control::Heartbeat(message)),
-        );
-
-        msg
+        )
     }
 
     pub fn handle_heartbeat_reply(
@@ -144,7 +158,7 @@ impl Routing {
         // window. Without this guard an attacker could forge a reply with
         // id=u32::MAX, advance last_seq to u32::MAX, and cause all subsequent
         // legitimate replies from that sender to fall outside the window.
-        let sent_idx = self.sent.iter().position(|(id, _, _)| *id == reply_id);
+        let sent_idx = self.sent.iter().position(|e| e.seq_id == reply_id);
         let Some(sent_idx) = sent_idx else {
             tracing::debug!(
                 reply_id,
@@ -176,24 +190,13 @@ impl Routing {
         let from_mac = msg.from()?;
 
         {
-            let (_, _, map) = &mut self.sent[sent_idx];
+            let entry = &mut self.sent[sent_idx];
             let latency = Instant::now().duration_since(self.boot) - duration;
-            match map.entry(sender) {
-                Entry::Occupied(mut entry) => {
-                    entry.get_mut().push(Target {
-                        hops,
-                        mac: from_mac,
-                        latency,
-                    });
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(vec![Target {
-                        hops,
-                        mac: from_mac,
-                        latency,
-                    }]);
-                }
-            }
+            entry.replies.entry(sender).or_default().push(Target {
+                hops,
+                mac: from_mac,
+                latency,
+            });
         } // mutable borrow of self.sent released here
 
         let new_route = self.get_route_to(Some(sender));
@@ -204,7 +207,7 @@ impl Routing {
         match (old_route, new_route) {
             (None, new_route) => {
                 tracing::event!(
-                    Level::INFO,
+                    Level::DEBUG,
                     from = %address,
                     to = %sender,
                     through = %new_route,
@@ -215,7 +218,7 @@ impl Routing {
             (Some(old_route), new_route) => {
                 if old_route.mac != new_route.mac {
                     tracing::event!(
-                        Level::INFO,
+                        Level::DEBUG,
                         from = %address,
                         to = %sender,
                         through = %new_route,
@@ -236,8 +239,8 @@ impl Routing {
 
         // Collect all observed candidates for the target: (hops, next_hop_mac, latency_us)
         let mut candidates: Vec<(u32, MacAddress, u128)> = Vec::new();
-        for (_seq, _dur, m) in self.sent.iter().rev() {
-            if let Some(routes) = m.get(&target) {
+        for entry in self.sent.iter().rev() {
+            if let Some(routes) = entry.replies.get(&target) {
                 for r in routes {
                     candidates.push((r.hops, r.mac, r.latency.as_micros()));
                 }
@@ -254,28 +257,29 @@ impl Routing {
             .min()
             .expect("candidates is non-empty, min must exist");
 
-        // Aggregate per-next-hop metrics into latency_candidates and pick the best
-        // using the shared helper for parity with OBU.
-        let mut latency_candidates: HashMap<MacAddress, (u128, u128, u32, u32)> = HashMap::new();
+        // Aggregate per-next-hop metrics and pick the best using the shared helper.
+        let mut per_next: HashMap<MacAddress, crate::control::routing_utils::NextHopStats> =
+            HashMap::new();
         for (_hops, next_hop_mac, latency_us) in
             candidates.into_iter().filter(|(h, _, _)| *h == min_hops)
         {
-            let entry = latency_candidates.entry(next_hop_mac).or_insert((
-                u128::MAX,
-                0u128,
-                0u32,
-                min_hops,
-            ));
-            if latency_us < entry.0 {
-                entry.0 = latency_us;
+            let e = per_next.entry(next_hop_mac).or_insert(
+                crate::control::routing_utils::NextHopStats {
+                    min_us: u128::MAX,
+                    sum_us: 0,
+                    count: 0,
+                    hops: min_hops,
+                },
+            );
+            if latency_us < e.min_us {
+                e.min_us = latency_us;
             }
-            entry.1 += latency_us;
-            entry.2 += 1;
-            entry.3 = min_hops;
+            e.sum_us += latency_us;
+            e.count += 1;
         }
 
         let (mac, avg_us) =
-            crate::control::routing_utils::pick_best_from_latency_candidates(latency_candidates)?;
+            crate::control::routing_utils::pick_best_from_latency_candidates(per_next)?;
         Some(Route {
             hops: min_hops,
             mac,
@@ -288,7 +292,7 @@ impl Routing {
     }
 
     pub fn iter_next_hops(&self) -> impl Iterator<Item = &MacAddress> {
-        self.sent.iter().flat_map(|(_, _, m)| m.keys()).unique()
+        self.sent.iter().flat_map(|e| e.replies.keys()).unique()
     }
 }
 
