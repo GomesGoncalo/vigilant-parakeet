@@ -6,3 +6,5 @@
 Cargo.lock
 lcov.info
 osm_cache.json
+docs/*.pdf
+docs/output
