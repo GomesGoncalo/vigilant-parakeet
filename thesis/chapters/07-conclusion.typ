@@ -134,10 +134,12 @@ Several directions are identified for future research and development:
   mobility patterns. This would allow evaluation of route convergence under
   the intermittent connectivity that characterises real vehicular deployments.
 
-/ Radio channel model: Replace the static userspace latency/loss model with a
-  time-varying channel model (e.g., Nakagami-m fading) to better
-  represent real vehicular propagation, including Doppler spread and
-  rapid link quality fluctuations at vehicular speeds.
+/ Radio channel model (implemented): A Nakagami-m small-scale fading model
+  and full-mesh/auto-cloud channel support have been added to the simulator
+  (see Chapter 9). This replaces the earlier static per-link latency/loss
+  parametrisation with a time-varying radio model that captures small-scale
+  fading and spatial variability, enabling experiments that evaluate routing
+  and Key Exchange reliability under realistic fading regimes.
 
 / Heartbeat authentication: Apply HMAC @rfc2104 to unicast HeartbeatReply
   messages using the established DH session key, and investigate the TESLA
@@ -167,3 +169,42 @@ Several directions are identified for future research and development:
   state machine and the DH authentication protocol to verify absence of
   forwarding loops, liveness of route convergence, and the absence of
   authentication bypass under the threat model of @sec-trust-models.
+
+== Implemented extensions
+
+The system incorporates the following implemented extensions that improve
+simulation realism, routing robustness, key-exchange reliability and
+observability:
+
++ RSSI-based RSU selection: OBUs compute RSU selection scores using averaged
+  RSSI measurements combined with the existing composite metric and an
+  increased hysteresis band to reduce unnecessary upstream switching.
+
++ Time-varying channel model: The simulator includes a Nakagami-m fading
+  model and supports full-mesh and auto-cloud channel topologies to emulate
+  small-scale fading and spatial variability.
+
++ OSM-based mobility: An OpenStreetMap-driven mobility backend with an
+  IDM car-following model and a pre-generated Porto road-grid cache provides
+  reproducible, realistic vehicle trajectories for mobility-aware
+  experiments.
+
++ Key-exchange robustness: A downstream client cache, improved reply
+  routing, and prompt DH retry behaviour increase the reliability of
+  session establishment under churn and packet loss.
+
++ Routing stability and scoring: Route scoring (avg-only option), higher
+  hysteresis thresholds, and reduced log noise mitigate route oscillation
+  and make routing behaviour easier to analyse.
+
++ Visualization: A Leaflet map with smooth marker animation, custom pins,
+  and directional routing arrows improves situational awareness; server and
+  cloud nodes are filtered from the map to reduce clutter.
+
++ Reproducibility and examples: Multiple example YAML topologies, a simple
+  simulator example, OSM fetch scripts, and a TAP interface /24 netmask fix
+  were added to ease experiment reproduction.
+
+These extensions are used by the experiments in this work and by ongoing
+measurements comparing selection strategies, Key Exchange reliability under
+mobility/fading, and routing stability across channel models.
