@@ -16,6 +16,7 @@ use dh_key_store::DhKeyStore;
 use mac_address::MacAddress;
 use node::ReplyType;
 use node_lib::control::client_cache::ClientCache;
+use node_lib::control::client_cache::ClientCache;
 use node_lib::crypto::{sig_algo_from_id, CryptoConfig, SigningAlgorithm, SigningKeypair};
 use node_lib::messages::{
     control::{
@@ -27,7 +28,6 @@ use node_lib::messages::{
     message::Message,
     packet_type::PacketType,
 };
-use node_lib::control::client_cache::ClientCache;
 use routing::Routing;
 use session::Session;
 use std::collections::VecDeque;
