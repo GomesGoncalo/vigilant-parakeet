@@ -83,7 +83,10 @@ struct SentEntry {
 
 impl SentEntry {
     fn new(seq_id: u32) -> Self {
-        Self { seq_id, replies: HashMap::default() }
+        Self {
+            seq_id,
+            replies: HashMap::default(),
+        }
     }
 }
 
@@ -260,14 +263,14 @@ impl Routing {
         for (_hops, next_hop_mac, latency_us) in
             candidates.into_iter().filter(|(h, _, _)| *h == min_hops)
         {
-            let e = per_next
-                .entry(next_hop_mac)
-                .or_insert(crate::control::routing_utils::NextHopStats {
+            let e = per_next.entry(next_hop_mac).or_insert(
+                crate::control::routing_utils::NextHopStats {
                     min_us: u128::MAX,
                     sum_us: 0,
                     count: 0,
                     hops: min_hops,
-                });
+                },
+            );
             if latency_us < e.min_us {
                 e.min_us = latency_us;
             }

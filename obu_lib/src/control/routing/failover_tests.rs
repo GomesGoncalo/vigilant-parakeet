@@ -63,7 +63,12 @@ fn failover_rebuilds_candidates_from_latency() {
 
     history.test_insert(
         0u32,
-        SequenceEntry { received_at: Duration::from_millis(0), next_upstream: rsu, hops: 1, downstream: downstream_map },
+        SequenceEntry {
+            received_at: Duration::from_millis(0),
+            next_upstream: rsu,
+            hops: 1,
+            downstream: downstream_map,
+        },
     );
     routing.routes.insert(rsu, history);
 

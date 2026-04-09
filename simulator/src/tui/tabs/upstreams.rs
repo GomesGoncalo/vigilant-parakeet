@@ -51,28 +51,22 @@ impl TabRenderer for UpstreamsTab {
                 let mut entries: Vec<(&str, Row)> = ups
                     .iter()
                     .map(|snap| {
-                        let obu_label =
-                            format!("{} ({})", snap.obu_name, snap.obu_mac);
-                        let up_label =
-                            if snap.upstream_display.starts_with('(')
-                                || snap.upstream_display.contains(':')
-                            {
-                                if snap.upstream_display.starts_with('(') {
-                                    format!(
-                                        "{} ({})",
-                                        snap.upstream_display
-                                            .trim_matches(|c| c == '(' || c == ')'),
-                                        snap.upstream_mac
-                                    )
-                                } else {
-                                    format!(
-                                        "{} ({})",
-                                        snap.upstream_display, snap.upstream_mac
-                                    )
-                                }
+                        let obu_label = format!("{} ({})", snap.obu_name, snap.obu_mac);
+                        let up_label = if snap.upstream_display.starts_with('(')
+                            || snap.upstream_display.contains(':')
+                        {
+                            if snap.upstream_display.starts_with('(') {
+                                format!(
+                                    "{} ({})",
+                                    snap.upstream_display.trim_matches(|c| c == '(' || c == ')'),
+                                    snap.upstream_mac
+                                )
                             } else {
                                 format!("{} ({})", snap.upstream_display, snap.upstream_mac)
-                            };
+                            }
+                        } else {
+                            format!("{} ({})", snap.upstream_display, snap.upstream_mac)
+                        };
                         let row = Row::new(vec![
                             Cell::from(obu_label),
                             Cell::from(up_label),
@@ -125,10 +119,8 @@ impl TabRenderer for UpstreamsTab {
                                     break None;
                                 }
                                 depth += 1;
-                                if let Some((nname, nsnap)) = state
-                                    .nodes
-                                    .iter()
-                                    .find(|(_, s)| s.mac == current_mac)
+                                if let Some((nname, nsnap)) =
+                                    state.nodes.iter().find(|(_, s)| s.mac == current_mac)
                                 {
                                     if nsnap.node_type == "Rsu" {
                                         break Some(nname.clone());

@@ -61,7 +61,12 @@ fn tie_break_prefers_lower_mac_when_scores_equal() {
 
     history.test_insert(
         seq,
-        SequenceEntry { received_at: Duration::from_millis(0), next_upstream: rsu_mac, hops: 1, downstream: downstream_map },
+        SequenceEntry {
+            received_at: Duration::from_millis(0),
+            next_upstream: rsu_mac,
+            hops: 1,
+            downstream: downstream_map,
+        },
     );
     routing.routes.insert(rsu_mac, history);
 
@@ -105,7 +110,12 @@ fn none_latency_handling_prefers_min_and_none_ignored_in_avg() {
 
     history.test_insert(
         seq,
-        SequenceEntry { received_at: Duration::from_millis(0), next_upstream: rsu_mac, hops: 1, downstream: downstream_map },
+        SequenceEntry {
+            received_at: Duration::from_millis(0),
+            next_upstream: rsu_mac,
+            hops: 1,
+            downstream: downstream_map,
+        },
     );
     routing.routes.insert(rsu_mac, history);
 

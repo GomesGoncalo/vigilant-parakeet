@@ -177,7 +177,9 @@ impl TabRenderer for ChannelsTab {
         match state.channel_sort_mode {
             ChannelSortMode::Loss => {
                 channel_data.sort_by(|a, b| {
-                    a.loss_rate.partial_cmp(&b.loss_rate).unwrap_or(std::cmp::Ordering::Equal)
+                    a.loss_rate
+                        .partial_cmp(&b.loss_rate)
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 });
                 if state.channel_sort_direction == SortDirection::Desc {
                     channel_data.reverse();
@@ -217,62 +219,62 @@ impl TabRenderer for ChannelsTab {
             .map(|row| {
                 let total = row.stats.packets_sent + row.stats.packets_dropped;
 
-                    // Color code the loss rate
-                    let loss_color = if row.loss_rate < 1.0 {
-                        Color::Green
-                    } else if row.loss_rate < 10.0 {
-                        Color::Yellow
-                    } else {
-                        Color::Red
-                    };
+                // Color code the loss rate
+                let loss_color = if row.loss_rate < 1.0 {
+                    Color::Green
+                } else if row.loss_rate < 10.0 {
+                    Color::Yellow
+                } else {
+                    Color::Red
+                };
 
-                    // Show ratio in addition to percentage for clarity
-                    let rate_display = if total > 0 {
-                        format!("{:.1}% ({}/{})", row.loss_rate, row.stats.packets_dropped, total)
-                    } else {
-                        "N/A".to_string()
-                    };
+                // Show ratio in addition to percentage for clarity
+                let rate_display = if total > 0 {
+                    format!(
+                        "{:.1}% ({}/{})",
+                        row.loss_rate, row.stats.packets_dropped, total
+                    )
+                } else {
+                    "N/A".to_string()
+                };
 
-                    // Format throughput in human-readable units (bits/sec -> Kbps/Mbps/Gbps)
-                    let throughput_display = format_bits_per_sec(row.throughput_bps);
+                // Format throughput in human-readable units (bits/sec -> Kbps/Mbps/Gbps)
+                let throughput_display = format_bits_per_sec(row.throughput_bps);
 
-                    // Format latency
-                    let latency_display = if row.stats.packets_delayed > 0 {
-                        format!("{:.2} ms", row.avg_latency_ms)
-                    } else {
-                        "N/A".to_string()
-                    };
+                // Format latency
+                let latency_display = if row.stats.packets_delayed > 0 {
+                    format!("{:.2} ms", row.avg_latency_ms)
+                } else {
+                    "N/A".to_string()
+                };
 
-                    // Build cells and apply highlight style to the active sort column
-                    {
-                        let mut cell_channel = Cell::from(row.name.clone());
-                        let mut cell_loss = Cell::from(rate_display)
-                            .style(Style::default().fg(loss_color).add_modifier(Modifier::BOLD));
-                        let mut cell_throughput = Cell::from(throughput_display);
-                        let mut cell_latency = Cell::from(latency_display);
+                // Build cells and apply highlight style to the active sort column
+                {
+                    let mut cell_channel = Cell::from(row.name.clone());
+                    let mut cell_loss = Cell::from(rate_display)
+                        .style(Style::default().fg(loss_color).add_modifier(Modifier::BOLD));
+                    let mut cell_throughput = Cell::from(throughput_display);
+                    let mut cell_latency = Cell::from(latency_display);
 
-                        // Highlight active column (use yellow bold for highlight)
-                        let data_highlight = Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD);
-                        match state.channel_sort_mode {
-                            ChannelSortMode::Name => {
-                                cell_channel = cell_channel.style(data_highlight)
-                            }
-                            ChannelSortMode::Loss => cell_loss = cell_loss.style(data_highlight),
-                            ChannelSortMode::Throughput => {
-                                cell_throughput = cell_throughput.style(data_highlight)
-                            }
-                            ChannelSortMode::Latency => {
-                                cell_latency = cell_latency.style(data_highlight)
-                            }
+                    // Highlight active column (use yellow bold for highlight)
+                    let data_highlight = Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD);
+                    match state.channel_sort_mode {
+                        ChannelSortMode::Name => cell_channel = cell_channel.style(data_highlight),
+                        ChannelSortMode::Loss => cell_loss = cell_loss.style(data_highlight),
+                        ChannelSortMode::Throughput => {
+                            cell_throughput = cell_throughput.style(data_highlight)
                         }
-
-                        Row::new(vec![cell_channel, cell_loss, cell_throughput, cell_latency])
+                        ChannelSortMode::Latency => {
+                            cell_latency = cell_latency.style(data_highlight)
+                        }
                     }
-                    .height(1)
-                },
-            )
+
+                    Row::new(vec![cell_channel, cell_loss, cell_throughput, cell_latency])
+                }
+                .height(1)
+            })
             .collect();
 
         let widths = [

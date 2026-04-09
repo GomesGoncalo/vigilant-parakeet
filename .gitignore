@@ -5,3 +5,4 @@
 /visualization/dist
 Cargo.lock
 lcov.info
+osm_cache.json

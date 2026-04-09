@@ -327,8 +327,7 @@ fn capture_upstreams_snapshot(state: &mut TuiState) {
                                 break Some(nname.clone());
                             }
                             if nsnap.node_type == "Obu" {
-                                if let crate::simulator::SimNode::Obu(ref other_o) = nsnap.simnode
-                                {
+                                if let crate::simulator::SimNode::Obu(ref other_o) = nsnap.simnode {
                                     if let Some(other_obu) =
                                         other_o.as_any().downcast_ref::<obu_lib::Obu>()
                                     {

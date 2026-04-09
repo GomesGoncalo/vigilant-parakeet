@@ -67,7 +67,12 @@ pub fn score_and_sort_latency_candidates(
             } else {
                 u128::MAX
             };
-            ScoredCandidate { score_us: avg_us, hops: stats.hops, mac, avg_us }
+            ScoredCandidate {
+                score_us: avg_us,
+                hops: stats.hops,
+                mac,
+                avg_us,
+            }
         })
         .collect();
     scored.sort_by(|a, b| {
@@ -94,7 +99,12 @@ mod tests {
     use mac_address::MacAddress;
 
     fn stats(min_us: u128, sum_us: u128, count: u32, hops: u32) -> NextHopStats {
-        NextHopStats { min_us, sum_us, count, hops }
+        NextHopStats {
+            min_us,
+            sum_us,
+            count,
+            hops,
+        }
     }
 
     #[test]
@@ -195,11 +205,23 @@ mod tests {
 
             let ii = i as u64;
             let mac: MacAddress = [
-                (ii & 0xff) as u8, ((ii >> 8) & 0xff) as u8,
-                ((ii >> 16) & 0xff) as u8, ((ii >> 24) & 0xff) as u8,
-                ((ii >> 32) & 0xff) as u8, ((ii >> 40) & 0xff) as u8,
-            ].into();
-            m.insert(mac, NextHopStats { min_us, sum_us, count, hops });
+                (ii & 0xff) as u8,
+                ((ii >> 8) & 0xff) as u8,
+                ((ii >> 16) & 0xff) as u8,
+                ((ii >> 24) & 0xff) as u8,
+                ((ii >> 32) & 0xff) as u8,
+                ((ii >> 40) & 0xff) as u8,
+            ]
+            .into();
+            m.insert(
+                mac,
+                NextHopStats {
+                    min_us,
+                    sum_us,
+                    count,
+                    hops,
+                },
+            );
         }
 
         let actual = super::score_and_sort_latency_candidates(m.clone());
@@ -207,9 +229,17 @@ mod tests {
         let mut expected: Vec<ScoredCandidate> = m
             .into_iter()
             .map(|(mac, s)| {
-                let avg_us =
-                    if s.count > 0 { s.sum_us / (s.count as u128) } else { u128::MAX };
-                ScoredCandidate { score_us: avg_us, hops: s.hops, mac, avg_us }
+                let avg_us = if s.count > 0 {
+                    s.sum_us / (s.count as u128)
+                } else {
+                    u128::MAX
+                };
+                ScoredCandidate {
+                    score_us: avg_us,
+                    hops: s.hops,
+                    mac,
+                    avg_us,
+                }
             })
             .collect();
         expected.sort_by(|a, b| {

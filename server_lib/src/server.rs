@@ -293,17 +293,13 @@ impl Server {
         // Spawn cloud recv task (handles registration + upstream forwarding + key exchange)
         let recv_span = tracing::info_span!("node", name = %node_name);
         let ctx_recv = ctx.clone();
-        tokio::spawn(
-            async move { Self::cloud_recv_loop(ctx_recv).await }.instrument(recv_span),
-        );
+        tokio::spawn(async move { Self::cloud_recv_loop(ctx_recv).await }.instrument(recv_span));
 
         // Spawn TAP read task if a TUN device is available
         if ctx.tun.is_some() {
             let tap_span = tracing::info_span!("node", name = %node_name);
             let ctx_tap = ctx.clone();
-            tokio::spawn(
-                async move { Self::tap_read_loop(ctx_tap).await }.instrument(tap_span),
-            );
+            tokio::spawn(async move { Self::tap_read_loop(ctx_tap).await }.instrument(tap_span));
         }
 
         Ok(())
@@ -559,7 +555,10 @@ impl Server {
 
     /// Read frames from TAP, encrypt, and send downstream to the appropriate RSU.
     async fn tap_read_loop(ctx: ServerCtx) {
-        let tun = ctx.tun.as_ref().expect("tap_read_loop spawned without a tun device");
+        let tun = ctx
+            .tun
+            .as_ref()
+            .expect("tap_read_loop spawned without a tun device");
         let socket = &ctx.socket;
         let obu_routes = &ctx.obu_routes;
         let dh_keys = &ctx.dh_keys;
@@ -1283,9 +1282,7 @@ mod tests {
         let server = Server::new(Ipv4Addr::new(127, 0, 0, 1), 0, "test_server".to_string());
         server.start().await?;
 
-        let actual_port = {
-            server.socket.get().unwrap().local_addr()?.port()
-        };
+        let actual_port = { server.socket.get().unwrap().local_addr()?.port() };
 
         let rsu_mac: MacAddress = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF].into();
         let obu_mac: MacAddress = [1u8; 6].into();
@@ -1314,9 +1311,7 @@ mod tests {
         let server = Server::new(Ipv4Addr::new(127, 0, 0, 1), 0, "test_server".to_string());
         server.start().await?;
 
-        let actual_port = {
-            server.socket.get().unwrap().local_addr()?.port()
-        };
+        let actual_port = { server.socket.get().unwrap().local_addr()?.port() };
 
         let rsu_mac: MacAddress = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF].into();
         let obu_vanet_mac: MacAddress = [1u8; 6].into();
@@ -1502,9 +1497,7 @@ mod test_helpers_tests {
             .with_encryption(false);
         server.start().await?;
 
-        let server_port = {
-            server.socket.get().unwrap().local_addr()?.port()
-        };
+        let server_port = { server.socket.get().unwrap().local_addr()?.port() };
 
         // RSU socket (to receive DownstreamForward)
         let rsu_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
