@@ -25,7 +25,7 @@
 //! ## Key Features
 //!
 //! - Latency-based route selection with hop-count fallback
-//! - Hysteresis to prevent route flapping (10% threshold)
+//! - Hysteresis to prevent route flapping (30% threshold)
 //! - Multi-candidate caching for fast failover
 //! - Deterministic tie-breaking for reproducible routing
 //!

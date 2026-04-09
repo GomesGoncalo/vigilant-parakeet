@@ -37,13 +37,13 @@ Large simulations require careful rendering choices. The dashboard:
 
 Each marker popup includes:
 
-+ Recent RSSI samples (smoothed window), with sparkline mini-graph.
-+ N-best candidate list with timestamps and the score components (min, mean,
-  normalised RSSI) used for selection.
-+ Recent Key Exchange attempts and their outcome (success/failure, latency).
++ The current upstream route and the N-best candidate list (names and
+  next-hop MACs) fetched from the `/node_info` endpoint.
++ Per-node traffic counters (frames sent/received, encrypted frames) updated
+  on each polling cycle.
 
-These features make the dashboard a core tool for diagnosing routing flaps,
-KE failures, and for producing qualitative figures for presentations.
+These features make the dashboard a useful tool for observing routing
+convergence and failover events in real time during experiments.
 
 == Usage notes
 

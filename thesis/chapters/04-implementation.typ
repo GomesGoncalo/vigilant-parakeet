@@ -172,23 +172,23 @@ latencies, smoothed RSSI samples, normalised scores) for post-hoc analysis.
 HeartbeatReply forwarding is controlled by a `ForwardAction` enum computed at
 each relay OBU before any I/O takes place:
 
-/ `Bail`: Drop the reply immediately. Triggered when no upstream is known yet,
-  or when the cached upstream is the node that sent the reply (immediate-bounce
-  guard: `pkt.from == next_upstream`). Sending the reply back to its origin
-  would create a two-node oscillation.
-
-/ `SkipForward`: The selected upstream matches the message's `sender` field
-  (`next_upstream == message.sender()`), which would create a forwarding loop.
-  The reply is dropped; the relay then attempts `failover_cached_upstream()` to
-  promote the next N-best candidate.
+/ `SkipForward`: Drop the reply and skip forwarding. Triggered when
+  `pkt.from == next_upstream` (immediate-bounce guard): sending the reply back
+  to its origin would create a two-node oscillation. The relay still updates the
+  route cache before returning, so the routing table stays fresh even for bounced
+  replies. This variant also covers the case where no upstream is known, because
+  the caller returns early before `decide_reply_forward` is reached.
 
 / `Forward`: Normal case. The reply is forwarded to `next_upstream`, which
   differs from both `pkt.from` and `message.sender()`.
 
-/ `ForwardCached`: Used when the upstream was not yet cached at dispatch time
-  but was resolved from the N-best list during the forward attempt. Semantically
-  equivalent to `Forward`; the distinction allows the metrics layer to count
-  cache-miss forwards separately.
+/ `ForwardCached`: Triggered by a mutual-loop race: `next_upstream == sender`,
+  meaning two peer OBUs each recorded the other as next_upstream for the same
+  Heartbeat sequence. The relay searches for a safe alternative upstream —
+  first the globally cached upstream from a prior sequence, then any other
+  sequence entry for this RSU, then the RSU source directly — and forwards via
+  that alternative. If no safe alternative exists, the packet is dropped with a
+  `"loop detected"` error.
 
 The `ForwardAction` calculation is pure (reads routing state under a read lock)
 and is performed before acquiring any write lock, keeping the hot-path lock
@@ -468,9 +468,9 @@ reducing WASM round-trips and improving responsiveness on lower-power clients.
 
 The map tab filters server and cloud nodes from the display by default, and
 re-centres the viewport on visible vehicular nodes when the tab is activated.
-Tooltips and a per-node popup provide routing history, recent RSSI samples
-(if available), and the N-best candidate list with timestamps, making the map
-a first-class debugging surface for routing and Key Exchange experiments.
+Tooltips and a per-node popup provide the current upstream route and the
+N-best candidate list, making the map a useful surface for observing routing
+convergence and failover events during experiments.
 
 === Architectural Separation
 

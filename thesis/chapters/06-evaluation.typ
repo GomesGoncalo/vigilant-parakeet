@@ -243,7 +243,7 @@ failover if that candidate also fails simultaneously.
 The hysteresis mechanism interacts with failover: after a failover event, the
 promoted candidate has a cached score from before the failure. If the original
 upstream recovers (100% loss is removed), it will not immediately reclaim the
-primary route — it must score at least 10% better than the promoted candidate
+primary route — it must score at least 30% better than the promoted candidate
 before the route switches back. This prevents oscillation in borderline
 scenarios where a link is intermittently degraded rather than permanently lost.
 

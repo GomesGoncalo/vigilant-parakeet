@@ -17,11 +17,11 @@
 //! where  x = m · SNR_thresh / SNR_mean
 //! ```
 //!
-//! # Default parameters (V2X @ 5.9 GHz DSRC)
-//! * m   = 2   (moderately stable urban channel)
-//! * η   = 2.7 (urban path-loss exponent)
-//! * SNR₀ = 40 dB at d₀ = 1 m  
-//! * SNR_thresh = 10 dB  → max range ≈ 400 m
+//! # Default parameters (free-space baseline)
+//! * m   = 2   (moderately stable channel; use 0.5–1.0 for severe urban fading)
+//! * η   = 2.0 (free-space path loss; use ~2.7 for dense urban)
+//! * SNR₀ = 60 dB at d₀ = 1 m  (high Tx power / sensitive receiver)
+//! * SNR_thresh = 5 dB  → max range ≈ 300–500 m
 
 use serde::{Deserialize, Serialize};
 
