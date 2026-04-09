@@ -37,9 +37,10 @@ This thesis investigates the following questions:
   CPU, and how much does it reduce route-restoration latency after a next-hop
   failure?
 
-+ What is the practical overhead of post-quantum key exchange (ML-KEM-768
-  + ML-DSA-65) in terms of handshake latency and message size, and is it
-  compatible with the latency budgets of vehicular V2I sessions?
++ What is the practical overhead of post-quantum key exchange and
+  signatures (ML-KEM-768 and ML-DSA-65) in terms of handshake latency and
+  message size, and are they compatible with the latency budgets of vehicular
+  V2I sessions?
 
 == Contributions
 
