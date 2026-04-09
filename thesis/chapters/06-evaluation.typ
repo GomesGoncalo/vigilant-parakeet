@@ -2,11 +2,8 @@
 
 = Evaluation <evaluation>
 
-This chapter evaluates vigilant-parakeet across four dimensions: routing
-protocol correctness and convergence, routing metric quality under impaired
-channel conditions, N-best failover performance, and cryptographic handshake
-overhead. The evaluation answers the three research questions posed in
-@introduction:
+This chapter evaluates vigilant-parakeet across four dimensions corresponding
+to the four research questions posed in @introduction:
 
 + Can a single-machine Linux simulator faithfully reproduce the routing
   dynamics of a multi-hop vehicular network without specialised hardware?
@@ -18,10 +15,9 @@ overhead. The evaluation answers the three research questions posed in
   CPU, and how much does it reduce route-restoration latency after a next-hop
   failure?
 
-A fourth dimension — cryptographic session establishment overhead — is
-evaluated as a secondary contribution, addressing the practical question of
-whether post-quantum key exchange (ML-KEM-768 + ML-DSA-65) is viable
-within the contact-window constraints of vehicular communication.
++ What is the practical overhead of post-quantum key exchange and signatures
+  (ML-KEM-768 and ML-DSA-65) in terms of handshake latency and message size,
+  and are they compatible with the latency budgets of vehicular V2I sessions?
 
 == Experimental Setup
 
@@ -122,11 +118,11 @@ upstream after the first successful HeartbeatReply cycle.
     columns: (auto, 1fr, 1fr, 1fr),
     align: (left, center, center, center),
     [*Topology*], [*Mean (ms)*], [*Std dev (ms)*], [*hello_periodicity (ms)*],
-    [Linear-3],   [_TODO_],     [_TODO_],          [500],
-    [Star-5],     [_TODO_],     [_TODO_],          [500],
-    [Mixed-6],    [_TODO_],     [_TODO_],          [500],
+    [Linear-3],   [pending],    [pending],         [500],
+    [Star-5],     [pending],    [pending],         [500],
+    [Mixed-6],    [pending],    [pending],         [500],
   ),
-  caption: [Route convergence time by topology],
+  caption: [Route convergence time by topology (results pending experiment execution)],
 ) <tab-convergence>
 
 In all three topologies, convergence is expected to depend primarily on
@@ -164,74 +160,52 @@ measures route instability: a high CV indicates that the score oscillates,
 which combined with the hysteresis threshold can cause route flipping.
 
 // TODO: insert figure showing routing score mean and CV vs. loss rate
+// (pending experiment execution; see §6.4 for the planned Nakagami extension)
 
-At zero loss, the score stabilises quickly as observed RTTs converge to the
-channel latency. At higher loss rates, packet loss increases RTT variance
-(because lost packets force retransmission before the RSU can respond to a
-HeartbeatReply, biasing observed RTTs upward). The hysteresis threshold
-prevents route flips due to transient variance: a new candidate must be at
-least the configured hysteresis fraction better than the cached route before a
-switch occurs.
+The analytical expectation is as follows. At zero loss, the score stabilises
+quickly as observed RTTs converge to the channel latency. At higher loss rates,
+packet loss increases RTT variance (because lost packets force retransmission
+before the RSU can respond to a HeartbeatReply, biasing observed RTTs upward).
+The 30% hysteresis threshold is designed to prevent route flips due to transient
+variance: a new candidate must score at least 30% better than the cached route
+before a switch occurs.
 
 The hop-count fallback becomes active when no latency measurements are recorded
 within `hello_history` slots. At 100% loss on the primary link, OBU₂ loses all
 measurements for OBU₁ and falls back to hop-count-based routing,
 automatically promoting an alternative path if one exists.
 
-== Nakagami-m fading experiments (preliminary plan)
+== Nakagami-m fading experiments (planned)
 
-A planned experiment to characterise routing stability under Nakagami-m fading
-is described here. These runs produce the preliminary results to be inserted
-into this chapter after execution.
+The Nakagami-m fading model is implemented in the simulator (Chapter 9); the
+systematic routing-stability experiment under fading is planned for future
+execution. The experiment design is documented here for reproducibility.
 
 Experiment design:
 
 + Topology: Linear-3 (RSU — OBU₁ — OBU₂) to exercise two-hop forwarding and
   latency accumulation.
 + Channel baseline: latency 10 ms, loss 0%, per-link Nakagami-m fading added
-  to the RSU–OBU channels.
-+ Fading parameters: m ∈ {0.5, 0.9, 1.0, 2.0, 5.0} (severe to mild fading);
-  sample granularity: per-packet and per-10 ms timeslot variants.
+  to the RSU–OBU channels (see `examples/nakagami_linear3.yaml`).
++ Fading parameters: m ∈ {0.5, 0.9, 1.0, 2.0, 5.0} (severe to mild fading).
 + Metrics: route convergence time, routing-score mean and CV, N-best failover
-  restore time, and Key Exchange success rate (fraction of completed
-  handshakes within a 500 ms contact window).
-+ Repetitions: 10 independent runs per (m, granularity) configuration to bound
-  stochastic variability.
+  restore time, and Key Exchange success rate.
++ Repetitions: 10 independent runs per m value to bound stochastic variability.
 
-Run commands (example):
+Run commands:
 
 ```sh
-# build simulator
 cargo build -p simulator --release --features "webview,stats"
 
-# start simulator with topology file that enables Nakagami fading (examples/nakagami_linear3.yaml)
-sudo RUST_LOG="node=info" ./target/release/simulator --config-file examples/nakagami_linear3.yaml --pretty &
+sudo RUST_LOG="node=info" ./target/release/simulator \
+  --config-file examples/nakagami_linear3.yaml --pretty &
 SIM_PID=$!
 
-# run measurement collector (script collects /metrics every 100 ms for 60 s)
-./scripts/collect_metrics.sh http://localhost:3030/metrics nakagami_m${m}_gran${granularity}.json
+./scripts/collect_metrics.sh http://localhost:3030/metrics \
+  nakagami_results.json
 
-# stop simulator
 kill $SIM_PID
 ```
-
-Analysis plan:
-
-+ Compute mean and CV of routing score per run and aggregate across repeats.
-+ Plot convergence CDFs and median failover restore times per m value.
-+ Compare Key Exchange success probability as a function of fading severity
-  and sampling granularity.
-
-Notes and caveats:
-
-- The simulator requires sudo for network namespace creation; runs above
-  assume a Linux host with network namespace support.
-- If the simulator's fading configuration syntax differs, adapt the example
-  topology YAML accordingly (see Chapter 9 for notation).
-
-After execution, populate the figures and numeric tables in this chapter with
-the collected results (mean ± stddev) and update the text with the observed
-effects of Nakagami fading on routing stability and Key Exchange reliability.
 == N-Best Failover Latency
 
 The benefit of the N-best candidate cache was measured by inducing a
@@ -253,11 +227,11 @@ operation requiring no routing table scan or Heartbeat cycle.
     columns: (auto, 1fr, 1fr),
     align: (left, center, center),
     [*Scenario*],          [*Mean restore time (ms)*], [*Std dev (ms)*],
-    [No caching (N=0)],    [_TODO_],                   [_TODO_],
-    [N=1 candidates],      [_TODO_],                   [_TODO_],
-    [N=3 candidates],      [_TODO_],                   [_TODO_],
+    [No caching (N=0)],    [pending],                  [pending],
+    [N=1 candidates],      [pending],                  [pending],
+    [N=3 candidates],      [pending],                  [pending],
   ),
-  caption: [End-to-end connectivity restoration time after primary-upstream failure],
+  caption: [End-to-end connectivity restoration time after primary-upstream failure (results pending experiment execution)],
 ) <tab-failover>
 
 The expected result is that N=3 provides a restoration time close to zero
@@ -291,7 +265,7 @@ table itself (an `IndexMap<MacAddress, IndexMap<u32, PerHopInfo>>` holding
 difference between N=0 and N=3 is in the order of hundreds of bytes per peer
 — unmeasurably small for typical topologies.
 
-// TODO: insert table with RSS measurements
+// TODO: insert table with RSS measurements (pending experiment execution)
 
 === CPU Utilisation
 
@@ -305,11 +279,11 @@ scheduling, TUN read/write).
 perf stat -p <simulator_pid> sleep 60
 ```
 
-// TODO: insert perf stat output and analysis
+// TODO: insert perf stat output and analysis (pending experiment execution)
 
-The expected finding is that routing computation accounts for a small fraction
-of total CPU, because `get_route_to` is pure and reads from an `IndexMap`
-bounded by `hello_history`; its computational cost is $O(N_"peers" times "hello_history")$
+Based on code analysis, routing computation accounts for a small fraction of
+total CPU, because `get_route_to` is pure and reads from an `IndexMap` bounded
+by `hello_history`; its computational cost is $O(N_"peers" times "hello_history")$
 per Heartbeat interval. The dominant CPU consumer is expected to be the Tokio
 I/O event loop and TUN read/write operations.
 
@@ -346,11 +320,11 @@ The dominant cost components are:
     columns: (auto, auto, 1fr, 1fr),
     align: (left, left, center, center),
     [*KE algorithm*], [*Signing*], [*Message sizes*], [*Mean handshake (ms)*],
-    [X25519],         [None],     [45 B + 45 B],     [_TODO_],
-    [X25519],         [Ed25519],  [146 B + 146 B],   [_TODO_],
-    [ML-KEM-768],     [ML-DSA-65],[6 463 B + 6 367 B],[_TODO_],
+    [X25519],         [None],     [45 B + 45 B],     [pending],
+    [X25519],         [Ed25519],  [146 B + 146 B],   [pending],
+    [ML-KEM-768],     [ML-DSA-65],[6 463 B + 6 367 B],[pending],
   ),
-  caption: [Key exchange handshake latency by algorithm configuration (zero channel latency)],
+  caption: [Key exchange handshake latency by algorithm configuration (zero channel latency; results pending experiment execution)],
 ) <tab-ke-latency>
 
 The ML-KEM-768 + ML-DSA-65 message sizes (approximately 6.5 KB per direction)
@@ -376,38 +350,47 @@ infotainment-class sessions.
 
 == Discussion
 
+The following discussion is based on the analytical characterisation of the
+implementation and on the code-level verification performed in this work.
+Numerical results for the tables above are pending experiment execution; the
+discussion presents the expected behaviour derived from the design, which will
+be confirmed or qualified once the measurements are collected.
+
 === Routing Behaviour
 
-The results characterise vigilant-parakeet as a faithful implementation of
-the heartbeat-based routing model described in @l3-security-vehicular. Route
-convergence in the Linear-3 and Star-5 topologies is dominated by the
-heartbeat interval, with multi-hop topologies adding one additional interval
-per relay hop as expected. The latency metric provides a measurable advantage
-over hop-count in scenarios with latency-differentiated links (Mixed-6), where
-hop count would select a suboptimal path with equal hops but higher latency.
+The design predicts that vigilant-parakeet will characterise itself as a
+faithful implementation of the heartbeat-based routing model described in
+@l3-security-vehicular. Route convergence in the Linear-3 and Star-5 topologies
+is dominated by the heartbeat interval, with multi-hop topologies adding one
+additional interval per relay hop. The latency metric is expected to provide a
+measurable advantage over hop-count in scenarios with latency-differentiated
+links (Mixed-6), where hop count would select a suboptimal path with equal hops
+but higher latency.
 
-The hysteresis threshold effectively prevents route oscillation at moderate
-loss rates (below 10%), where per-packet RTT variance is significant but the
-mean path quality is stable. At higher loss rates (above 15%), RTT measurements
-become sparse and the metric degrades toward hop count anyway, so hysteresis
-has less effect.
+The 30% hysteresis threshold is designed to prevent route oscillation at
+moderate loss rates, where per-packet RTT variance is significant but the mean
+path quality is stable. At higher loss rates (above ~15%), RTT measurements
+become sparse and the metric degrades toward hop count, reducing the effect of
+the hysteresis band.
 
 === Failover Behaviour
 
-The N-best candidate cache provides a clear benefit in the failover scenario:
-`cached_candidates = 3` eliminates the heartbeat-cycle wait that dominates
-recovery time without caching. The marginal benefit of N=3 over N=1 is relevant
-only when the second-best candidate also fails simultaneously, which is the
-rarer event.
+The N-best candidate cache is expected to provide a clear benefit in the failover
+scenario: `cached_candidates = 3` eliminates the heartbeat-cycle wait that
+dominates recovery time without caching. The marginal benefit of N=3 over N=1
+is relevant only when the second-best candidate also fails simultaneously, which
+is the rarer event.
 
 === Cryptographic Overhead
 
 The post-quantum key exchange (ML-KEM-768 + ML-DSA-65) imposes a message size
-overhead of approximately 140× compared to unsigned X25519, and a computation
-overhead in the low single-digit millisecond range on the evaluation hardware.
-For sessions with 12-hour lifetimes (the default), this overhead is negligible.
-The main practical constraint for deployment on real 802.11p hardware is the
-6.5 KB message size, which exceeds the 802.11p MPDU limit and would require
+overhead of approximately 140× compared to unsigned X25519, and an expected
+computation overhead in the low single-digit millisecond range on the evaluation
+hardware (based on published benchmarks for the underlying polynomial
+arithmetic). For sessions with 12-hour lifetimes (the default), this overhead
+is amortised over millions of payload frames and is negligible in practice. The
+main practical constraint for deployment on real 802.11p hardware is the 6.5 KB
+message size, which exceeds the 802.11p MPDU limit and would require
 fragmentation or a larger frame transport, consistent with the analysis in
 @etsi-pqc and @pqc-v2x.
 
@@ -415,13 +398,16 @@ fragmentation or a larger frame transport, consistent with the analysis in
 
 The evaluation has several limitations that should be acknowledged:
 
-- *No radio channel model*: the simulator models channel quality as static
-  per-link parameters. Real vehicular channels exhibit time-varying fading that
-  would produce different RTT variance profiles.
+- *Pending measurements*: the numerical tables in this chapter contain
+  placeholder values. The experimental framework (topology YAML files, metrics
+  collection script, five-repetition protocol) is specified and the simulator
+  is built and functional; the experiments require a Linux host with network
+  namespace support and root privileges to execute.
 
-- *No mobility*: topology changes are emulated only through manual channel
-  parameter updates. Dynamic RSU association under vehicle movement is not
-  evaluated.
+- *Fading and mobility evaluated analytically only*: the Nakagami-m fading
+  model (Chapter 9) and IDM mobility (Chapter 10) are implemented but not yet
+  exercised in the reported routing experiments. The planned Nakagami
+  experiment (§6.4) will address this gap.
 
 - *Single-machine scheduling*: all nodes share the host kernel's Tokio thread
   pool. Under high node counts, Tokio task scheduling jitter contributes to
@@ -429,5 +415,6 @@ The evaluation has several limitations that should be acknowledged:
   than hardware-level timing.
 
 - *Five repetitions*: for highly stochastic scenarios (20% loss), five
-  repetitions provide limited statistical power. Error bars reflect standard
-  deviation across repetitions; significance testing is not performed.
+  repetitions provide limited statistical power. Error bars will reflect
+  standard deviation across repetitions; significance testing is not
+  performed.

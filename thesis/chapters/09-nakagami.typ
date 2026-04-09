@@ -4,8 +4,8 @@
 
 This chapter describes the Nakagami-m small-scale fading model implemented in
 the simulator, its mathematical basis, configuration parameters, and how it is
-used to convert per-packet instantaneous channel states into effective link
-quality metrics used by the routing and link models.
+used to derive per-link packet-loss probabilities used by the routing and link
+models.
 
 == Background
 
@@ -21,26 +21,27 @@ power). Larger m corresponds to less severe fading.
 
 == Implementation in the simulator
 
-The simulator samples a Nakagami-distributed amplitude multiplier per-packet or
-per-timeslot for each directed channel. The sampled amplitude is mapped to an
-instantaneous power (proportional to r^2) which is converted to an instantaneous
-SNR estimate using the configured transmit power / noise floor. The SNR is
-then used by a simple link model to compute a packet error probability (PEP)
-via a thresholded-BER model or an empirical mapping from SNR to PEP.
+The simulator implements the Nakagami-m model as a *distance-based outage
+probability function* (`simulator::fading::nakagami_loss`). Given the physical
+separation between two nodes in metres, the function computes the probability
+that the instantaneous received power falls below the required SNR threshold,
+integrating the Nakagami CDF over the path-loss-attenuated mean power at that
+distance. This outage probability is used as the effective per-packet loss rate
+for the channel, replacing (or augmenting) the static `loss` parameter from the
+topology YAML.
 
-Two placement granularities are supported:
+Key configuration parameters exposed per directed channel:
 
-+ Per-packet sampling: a fresh Nakagami sample is drawn for each transmitted
-  frame, modelling rapid small-scale fading appropriate for high-mobility
-  scenarios and short coherence times.
+- `m`: Nakagami shape parameter (≥ 0.5; default 1.0 for Rayleigh).
+- `omega`: mean signal power (default derived from the channel's `max_range_m`
+  and a standard path-loss exponent).
+- `max_range_m`: distance at which outage probability reaches 1.0; nodes
+  beyond this range are considered disconnected.
 
-+ Per-timeslot sampling: a sample is held constant across a configurable
-  timeslot (e.g., 10–100 ms), modelling slower fading relative to packet rate.
-
-Both the shape parameter m and Omega are configurable in the topology YAML for
-each channel. Default values use m=1.0 (Rayleigh) and Omega derived from the
-`latency`/`loss` baseline to preserve backward compatibility with static
-experiments.
+The model is evaluated at each simulation tick as node positions change,
+making the effective loss rate a function of current inter-node distance.
+Backward compatibility with static-parameter topologies is preserved: channels
+without a `fading` block use the fixed `loss` field as before.
 
 == Configuration example
 
@@ -61,11 +62,12 @@ topology:
 
 - Use m < 1 to model severe fading (urban street canyons), m ~ 1 for Rayleigh,
   and m > 1 for mild fading or when a strong LOS component exists.
-- Match sampling granularity to vehicle speed and packet rate: higher speeds and
-  high packet rates justify per-packet sampling.
-- When combining with RSSI-based selection, expose instantaneous RSSI samples
-  averaged over a short window to the OBU to avoid basing routing decisions on
-  single-sample fades.
+- Combine with IDM mobility (Chapter 10) so that changing inter-node distances
+  drive dynamic outage probability, replicating realistic link fluctuations as
+  vehicles approach or recede from RSUs.
+- When combining with RSSI-based selection, the simulator injects the
+  distance-derived SNR into the RSSI table so that OBU route selection sees
+  signal strength that decreases with distance and fades with the chosen m.
 
 Nakagami support allows the evaluation chapter to measure routing stability and
 Key Exchange reliability under realistic small-scale fading regimes, bridging

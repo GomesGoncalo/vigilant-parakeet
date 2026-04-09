@@ -1,0 +1,10 @@
+node_type: Obu
+hello_history: 10
+ip: 10.0.3.1
+vanet_mac: AA:BB:CC:DD:03:01
+enable_encryption: true
+enable_dh_signatures: false
+dh_group: x25519
+dh_reply_timeout_ms: 3000
+dh_rekey_interval_ms: 43200000
+cached_candidates: 3

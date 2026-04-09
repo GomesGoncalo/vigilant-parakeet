@@ -2,7 +2,7 @@
 
 Vehicular networks present unique challenges for routing protocol design: nodes
 are highly mobile, connectivity is intermittent, and security requirements are
-stringent. This thesis presents the design, implementation, and evaluation of
+stringent. This work documents the design, implementation, and evaluation of
 *vigilant-parakeet*, a Rust-based simulator and visualiser for experimenting
 with Layer‑3 routing protocols in vehicular environments composed of On‑Board
 Units (OBUs) and Road‑Side Units (RSUs).
@@ -10,12 +10,12 @@ Units (OBUs) and Road‑Side Units (RSUs).
 The simulator leverages Linux network namespaces to provide realistic,
 isolated per-node network stacks without requiring physical hardware. The
 implemented routing stack is heartbeat-driven and includes a revised route
-selection algorithm with configurable scoring modes (min+mean and avg-only),
-RSSI-aware candidate ranking, stronger hysteresis to reduce flapping, and
+selection algorithm with a latency-aware composite scoring metric,
+RSSI-aware candidate ranking, a 30% hysteresis band to reduce flapping, and
 N‑best candidate caching for fast, stable failover. The physical layer model
-now includes a Nakagami‑m small‑scale fading implementation that maps sampled
-amplitudes to instantaneous SNR and packet error probabilities, enabling
-controlled evaluations of fading effects on higher-layer behaviour. Mobility is
+includes a Nakagami‑m small‑scale fading implementation that maps outage
+probability to per-link loss as a function of inter-node distance, enabling
+controlled evaluation of fading effects on higher-layer behaviour. Mobility is
 improved with OSM-driven trajectories and an integrated Intelligent Driver
 Model (IDM) for realistic longitudinal and lane-change dynamics.
 
@@ -28,8 +28,8 @@ N‑best/KE popups, and a JS-native high-frequency polling path to bypass WASM
 for performance-sensitive updates.
 
 Contributions: a modular Rust workspace and test harness; a routing algorithm
-rework (RSSI-aware scoring, hysteresis, N‑best); Nakagami‑m fading and its
-integration into the evaluation pipeline; OSM+IDM mobility integration; and a
-substantial enhancement of visualization and observability tooling. The code,
-experiment plans, and produced artifacts accompany this thesis to support
-reproducible research.
+rework (RSSI-aware scoring, 30% hysteresis, N‑best); Nakagami‑m distance-based
+fading and its integration into the evaluation pipeline; OSM+IDM mobility
+integration; and a substantial enhancement of visualization and observability
+tooling. The code, experiment plans, and produced artifacts accompany this
+thesis to support reproducible research.

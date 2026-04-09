@@ -1,0 +1,59 @@
+# Nakagami-m fading variant of the Linear-3 topology.
+#
+# Adds per-link Nakagami-m fading to the rsu1–obu1 and obu1–obu2 links.
+# Used for the planned fading experiment in §6.4 of the evaluation chapter.
+#
+# To vary fading severity, change the `m` parameter on the fading blocks:
+#   m=0.5  severe fading (urban canyon)
+#   m=0.9  near-Rayleigh
+#   m=1.0  Rayleigh (default)
+#   m=2.0  mild fading
+#   m=5.0  near-AWGN / strong LOS
+#
+# Run with:
+#   cargo build -p simulator --release --features "webview,stats"
+#   sudo RUST_LOG="node=info" ./target/release/simulator \
+#     --config-file examples/nakagami_linear3.yaml --pretty
+
+nodes:
+  server1:
+    config_path: examples/linear3/server1.yaml
+  rsu1:
+    config_path: examples/linear3/rsu1.yaml
+  obu1:
+    config_path: examples/linear3/obu1.yaml
+  obu2:
+    config_path: examples/linear3/obu2.yaml
+
+topology:
+  rsu1:
+    obu1:
+      latency: 10
+      loss: 0.0
+      fading:
+        model: nakagami
+        m: 1.0
+        omega: 1.0
+  obu1:
+    rsu1:
+      latency: 10
+      loss: 0.0
+      fading:
+        model: nakagami
+        m: 1.0
+        omega: 1.0
+    obu2:
+      latency: 5
+      loss: 0.0
+      fading:
+        model: nakagami
+        m: 1.0
+        omega: 1.0
+  obu2:
+    obu1:
+      latency: 5
+      loss: 0.0
+      fading:
+        model: nakagami
+        m: 1.0
+        omega: 1.0

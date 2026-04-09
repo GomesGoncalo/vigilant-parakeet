@@ -108,46 +108,64 @@ When an OBU receives a `Heartbeat`:
 
 === Route Selection Metric
 
-See Chapter 8 for the full description of the routing rework and RSSI-aware
-selection. The implementation in `obu_lib::control::routing` supports
-a configurable set of scoring modes and a conservative hysteresis policy to
-reduce flapping in time-varying channels.
+The routing protocol uses a composite latency/hop-count metric implemented in
+`obu_lib::control::routing`. The original min+mean metric was extended with
+RSSI-aware selection and a stronger hysteresis band to reduce RSU flapping under
+time-varying channels and mobility. The goal was to make selection policies more
+expressive while remaining easy to reason about and test.
 
-Latency-based scoring (default): when latency measurements are available,
-each candidate next-hop m is scored by the composite metric
+The latency metric was sensitive to single-sample minima under high-variance
+channels (e.g., small-scale fading) and to transient packet loss, which in
+practice manifested as RSU flapping when vehicles moved through fading dips or
+when probe timing coincided with brief congestion. The extensions described
+below address these issues.
+
+*Latency-based scoring:* when latency measurements are available, each candidate
+next-hop m is scored by the composite metric
 
 `s_m = mu_m^min + overline(mu)_m`
 
 where `mu_m^min` is the minimum observed round-trip latency to m (microseconds)
 and `overline(mu)_m` is the mean latency across recorded observations. Combining
 minimum and mean penalises candidates that are occasionally fast but highly
-variable while rewarding consistently low-latency paths.
+variable while rewarding consistently low-latency paths. The metric requires at
+least two observations before a decision is made; candidates with fewer samples
+fall back to hop-count comparison.
 
-RSSI-based selection (optional): an alternative RSU-selection mode uses
-smoothed RSSI samples collected by OBUs to compute a normalised RSSI score.
-A combined score is formed as a weighted sum of the normalised latency score
-and `(1 - RSSI)`, permitting policies such as "prefer a strong RSU unless
-latency advantage exceeds X%".
+*RSSI-aware selection:* when an RSSI table is available (injected by the
+simulator's fading model or a hardware radio driver), RSU selection in
+`select_and_cache_upstream()` switches to a signal-strength gate:
 
-Configurable scoring modes: the implementation supports `min+mean` (default)
-and `avg-only` (use only the mean latency) to reduce sensitivity to minima when
-sampling noise dominates.
+- The cached upstream is *retained* unless the incoming RSU presents an RSSI at
+  least 3 dB stronger than the cached upstream's last measurement. A 3 dB
+  margin corresponds to approximately 40% closer in free-space path loss and is
+  a standard hysteresis criterion in cellular handover.
+- If the cached upstream's RSSI entry has gone stale, the incoming RSU is
+  promoted immediately.
+- Without an RSSI table, `select_and_cache_upstream()` falls back to a
+  heartbeat reception-ratio comparison with a 30% margin.
 
-Hysteresis and flapping prevention: the cached upstream is protected by a
-conservative hysteresis threshold (default 30% in current builds): a switch
-occurs only when the new candidate's score is sufficiently better or when it
-strictly reduces hop count. This policy reduces oscillation under mobility and
-small-scale fading.
+*Hysteresis and flapping prevention:* the cached upstream is protected by a
+30% latency hysteresis band. Via the `get_route_to()` path, a switch occurs only
+when the new candidate's latency score is at least 30% lower than the cached
+upstream's, or when it strictly reduces hop count. This prevents oscillation in
+mobility-plus-fading scenarios where RTT samples are noisy but the mean link
+quality is stable.
 
-N-best caching and failover: on each primary-route update the top N candidates
+*N-best caching and failover:* on each primary-route update the top N candidates
 (default N=3) are cached in rank order. `failover_cached_upstream()` promotes
 the head of this list on send errors or timeouts, making failover O(1) and
 avoiding an immediate heartbeat cycle for route repair.
 
 Implementation notes:
-- `get_route_to(Some(target))` remains a pure function reading routing state.
+- `get_route_to(Some(target))` is a pure function reading routing state under a read lock.
 - `select_and_cache_upstream()` performs the single write to update the cached upstream and rebuild the N-best list.
-- The routing behaviour is driven by YAML flags exposed per-OBU (scoring mode, RSSI weight, hysteresis fraction).
+
+Unit and integration tests in `obu_lib` exercise these mechanisms with synthetic
+channels providing controlled jitter and fading, verifying the 3 dB RSSI gate
+policy and that the 30% hysteresis band prevents pathological oscillation. The
+dashboard and `/node_info` endpoints expose the scoring components (raw
+latencies, smoothed RSSI samples, normalised scores) for post-hoc analysis.
 
 === Loop Prevention
 

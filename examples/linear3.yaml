@@ -1,0 +1,39 @@
+# Linear-3 topology for evaluation experiments.
+#
+# Topology:
+#   server1
+#     └── rsu1  (cloud channel, auto-created)
+#           └── obu1  (direct VANET)
+#                 └── obu2  (relay hop — tests two-hop forwarding and HeartbeatReply forwarding)
+#
+# OBU2 must route through OBU1 to reach RSU1. Tests basic two-hop routing,
+# latency accumulation across relay hops, and convergence time.
+#
+# Vary the rsu1->obu1 loss parameter (0.0–0.20) to evaluate metric sensitivity.
+
+nodes:
+  server1:
+    config_path: examples/linear3/server1.yaml
+  rsu1:
+    config_path: examples/linear3/rsu1.yaml
+  obu1:
+    config_path: examples/linear3/obu1.yaml
+  obu2:
+    config_path: examples/linear3/obu2.yaml
+
+topology:
+  rsu1:
+    obu1:
+      latency: 10
+      loss: 0.0
+  obu1:
+    rsu1:
+      latency: 10
+      loss: 0.0
+    obu2:
+      latency: 5
+      loss: 0.0
+  obu2:
+    obu1:
+      latency: 5
+      loss: 0.0

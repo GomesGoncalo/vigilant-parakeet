@@ -87,14 +87,13 @@ The primary contributions of this work are:
   API exposed by the simulator.
 
 - *Time-varying radio model and mobility*: the simulator supports a
-  Nakagami-m small-scale fading model (configurable m and sampling granularity)
+  Nakagami-m distance-based fading model (configurable m and range parameters)
   and an OpenStreetMap-driven mobility backend with an IDM car-following model
   for realistic vehicle trajectories and reproducible experiments.
 
 - *RSSI-aware and reworked routing*: the heartbeat-based routing protocol was
-  extended with configurable scoring modes (min+mean, avg-only), RSSI-aware
-  selection, and stronger hysteresis to mitigate RSU flapping under fading and
-  mobility (details in Chapters 4 and 8).
+  extended with RSSI-aware selection and a 30% hysteresis band to mitigate
+  RSU flapping under fading and mobility (see @implementation).
 
 - *Key-exchange robustness improvements*: downstream client caching, reply
   forwarding via a ClientCache, and prompt DH retry behaviours improve session
@@ -119,8 +118,9 @@ The remainder of this thesis is organised as follows.
 - @architecture describes the high-level design of vigilant-parakeet and the
   rationale behind its crate decomposition.
 
-- @implementation details the implementation of the routing protocol, the
-  simulator, the test infrastructure, and the visualisation layer.
+- @implementation details the implementation of the routing protocol (including
+  the RSSI-aware selection and hysteresis extensions), the simulator, the test
+  infrastructure, and the visualisation layer.
 
 - @security presents the security architecture: threat model, DH key exchange
   (X25519 and ML-KEM-768), HKDF key derivation, configurable AEAD cipher
@@ -132,3 +132,8 @@ The remainder of this thesis is organised as follows.
 
 - @conclusion summarises the findings, reflects on limitations, and proposes
   directions for future work.
+
+The thesis also includes three supplementary chapters documenting the major
+modelling improvements developed during this work: @nakagami describes the
+Nakagami-m fading model; @idm presents the IDM mobility integration; and
+@viz-enhancements documents the visualisation dashboard enhancements.

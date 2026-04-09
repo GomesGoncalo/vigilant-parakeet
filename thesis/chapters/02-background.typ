@@ -59,9 +59,9 @@ component. Modelling small-scale fading at packet timescales allows a
 simulator to capture transient link outages and variability that affect
 routing stability and ephemeral session establishment.
 
-The simulator used in this work supports Nakagami-m sampling at configurable
-granularities (per-packet or per-timeslot) and converts sampled amplitudes to
-instantaneous SNRs used in a packet error probability model (see Chapter 9).
+The simulator used in this work implements a Nakagami-m distance-based outage
+probability model that computes per-link packet-loss probability as a function
+of inter-node distance and the shape parameter m (see Chapter 9).
 
 == Mobility models
 
@@ -214,7 +214,7 @@ plane would require different transport.
 
 The table illustrates why the routing metric matters: for CACC and platooning,
 route oscillation of even a few tens of milliseconds per interval is
-disruptive. The 10% hysteresis threshold in vigilant-parakeet's route selection
+disruptive. The 30% hysteresis band in vigilant-parakeet's route selection
 (see @sec-routing-protocol) is calibrated to prevent exactly this oscillation.
 For safety applications, the absence of payload encryption is a deliberate
 design choice in the standards: CAM messages are public safety information, and

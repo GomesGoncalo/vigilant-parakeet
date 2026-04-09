@@ -1,0 +1,58 @@
+# Star-5 topology for evaluation experiments.
+#
+# Topology:
+#   server1
+#     └── rsu1  (cloud channel, auto-created)
+#           ├── obu1  (direct VANET, 10 ms latency)
+#           ├── obu2  (direct VANET, 12 ms latency — slightly worse)
+#           ├── obu3  (direct VANET, 10 ms latency)
+#           └── obu4  (direct VANET, 15 ms latency — worst)
+#
+# All four OBUs are directly connected to RSU1. Tests single-hop route selection
+# under higher node density and RSU tie-breaking. Latency differences between
+# OBU–RSU links exercise the composite latency/hop-count metric.
+
+nodes:
+  server1:
+    config_path: examples/star5/server1.yaml
+  rsu1:
+    config_path: examples/star5/rsu1.yaml
+  obu1:
+    config_path: examples/star5/obu1.yaml
+  obu2:
+    config_path: examples/star5/obu2.yaml
+  obu3:
+    config_path: examples/star5/obu3.yaml
+  obu4:
+    config_path: examples/star5/obu4.yaml
+
+topology:
+  rsu1:
+    obu1:
+      latency: 10
+      loss: 0.0
+    obu2:
+      latency: 12
+      loss: 0.0
+    obu3:
+      latency: 10
+      loss: 0.0
+    obu4:
+      latency: 15
+      loss: 0.0
+  obu1:
+    rsu1:
+      latency: 10
+      loss: 0.0
+  obu2:
+    rsu1:
+      latency: 12
+      loss: 0.0
+  obu3:
+    rsu1:
+      latency: 10
+      loss: 0.0
+  obu4:
+    rsu1:
+      latency: 15
+      loss: 0.0

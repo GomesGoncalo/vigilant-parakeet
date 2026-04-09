@@ -22,7 +22,6 @@
 #include "chapters/related-work.typ"
 #include "chapters/03-architecture.typ"
 #include "chapters/04-implementation.typ"
-#include "chapters/08-routing-rework.typ"
 #include "chapters/09-nakagami.typ"
 #include "chapters/10-idm.typ"
 #include "chapters/11-visualization-enhancements.typ"

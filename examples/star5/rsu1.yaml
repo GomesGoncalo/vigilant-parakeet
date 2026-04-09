@@ -1,0 +1,6 @@
+node_type: Rsu
+hello_history: 10
+hello_periodicity: 500
+external_tap_ip: 172.16.0.10
+server_ip: 172.16.0.1
+cached_candidates: 3

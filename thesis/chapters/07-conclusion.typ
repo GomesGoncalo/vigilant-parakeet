@@ -74,13 +74,14 @@ comparative evaluation of classical and post-quantum configurations. A single
 this extensible: adding a new algorithm variant requires a new enum arm and
 its implementation, without touching the handshake or encryption code paths.
 
-*The hysteresis threshold.* The 10% hysteresis band was chosen empirically:
-at 5%, simulated links with moderate jitter triggered route oscillation during
-evaluation; at 20%, genuinely better paths took too long to be adopted. The
-threshold is not configurable at the YAML level (an intentional simplification),
-but the routing codebase is structured so that changing it requires modifying
-a single constant. In a production system, the threshold would ideally be
-derived from the observed jitter distribution of each link.
+*The hysteresis threshold.* The 30% hysteresis band was chosen empirically:
+at lower thresholds (e.g. 10–15%), simulated links with moderate jitter
+triggered route oscillation under fading; at thresholds above 40%, genuinely
+better paths took too long to be adopted following a link-quality improvement.
+The threshold is not configurable at the YAML level (an intentional
+simplification), but the routing codebase is structured so that changing it
+requires modifying a single constant. In a production system, the threshold
+would ideally be derived from the observed jitter distribution of each link.
 
 *TOFU as the default trust mode.* Implementing TOFU as the default (with PKI
 mode available but opt-in) reflects the practical deployment reality that key
@@ -96,11 +97,11 @@ Several limitations remain despite the implemented extensions; the list
 below highlights the most important caveats that affect experiment fidelity
 and security conclusions.
 
-- *Approximate radio model*: The simulator now implements Nakagami-m
-  small-scale fading (Chapter 9) and converts sampled amplitudes to
-  instantaneous SNR/PEP. However, the model is still an approximation: it
-  does not fully emulate frequency-selective fading, explicit Doppler spectra,
-  antenna patterns, or MIMO spatial correlation present in real radios.
+- *Approximate radio model*: The simulator implements a Nakagami-m
+  distance-based outage probability model (Chapter 9), which improves on static
+  per-link parameters. However, it does not model frequency-selective fading,
+  explicit Doppler spectra, antenna patterns, or MIMO spatial correlation present
+  in real radios.
 
 - *Mobility realism trade-offs*: OSM-driven trajectories with IDM (Chapter
   10) produce realistic longitudinal and lane-change dynamics, but they are

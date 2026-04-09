@@ -1,0 +1,82 @@
+# Mixed-6 topology for evaluation experiments.
+#
+# Topology:
+#   server1
+#     ├── rsu1  (cloud channel, auto-created)
+#     └── rsu2  (cloud channel, auto-created)
+#
+#   rsu1 ── obu1 ── obu3 ── obu4
+#                └── obu2
+#   rsu2 ── obu1
+#
+# OBU1 can reach both RSU1 (10 ms) and RSU2 (20 ms). Tests multi-RSU route
+# selection: the latency metric should prefer RSU1; hop count sees both as
+# equal (1 hop). OBU3 can only reach RSU1 via OBU1 (two-hop path). OBU4 can
+# only reach RSU1 via OBU3 → OBU1 (three-hop path). OBU2 is directly connected
+# to OBU1 with a shorter latency path to RSU1 than RSU2.
+#
+# This topology exercises: multi-RSU hysteresis, asymmetric latency
+# differentiation, and multi-hop relay chains.
+
+nodes:
+  server1:
+    config_path: examples/mixed6/server1.yaml
+  rsu1:
+    config_path: examples/mixed6/rsu1.yaml
+  rsu2:
+    config_path: examples/mixed6/rsu2.yaml
+  obu1:
+    config_path: examples/mixed6/obu1.yaml
+  obu2:
+    config_path: examples/mixed6/obu2.yaml
+  obu3:
+    config_path: examples/mixed6/obu3.yaml
+  obu4:
+    config_path: examples/mixed6/obu4.yaml
+
+topology:
+  # RSU1 can hear OBU1 and OBU2
+  rsu1:
+    obu1:
+      latency: 10
+      loss: 0.0
+    obu2:
+      latency: 8
+      loss: 0.0
+  # RSU2 can hear OBU1 only — with higher latency (asymmetric)
+  rsu2:
+    obu1:
+      latency: 20
+      loss: 0.0
+  # OBU1 links back to both RSUs and to OBU2, OBU3
+  obu1:
+    rsu1:
+      latency: 10
+      loss: 0.0
+    rsu2:
+      latency: 20
+      loss: 0.0
+    obu2:
+      latency: 8
+      loss: 0.0
+    obu3:
+      latency: 6
+      loss: 0.0
+  obu2:
+    rsu1:
+      latency: 8
+      loss: 0.0
+    obu1:
+      latency: 8
+      loss: 0.0
+  obu3:
+    obu1:
+      latency: 6
+      loss: 0.0
+    obu4:
+      latency: 5
+      loss: 0.0
+  obu4:
+    obu3:
+      latency: 5
+      loss: 0.0
