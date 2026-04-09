@@ -76,8 +76,8 @@ impl TabRenderer for TopologyTab {
 pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabState) {
     // Map mac -> node name for quick parent lookup
     let mut name_by_mac: HashMap<String, String> = HashMap::new();
-    for (name, (mac, _, _, _, _)) in state.nodes.iter() {
-        name_by_mac.insert(mac.clone(), name.clone());
+    for (name, snap) in state.nodes.iter() {
+        name_by_mac.insert(snap.mac.clone(), name.clone());
     }
 
     // children: parent_name -> Vec<child_name>
@@ -87,8 +87,8 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabSta
 
     // Ensure every non-server node has an entry
     let mut server_names: HashSet<String> = HashSet::new();
-    for (name, (_mac, ntype, _v, _c, _)) in state.nodes.iter() {
-        if ntype == "Server" {
+    for (name, snap) in state.nodes.iter() {
+        if snap.node_type == "Server" {
             server_names.insert(name.clone());
             continue;
         }
@@ -98,13 +98,13 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabSta
     let mut unattached: Vec<String> = Vec::new();
 
     // For each OBU, attempt to attach it to its immediate upstream node (by route.mac)
-    for (name, (_mac, ntype, _v, _c, simnode)) in state.nodes.iter() {
-        if ntype != "Obu" {
+    for (name, snap) in state.nodes.iter() {
+        if snap.node_type != "Obu" {
             continue;
         }
 
         let mut attached_parent: Option<String> = None;
-        if let crate::simulator::SimNode::Obu(ref o) = simnode {
+        if let crate::simulator::SimNode::Obu(ref o) = snap.simnode {
             if let Some(obu) = o.as_any().downcast_ref::<obu_lib::Obu>() {
                 if let Some(route) = obu.cached_upstream_route() {
                     let immediate_mac = format!("{}", route.mac);
@@ -130,8 +130,8 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabSta
     let mut rsus: Vec<String> = state
         .nodes
         .iter()
-        .filter_map(|(n, (_mac, ntype, _v, _c, _))| {
-            if ntype == "Rsu" {
+        .filter_map(|(n, snap)| {
+            if snap.node_type == "Rsu" {
                 Some(n.clone())
             } else {
                 None
@@ -144,8 +144,8 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabSta
     let mut other_roots: Vec<String> = state
         .nodes
         .iter()
-        .filter_map(|(n, (_mac, ntype, _v, _c, _))| {
-            if ntype == "Server" {
+        .filter_map(|(n, snap)| {
+            if snap.node_type == "Server" {
                 None
             } else if !parent_map.contains_key(n) && !rsus.contains(n) {
                 Some(n.clone())
@@ -191,8 +191,8 @@ pub fn render_topology_tab(f: &mut Frame, area: Rect, state: &mut TopologyTabSta
     let mut unattached_display: Vec<String> = Vec::new();
     for name in unattached.iter() {
         if !parent_map.contains_key(name) && !rsus.contains(name) {
-            if let Some((mac, _ntype, _v, _c, _snode)) = state.nodes.get(name) {
-                unattached_display.push(format!("{} ({})", name, mac));
+            if let Some(snap) = state.nodes.get(name) {
+                unattached_display.push(format!("{} ({})", name, snap.mac));
             } else {
                 unattached_display.push(name.clone());
             }
@@ -268,15 +268,15 @@ fn render_node_details(
     while !seen_path.contains(&current) {
         seen_path.insert(current.clone());
         // get this node's immediate upstream via cached_upstream_route if OBU
-        if let Some((_mac, ntype, _v, _c, snode)) = state.nodes.get(&current) {
-            if ntype == "Rsu" {
+        if let Some(snap) = state.nodes.get(&current) {
+            if snap.node_type == "Rsu" {
                 reached_rsu = true;
                 break;
             }
-            if ntype != "Obu" {
+            if snap.node_type != "Obu" {
                 break;
             }
-            if let crate::simulator::SimNode::Obu(ref o) = snode {
+            if let crate::simulator::SimNode::Obu(ref o) = snap.simnode {
                 if let Some(obu_ref) = o.as_any().downcast_ref::<obu_lib::Obu>() {
                     if let Some(route) = obu_ref.cached_upstream_route() {
                         let next_mac = format!("{}", route.mac);
@@ -437,8 +437,8 @@ fn collect_node(
     }
     ctx.visited.insert(name.to_string());
 
-    let label = if let Some((mac, _ntype, _v, _c, _snode)) = ctx.state.nodes.get(name) {
-        format!("{} ({})", name, mac)
+    let label = if let Some(snap) = ctx.state.nodes.get(name) {
+        format!("{} ({})", name, snap.mac)
     } else {
         name.to_string()
     };
@@ -509,8 +509,8 @@ fn compute_hops(
         visited.insert(current.clone());
 
         // If current is RSU, we're done
-        if let Some((_mac, ntype, _v, _c, _snode)) = state.nodes.get(&current) {
-            if ntype == "Rsu" {
+        if let Some(snap) = state.nodes.get(&current) {
+            if snap.node_type == "Rsu" {
                 return Some(total);
             }
         } else {
@@ -518,11 +518,11 @@ fn compute_hops(
         }
 
         // Otherwise, current must be an OBU; try to get its immediate upstream route
-        if let Some((_mac, ntype, _v, _c, snode)) = state.nodes.get(&current) {
-            if ntype != "Obu" {
+        if let Some(snap) = state.nodes.get(&current) {
+            if snap.node_type != "Obu" {
                 return None;
             }
-            if let crate::simulator::SimNode::Obu(ref o) = snode {
+            if let crate::simulator::SimNode::Obu(ref o) = snap.simnode {
                 if let Some(obu) = o.as_any().downcast_ref::<obu_lib::Obu>() {
                     if let Some(route) = obu.cached_upstream_route() {
                         total = total.saturating_add(route.hops);
