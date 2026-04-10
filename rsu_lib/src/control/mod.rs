@@ -13,7 +13,9 @@ use common::device::Device;
 use common::network_interface::NetworkInterface;
 use mac_address::MacAddress;
 use node::ReplyType;
-use node_lib::messages::{control::Control, data::Data, message::Message, packet_type::PacketType};
+use node_lib::messages::{
+    auth::Auth, control::Control, data::Data, message::Message, packet_type::PacketType,
+};
 use routing::Routing;
 use server_lib::cloud_protocol::{
     CloudMessage, DownstreamForward, KeyExchangeForward, KeyExchangeResponse,
@@ -264,7 +266,7 @@ impl Rsu {
                     Ok(None)
                 }
             }
-            PacketType::Control(Control::KeyExchangeInit(ke_init)) => {
+            PacketType::Auth(Auth::KeyExchangeInit(ke_init)) => {
                 // Relay KeyExchangeInit from OBU to server via cloud protocol.
                 // Use the originating OBU MAC from the payload (ke_init.sender())
                 // as the authoritative identifier, since KeyExchangeInit may be
@@ -334,11 +336,11 @@ impl Rsu {
             }
             PacketType::Data(Data::Downstream(_))
             | PacketType::Control(Control::Heartbeat(_))
-            | PacketType::Control(Control::KeyExchangeReply(_))
+            | PacketType::Auth(Auth::KeyExchangeReply(_))
             // SessionTerminated is only delivered to OBUs; the RSU forwards it via
             // handle_session_terminated_forward() when received from the server cloud
             // socket, so if it arrives on the VANET wire here it's already been handled.
-            | PacketType::Control(Control::SessionTerminated(_)) => Ok(None),
+            | PacketType::Auth(Auth::SessionTerminated(_)) => Ok(None),
         }
     }
 
@@ -563,7 +565,7 @@ impl Rsu {
         let dest_mac = rsp.obu_dest_mac;
 
         // Parse the key exchange reply payload
-        let ke_reply = match node_lib::messages::control::key_exchange::KeyExchangeReply::try_from(
+        let ke_reply = match node_lib::messages::auth::key_exchange::KeyExchangeReply::try_from(
             rsp.payload.as_slice(),
         ) {
             Ok(reply) => reply,
@@ -607,7 +609,7 @@ impl Rsu {
         let msg = Message::new(
             device.mac_address(),
             next_hop,
-            PacketType::Control(Control::KeyExchangeReply(ke_reply)),
+            PacketType::Auth(Auth::KeyExchangeReply(ke_reply)),
         );
         let wire: Vec<u8> = (&msg).into();
         let slices = [IoSlice::new(&wire)];
@@ -657,24 +659,24 @@ impl Rsu {
             return;
         };
 
-        use node_lib::messages::control::session_terminated::SessionTerminated;
+        use node_lib::messages::auth::session_terminated::SessionTerminated;
         // Pass timestamp, nonce, and signature through transparently so the OBU
         // can authenticate and replay-check the revocation notice.
         let st = match (
             stf.timestamp_secs,
             stf.nonce,
-            stf.sig_algo_id,
+            stf.sig_algo,
             stf.signature.as_deref(),
         ) {
-            (Some(ts), Some(nonce), Some(algo_id), Some(sig)) => {
-                SessionTerminated::new_signed(dest_mac, ts, nonce, algo_id, sig.to_vec())
+            (Some(ts), Some(nonce), Some(algo), Some(sig)) => {
+                SessionTerminated::new_signed(dest_mac, ts, nonce, algo, sig.to_vec())
             }
             _ => SessionTerminated::new(dest_mac),
         };
         let msg = Message::new(
             device.mac_address(),
             next_hop,
-            PacketType::Control(Control::SessionTerminated(st)),
+            PacketType::Auth(Auth::SessionTerminated(st)),
         );
         let wire: Vec<u8> = (&msg).into();
         let slices = [IoSlice::new(&wire)];
@@ -700,7 +702,7 @@ pub(crate) fn handle_msg_for_test(
     cache: std::sync::Arc<ClientCache>,
     msg: &node_lib::messages::message::Message<'_>,
 ) -> anyhow::Result<Option<Vec<ReplyType>>> {
-    use node_lib::messages::{control::Control, data::Data, packet_type::PacketType};
+    use node_lib::messages::{auth::Auth, control::Control, data::Data, packet_type::PacketType};
 
     match msg.get_packet_type() {
         PacketType::Data(Data::Upstream(buf)) => {
@@ -731,9 +733,9 @@ pub(crate) fn handle_msg_for_test(
         }
         PacketType::Data(Data::Downstream(_))
         | PacketType::Control(Control::Heartbeat(_))
-        | PacketType::Control(Control::KeyExchangeInit(_))
-        | PacketType::Control(Control::KeyExchangeReply(_))
-        | PacketType::Control(Control::SessionTerminated(_)) => Ok(None),
+        | PacketType::Auth(Auth::KeyExchangeInit(_))
+        | PacketType::Auth(Auth::KeyExchangeReply(_))
+        | PacketType::Auth(Auth::SessionTerminated(_)) => Ok(None),
     }
 }
 

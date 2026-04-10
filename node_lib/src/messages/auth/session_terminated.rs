@@ -1,14 +1,16 @@
 use mac_address::MacAddress;
 use std::borrow::Cow;
 
-/// A `SessionTerminated` control message sent by the server (via RSU relay) to
+use crate::crypto::SigningAlgorithm;
+
+/// A `SessionTerminated` auth message sent by the server (via RSU relay) to
 /// notify an OBU that its session has been revoked by the server administrator.
 ///
 /// The target OBU must clear its DH session key and immediately re-initiate a
 /// new key exchange.  Intermediate OBUs forward this message toward the target
 /// using the embedded `target` MAC.
 ///
-/// Binary layout (inside the Control payload, after the type byte):
+/// Binary layout (inside the Auth payload, after the type byte):
 /// ```text
 /// Unsigned:  [TARGET_OBU_MAC 6B]
 /// Signed:    [TARGET_OBU_MAC 6B][TIMESTAMP_SECS 8B][NONCE 8B]
@@ -17,7 +19,7 @@ use std::borrow::Cow;
 ///
 /// The signed payload (what the server signs) is:
 /// ```text
-/// [CONTROL_TYPE_BYTE=0x04][TARGET_OBU_MAC 6B][TIMESTAMP_SECS 8B][NONCE 8B]
+/// [AUTH_TYPE_BYTE=0x02][TARGET_OBU_MAC 6B][TIMESTAMP_SECS 8B][NONCE 8B]
 /// ```
 ///
 /// **Replay prevention**: Two complementary mechanisms:
@@ -31,6 +33,9 @@ pub const VALIDITY_SECS: u64 = 60;
 /// Clock skew tolerance: accept messages up to this many seconds in the future.
 pub const CLOCK_SKEW_TOLERANCE_SECS: u64 = 5;
 
+/// Wire type byte prepended to the signed payload; matches Auth::SessionTerminated sub-ID.
+const SIGNED_PAYLOAD_TYPE_BYTE: u8 = 0x02;
+
 #[derive(Debug, Clone)]
 pub struct SessionTerminated<'a> {
     target: Cow<'a, [u8]>,
@@ -38,7 +43,7 @@ pub struct SessionTerminated<'a> {
     timestamp_secs: Option<u64>,
     /// 8-byte server-generated random nonce.
     nonce: Option<[u8; 8]>,
-    /// Signature algorithm ID (same constants as KeyExchange).
+    /// Wire-format signature algorithm byte, if signed.
     sig_algo_id: Option<u8>,
     /// Raw signature bytes from the server.
     signature: Option<Cow<'a, [u8]>>,
@@ -61,16 +66,31 @@ impl<'a> SessionTerminated<'a> {
         target: MacAddress,
         timestamp_secs: u64,
         nonce: [u8; 8],
-        sig_algo_id: u8,
+        sig_algo: SigningAlgorithm,
         signature: Vec<u8>,
     ) -> Self {
         Self {
             target: Cow::Owned(target.bytes().to_vec()),
             timestamp_secs: Some(timestamp_secs),
             nonce: Some(nonce),
-            sig_algo_id: Some(sig_algo_id),
+            sig_algo_id: Some(sig_algo.wire_id()),
             signature: Some(Cow::Owned(signature)),
         }
+    }
+
+    /// Build the canonical byte payload that the server signs and the OBU verifies.
+    ///
+    /// `[SIGNED_PAYLOAD_TYPE_BYTE][TARGET_OBU_MAC 6B][TIMESTAMP_SECS 8B][NONCE 8B]`
+    pub fn build_signed_payload(
+        target: MacAddress,
+        timestamp_secs: u64,
+        nonce: [u8; 8],
+    ) -> Vec<u8> {
+        let mut payload = vec![SIGNED_PAYLOAD_TYPE_BYTE];
+        payload.extend_from_slice(&target.bytes());
+        payload.extend_from_slice(&timestamp_secs.to_be_bytes());
+        payload.extend_from_slice(&nonce);
+        payload
     }
 
     pub fn target(&self) -> MacAddress {
@@ -89,8 +109,9 @@ impl<'a> SessionTerminated<'a> {
         self.nonce.as_ref()
     }
 
-    pub fn sig_algo_id(&self) -> Option<u8> {
-        self.sig_algo_id
+    /// Returns the signing algorithm, or `None` if unsigned or unrecognised wire ID.
+    pub fn signing_algorithm(&self) -> Option<SigningAlgorithm> {
+        self.sig_algo_id.and_then(SigningAlgorithm::from_wire_id)
     }
 
     pub fn signature(&self) -> Option<&[u8]> {
@@ -212,7 +233,8 @@ mod tests {
         let ts: u64 = 1_700_000_000;
         let nonce = [0xAAu8; 8];
         let sig = vec![0xBBu8; 64];
-        let msg = SessionTerminated::new_signed(mac, ts, nonce, 0x01, sig.clone());
+        let msg =
+            SessionTerminated::new_signed(mac, ts, nonce, SigningAlgorithm::Ed25519, sig.clone());
         let bytes: Vec<u8> = (&msg).into();
         // 6 (mac) + 8 (ts) + 8 (nonce) + 1 (algo) + 2 (len) + 64 (sig) = 89
         assert_eq!(bytes.len(), 89);
@@ -220,7 +242,7 @@ mod tests {
         assert_eq!(parsed.target(), mac);
         assert_eq!(parsed.timestamp_secs(), Some(ts));
         assert_eq!(parsed.nonce(), Some(&nonce));
-        assert_eq!(parsed.sig_algo_id(), Some(0x01));
+        assert_eq!(parsed.signing_algorithm(), Some(SigningAlgorithm::Ed25519));
         assert_eq!(parsed.signature(), Some(sig.as_slice()));
     }
 
@@ -233,6 +255,19 @@ mod tests {
     fn signed_too_short_returns_error() {
         // 6 mac bytes + partial signed extension (< 25 total)
         assert!(SessionTerminated::try_from(&[0u8; 10][..]).is_err());
+    }
+
+    #[test]
+    fn build_signed_payload_format() {
+        let mac: MacAddress = [1, 2, 3, 4, 5, 6].into();
+        let ts: u64 = 1_700_000_000;
+        let nonce = [0xAAu8; 8];
+        let payload = SessionTerminated::build_signed_payload(mac, ts, nonce);
+        assert_eq!(payload.len(), 1 + 6 + 8 + 8);
+        assert_eq!(payload[0], SIGNED_PAYLOAD_TYPE_BYTE);
+        assert_eq!(&payload[1..7], &mac.bytes());
+        assert_eq!(&payload[7..15], &ts.to_be_bytes());
+        assert_eq!(&payload[15..23], &nonce);
     }
 
     #[test]
@@ -253,7 +288,8 @@ mod tests {
         let ts: u64 = 1_700_000_001;
         let nonce = [0x55u8; 8];
         let sig = vec![0xCCu8; 64];
-        let original = SessionTerminated::new_signed(mac, ts, nonce, 0x01, sig.clone());
+        let original =
+            SessionTerminated::new_signed(mac, ts, nonce, SigningAlgorithm::Ed25519, sig.clone());
         let bytes: Vec<u8> = (&original).into();
         let borrowed = SessionTerminated::try_from(bytes.as_slice()).unwrap();
         let owned = borrowed.clone_into_owned();

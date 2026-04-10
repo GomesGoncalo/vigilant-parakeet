@@ -12,64 +12,19 @@ use crate::args::ObuArgs;
 use anyhow::{anyhow, Result};
 use common::tun::Tun;
 use common::{device::Device, network_interface::NetworkInterface};
-use dh_key_store::DhKeyStore;
 use mac_address::MacAddress;
 use node::ReplyType;
-use node_lib::control::client_cache::ClientCache;
-use node_lib::crypto::{sig_algo_from_id, CryptoConfig, SigningAlgorithm, SigningKeypair};
 use node_lib::messages::{
-    control::{
-        key_exchange::{KeyExchangeInit, KeyExchangeReply},
-        session_terminated::SessionTerminated,
-        Control,
-    },
-    data::{Data, ToUpstream},
-    message::Message,
-    packet_type::PacketType,
+    auth::Auth, control::Control, data::Data, message::Message, packet_type::PacketType,
 };
 use routing::Routing;
-use session::Session;
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, RwLock};
-use tokio::sync::Notify;
-use tokio::time::{Duration, Instant};
+use session::{CryptoState, Session};
+use std::sync::Arc;
+use tokio::time::Instant;
 use tracing::Instrument;
 
 // Re-export type aliases for cleaner code
 use node_lib::{Shared, SharedDevice, SharedTun};
-
-type SharedKeyStore = Arc<RwLock<DhKeyStore>>;
-type RevocationNonceCache = Arc<Mutex<VecDeque<([u8; 8], std::time::Instant)>>>;
-
-/// Action to take when a DH key exchange is needed.
-#[derive(Debug, Clone, Copy)]
-enum DhAction {
-    /// No pending exchange exists — start a fresh one.
-    Initiate,
-    /// A pending exchange timed out — re-use its retry counter.
-    Reinitiate,
-}
-
-/// Decode a hex string of any length into bytes. Returns `None` on invalid hex.
-fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..s.len() / 2)
-        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
-        .collect()
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Virtual MAC used to key the DH store for the server tunnel.
-/// The OBU negotiates keys with the server (not peers), so we use a
-/// fixed sentinel MAC as the store key.
-fn server_virtual_mac() -> MacAddress {
-    MacAddress::new([0, 0, 0, 0, 0, 0])
-}
 
 pub struct Obu {
     args: ObuArgs,
@@ -78,29 +33,7 @@ pub struct Obu {
     device: SharedDevice,
     session: Arc<Session>,
     node_name: String,
-    dh_key_store: SharedKeyStore,
-    crypto_config: CryptoConfig,
-    /// Ed25519 identity keypair used to sign outgoing DH messages.
-    /// Present only when `enable_dh_signatures` is `true`.
-    signing_keypair: Option<Arc<SigningKeypair>>,
-    /// Wakes the DH re-keying task immediately when a `SessionTerminated` notice
-    /// is received, bypassing the normal re-key interval sleep.
-    rekey_notify: Arc<Notify>,
-    /// Time-bounded cache of recently-seen `SessionTerminated` nonces.
-    /// Each entry is `(nonce, received_at)`. Entries older than `VALIDITY_SECS`
-    /// are pruned on each check. Because eviction is time-driven (not count-driven)
-    /// the cache never grows stale: old nonces expire along with the messages that
-    /// carried them, so there is no fixed-size window that an attacker could outlast.
-    seen_revocation_nonces: RevocationNonceCache,
-    /// Downstream client cache for relay-mode operation.
-    ///
-    /// When this OBU acts as an intermediate relay (forwarding a `KeyExchangeInit`
-    /// from a downstream OBU up toward an RSU), it records the mapping
-    /// `ke_init.sender() → msg.from()` here.  On the return path, when a
-    /// `KeyExchangeReply` arrives destined for a downstream OBU, this cache is
-    /// consulted first so the reply can be forwarded immediately — even before the
-    /// heartbeat-reply-based downstream routing table has been populated.
-    downstream_client_cache: Arc<ClientCache>,
+    crypto: Arc<CryptoState>,
 }
 
 impl Obu {
@@ -113,52 +46,17 @@ impl Obu {
         let _span = tracing::info_span!("node", name = %node_name).entered();
 
         let boot = Instant::now();
-        let routing = Arc::new(RwLock::new(Routing::new(&args, &boot)?));
+        let routing = Arc::new(std::sync::RwLock::new(Routing::new(&args, &boot)?));
+        let crypto = Arc::new(CryptoState::new(&args)?);
 
-        let crypto_config = CryptoConfig {
-            cipher: args.obu_params.cipher,
-            kdf: args.obu_params.kdf,
-            dh_group: args.obu_params.dh_group,
-            signing_algorithm: args.obu_params.signing_algorithm,
-        };
-
-        let signing_algo = args.obu_params.signing_algorithm;
-        let signing_keypair = if args.obu_params.enable_dh_signatures {
-            let kp = if let Some(ref hex_seed) = args.obu_params.signing_key_seed {
-                let seed = node_lib::crypto::decode_hex_32(hex_seed).ok_or_else(|| {
-                    anyhow!("signing_key_seed must be exactly 64 hex characters (32 bytes)")
-                })?;
-                SigningKeypair::from_seed(signing_algo, seed)
-            } else {
-                SigningKeypair::generate(signing_algo)
-            };
-            let pubkey_hex = encode_hex(&kp.verifying_key_bytes());
-            tracing::info!(
-                signing_pubkey = %pubkey_hex,
-                "DH signing enabled — register this public key in the server's \
-                 dh_signing_allowlist to enforce PKI authentication"
-            );
-            Some(Arc::new(kp))
-        } else {
-            None
-        };
-
-        let dh_key_store = Arc::new(RwLock::new(DhKeyStore::new(crypto_config)));
-        let rekey_notify = Arc::new(Notify::new());
-        let seen_revocation_nonces = Arc::new(Mutex::new(VecDeque::new()));
         let obu = Arc::new(Self {
-            args,
             routing,
             tun: tun.clone(),
             device,
             session: Session::new(tun).into(),
             node_name,
-            dh_key_store,
-            crypto_config,
-            signing_keypair,
-            rekey_notify,
-            seen_revocation_nonces,
-            downstream_client_cache: Arc::new(ClientCache::new()),
+            crypto,
+            args,
         });
 
         tracing::info!(
@@ -167,14 +65,6 @@ impl Obu {
             mtu = obu.args.mtu,
             hello_history = obu.args.obu_params.hello_history,
             cached_candidates = obu.args.obu_params.cached_candidates,
-            encryption = obu.args.obu_params.enable_encryption,
-            cipher = %obu.crypto_config.cipher,
-            dh_enabled = obu.args.obu_params.enable_encryption,
-            dh_group = %obu.crypto_config.dh_group,
-            kdf = %obu.crypto_config.kdf,
-            dh_rekey_interval_ms = obu.args.obu_params.dh_rekey_interval_ms,
-            dh_key_lifetime_ms = obu.args.obu_params.dh_key_lifetime_ms,
-            dh_reply_timeout_ms = obu.args.obu_params.dh_reply_timeout_ms,
             "OBU initialized"
         );
         if !obu.args.obu_params.enable_encryption {
@@ -189,17 +79,22 @@ impl Obu {
                  Set --enable-dh-signatures to prevent MITM key substitution."
             );
         }
-        obu.session_task()?;
+        CryptoState::start_session_task(
+            obu.crypto.clone(),
+            obu.session.clone(),
+            obu.tun.clone(),
+            obu.device.clone(),
+            obu.routing.clone(),
+            obu.node_name.clone(),
+        )?;
         Obu::wire_traffic_task(obu.clone())?;
         if obu.args.obu_params.enable_encryption {
-            tracing::info!(
-                cipher = %obu.crypto_config.cipher,
-                kdf = %obu.crypto_config.kdf,
-                dh_group = %obu.crypto_config.dh_group,
-                rekey_interval_ms = obu.args.obu_params.dh_rekey_interval_ms,
-                "Starting DH re-keying task"
-            );
-            Obu::dh_rekey_task(obu.clone())?;
+            CryptoState::start_dh_rekey_task(
+                obu.crypto.clone(),
+                obu.device.clone(),
+                obu.routing.clone(),
+                obu.node_name.clone(),
+            )?;
         }
         Ok(obu)
     }
@@ -227,10 +122,7 @@ impl Obu {
 
     /// Check whether a DH session with the server has been established.
     pub fn has_dh_session(&self) -> bool {
-        self.dh_key_store
-            .read()
-            .expect("dh key store read lock poisoned")
-            .has_established_key(server_virtual_mac())
+        self.crypto.has_dh_session()
     }
 
     /// Return the cached upstream Route if present (hops, mac, latency).
@@ -273,236 +165,17 @@ impl Obu {
     /// Return the established DH session info: `(key_id, age_secs)`.
     /// Returns `None` when no session has been established yet.
     pub fn get_dh_session_info(&self) -> Option<(u32, u64)> {
-        self.dh_key_store
-            .read()
-            .expect("dh key store read lock poisoned")
-            .get_session_info(server_virtual_mac())
+        self.crypto.get_dh_session_info()
     }
 
     /// Immediately trigger a DH re-key exchange, bypassing the normal interval.
-    ///
-    /// Clears the current established session (if any) and wakes the re-keying
-    /// task so it initiates a new key exchange on the next loop iteration.
     pub fn trigger_rekey(&self) {
-        {
-            let mut store = self
-                .dh_key_store
-                .write()
-                .expect("dh key store write lock poisoned");
-            store.clear_session(server_virtual_mac());
-        }
-        self.rekey_notify.notify_one();
-        tracing::info!("DH re-key triggered manually via admin interface");
+        self.crypto.trigger_rekey();
     }
 
     /// Return whether a pending DH exchange is in progress.
     pub fn has_dh_pending(&self) -> bool {
-        self.dh_key_store
-            .read()
-            .expect("dh key store read lock poisoned")
-            .has_pending(server_virtual_mac())
-    }
-
-    /// Periodic DH re-keying task.
-    ///
-    /// Normally wakes every `dh_rekey_interval_ms` to check whether a new key
-    /// exchange is needed.  The `rekey_notify` Notify bypasses the sleep so the
-    /// task reacts immediately when a `SessionTerminated` notice clears the key.
-    fn dh_rekey_task(obu: Arc<Self>) -> Result<()> {
-        let rekey_interval = Duration::from_millis(obu.args.obu_params.dh_rekey_interval_ms);
-        let key_lifetime_ms = obu.args.obu_params.dh_key_lifetime_ms;
-        let reply_timeout_ms = obu.args.obu_params.dh_reply_timeout_ms;
-        let node_name = obu.node_name.clone();
-        let rekey_notify = obu.rekey_notify.clone();
-
-        let span = tracing::info_span!("node", name = %node_name);
-        tokio::task::spawn(
-            async move {
-                // Initial delay to allow routing to establish
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                tracing::info!(
-                    upstream = ?obu.cached_upstream_mac(),
-                    "DH rekey task starting (initial delay elapsed)"
-                );
-
-                loop {
-                    if let Some(mut upstream_mac) = obu.cached_upstream_mac() {
-                        // Use server_virtual_mac() for key store lookups — the key
-                        // is with the server, not with a specific RSU/peer.
-                        let needs_exchange = {
-                            let store = obu
-                                .dh_key_store
-                                .read()
-                                .expect("dh key store read lock poisoned");
-                            let no_key = !store.has_established_key(server_virtual_mac());
-                            let expired = store.is_key_expired(server_virtual_mac(), key_lifetime_ms);
-                            if expired {
-                                tracing::debug!(
-                                    via = %upstream_mac,
-                                    lifetime_ms = key_lifetime_ms,
-                                    "Server DH key expired, initiating re-key"
-                                );
-                            }
-                            no_key || expired
-                        };
-
-                        if needs_exchange {
-                            // Determine what action to take:
-                            // - If no pending exchange, initiate a new one
-                            // - If pending exchange timed out, re-initiate (preserving retry count)
-                            //   After 3 consecutive timeouts, failover to the next-best RSU candidate
-                            //   so that an OBU stuck at the edge of range doesn't retry forever
-                            //   through an RSU with high packet loss.
-                            // - If pending exchange still in progress, wait
-                            let action: Option<DhAction> = {
-                                let store = obu
-                                    .dh_key_store
-                                    .read()
-                                    .expect("dh key store read lock poisoned");
-                                if !store.has_pending(server_virtual_mac()) {
-                                    Some(DhAction::Initiate)
-                                } else if store.is_pending_timed_out(server_virtual_mac(), reply_timeout_ms) {
-                                    let retries = store.pending_retries(server_virtual_mac()).unwrap_or(0);
-                                    // After 3 timeouts through the same RSU, rotate to the next
-                                    // candidate.  The reinitiation below will use the new upstream.
-                                    if retries >= 3 {
-                                        if let Some(new_upstream) = obu
-                                            .routing
-                                            .read()
-                                            .expect("routing read lock")
-                                            .failover_cached_upstream()
-                                        {
-                                            tracing::warn!(
-                                                old_via = %upstream_mac,
-                                                new_via = %new_upstream,
-                                                retry = retries + 1,
-                                                "DH timeout threshold reached, failing over to next RSU candidate"
-                                            );
-                                            upstream_mac = new_upstream;
-                                        }
-                                    } else {
-                                        tracing::warn!(
-                                            via = %upstream_mac,
-                                            retry = retries + 1,
-                                            "Server DH reply timed out, re-initiating (no session — packets will be dropped until established)"
-                                        );
-                                    }
-                                    Some(DhAction::Reinitiate)
-                                } else {
-                                    None // still pending, wait
-                                }
-                            };
-
-                            if let Some(action) = action {
-                                let (key_id, pub_key) = {
-                                    let mut store = obu
-                                        .dh_key_store
-                                        .write()
-                                        .expect("dh key store write lock poisoned");
-                                    match action {
-                                        DhAction::Reinitiate => store.reinitiate_exchange(server_virtual_mac()),
-                                        DhAction::Initiate => store.initiate_exchange(server_virtual_mac()),
-                                    }
-                                };
-
-                                let our_mac = obu.device.mac_address();
-                                let algo_id = match obu.crypto_config.dh_group {
-                                    node_lib::crypto::DhGroup::X25519 => {
-                                        node_lib::messages::control::key_exchange::KE_ALGO_X25519
-                                    }
-                                    node_lib::crypto::DhGroup::MlKem768 => {
-                                        node_lib::messages::control::key_exchange::KE_ALGO_ML_KEM_768
-                                    }
-                                };
-                                let init_msg = if let Some(ref kp) = obu.signing_keypair {
-                                    let sig_algo_id = match kp.signing_algorithm() {
-                                        SigningAlgorithm::Ed25519 => {
-                                            node_lib::messages::control::key_exchange::SIG_ALGO_ED25519
-                                        }
-                                        SigningAlgorithm::MlDsa65 => {
-                                            node_lib::messages::control::key_exchange::SIG_ALGO_ML_DSA_65
-                                        }
-                                    };
-                                    let unsigned = KeyExchangeInit::new_raw(
-                                        algo_id, key_id, pub_key.clone(), our_mac,
-                                        None, None, None,
-                                    );
-                                    let base = unsigned.base_payload();
-                                    let sig = kp.sign(&base);
-                                    let spk = kp.verifying_key_bytes();
-                                    KeyExchangeInit::new_raw(
-                                        algo_id, key_id, pub_key, our_mac,
-                                        Some(sig_algo_id), Some(spk), Some(sig),
-                                    )
-                                } else {
-                                    KeyExchangeInit::new_raw(
-                                        algo_id, key_id, pub_key, our_mac,
-                                        None, None, None,
-                                    )
-                                };
-                                // Send to upstream RSU — it will relay to server
-                                let msg = Message::new(
-                                    our_mac,
-                                    upstream_mac,
-                                    PacketType::Control(Control::KeyExchangeInit(init_msg)),
-                                );
-                                let wire: Vec<u8> = (&msg).into();
-
-                                if let Err(e) = obu.device.send(&wire).await {
-                                    tracing::warn!(
-                                        error = %e,
-                                        via = %upstream_mac,
-                                        key_id = key_id,
-                                        "Failed to send DH KeyExchangeInit (for server)"
-                                    );
-                                } else {
-                                    tracing::info!(
-                                        via = %upstream_mac,
-                                        key_id = key_id,
-                                        mode = ?action,
-                                        dh_group = %obu.crypto_config.dh_group,
-                                        "Sent DH KeyExchangeInit upstream"
-                                    );
-                                }
-                            }
-                        }
-                    } else {
-                        tracing::warn!(
-                            "DH rekey task: no upstream RSU cached yet — skipping exchange until next wakeup"
-                        );
-                    }
-
-                    // Wait for either the normal rekey interval or an early wake-up
-                    // triggered by receiving a SessionTerminated notice.
-                    // When a DH exchange is in-flight, use a short sleep equal to
-                    // reply_timeout_ms so we wake promptly to detect the timeout and
-                    // retransmit, rather than waiting the full 12-hour rekey interval
-                    // before retrying a failed initial exchange.
-                    // When no upstream was available, also use a short retry so we
-                    // attempt again as soon as the first heartbeat populates the routing
-                    // table (typically within one hello_periodicity).
-                    let no_upstream = obu.cached_upstream_mac().is_none();
-                    let exchange_pending = obu
-                        .dh_key_store
-                        .read()
-                        .map(|g| g.has_pending(server_virtual_mac()))
-                        .unwrap_or(false);
-                    let sleep_duration = if exchange_pending || no_upstream {
-                        Duration::from_millis(reply_timeout_ms)
-                    } else {
-                        rekey_interval
-                    };
-                    tokio::select! {
-                        _ = tokio::time::sleep(sleep_duration) => {}
-                        _ = rekey_notify.notified() => {
-                            tracing::debug!("DH rekey task woken early by SessionTerminated");
-                        }
-                    }
-                }
-            }
-            .instrument(span),
-        );
-        Ok(())
+        self.crypto.has_dh_pending()
     }
 
     fn wire_traffic_task(obu: Arc<Self>) -> Result<()> {
@@ -570,97 +243,6 @@ impl Obu {
         Ok(())
     }
 
-    fn session_task(&self) -> Result<()> {
-        let routing = self.routing.clone();
-        let session = self.session.clone();
-        let device = self.device.clone();
-        let tun = self.tun.clone();
-        let routing_handle = routing.clone();
-        let enable_encryption = self.args.obu_params.enable_encryption;
-        let cipher = self.crypto_config.cipher;
-        let dh_key_store = self.dh_key_store.clone();
-        let node_name = self.node_name.clone();
-
-        let span = tracing::info_span!("node", name = %node_name);
-        tokio::task::spawn(
-            async move {
-                loop {
-                    let devicec = device.clone();
-                    let routing_for_closure = routing_handle.clone();
-                    let routing_for_handle = routing_handle.clone();
-                    let dh_store = dh_key_store.clone();
-                    let messages = session
-                        .process(|x, size| async move {
-                            let y: &[u8] = &x[..size];
-                            let Some(upstream) = routing_for_closure
-                                .read()
-                                .expect("routing table read lock poisoned in heartbeat task")
-                                .get_route_to(None)
-                            else {
-                                return Ok(None);
-                            };
-
-                            let payload_data = if enable_encryption {
-                                // Always use server_virtual_mac() — the key is
-                                // negotiated with the server, not the RSU.
-                                let dh_store_guard = dh_store
-                                    .read()
-                                    .expect("dh key store read lock poisoned");
-                                let dh_key = dh_store_guard.get_key(server_virtual_mac());
-                                let Some(key) = dh_key else {
-                                    tracing::debug!(
-                                        size = y.len(),
-                                        cipher = %cipher,
-                                        "No DH session established with server, dropping upstream frame"
-                                    );
-                                    return Ok(None);
-                                };
-                                match node_lib::crypto::encrypt_with_config(cipher, y, key) {
-                                    Ok(encrypted_data) => encrypted_data,
-                                    Err(e) => {
-                                        tracing::error!(
-                                            size = y.len(),
-                                            cipher = %cipher,
-                                            error = %e,
-                                            "Failed to encrypt upstream frame"
-                                        );
-                                        return Ok(None);
-                                    }
-                                }
-                            } else {
-                                y.to_vec()
-                            };
-
-                            let origin = devicec.mac_address();
-                            let mut wire = Vec::with_capacity(24 + payload_data.len());
-                            let tu = ToUpstream::new(origin, &payload_data);
-                            Message::serialize_upstream_forward_into(
-                                &tu,
-                                origin,
-                                upstream.mac,
-                                &mut wire,
-                            );
-                            let outgoing = vec![ReplyType::WireFlat(wire)];
-                            Ok(Some(outgoing))
-                        })
-                        .await;
-
-                    if let Ok(Some(messages)) = messages {
-                        let _ = node::handle_messages(
-                            messages,
-                            &tun,
-                            &device,
-                            Some(routing_for_handle.clone()),
-                        )
-                        .await;
-                    }
-                }
-            }
-            .instrument(span),
-        );
-        Ok(())
-    }
-
     async fn handle_msg(&self, msg: &Message<'_>) -> Result<Option<Vec<ReplyType>>> {
         match msg.get_packet_type() {
             PacketType::Data(Data::Upstream(buf)) => {
@@ -691,37 +273,8 @@ impl Obu {
                 let is_for_us =
                     destination == self.device.mac_address() || destination.bytes()[0] & 0x1 != 0;
                 if is_for_us {
-                    let payload_data = if self.args.obu_params.enable_encryption {
-                        // Always use server_virtual_mac() — the key is
-                        // negotiated with the server, not the sender RSU.
-                        let dh_key_store = self
-                            .dh_key_store
-                            .read()
-                            .expect("dh key store read lock poisoned");
-                        let dh_key = dh_key_store.get_key(server_virtual_mac());
-                        let cipher = self.crypto_config.cipher;
-                        let Some(key) = dh_key else {
-                            tracing::debug!(
-                                size = buf.data().len(),
-                                cipher = %cipher,
-                                "No DH session established with server, dropping downstream frame"
-                            );
-                            return Ok(None);
-                        };
-                        match node_lib::crypto::decrypt_with_config(cipher, buf.data(), key) {
-                            Ok(decrypted_data) => decrypted_data,
-                            Err(e) => {
-                                tracing::warn!(
-                                    size = buf.data().len(),
-                                    cipher = %cipher,
-                                    error = %e,
-                                    "Failed to decrypt downstream frame, dropping"
-                                );
-                                return Ok(None);
-                            }
-                        }
-                    } else {
-                        buf.data().to_vec()
+                    let Some(payload_data) = self.crypto.decrypt_downstream(buf.data()) else {
+                        return Ok(None);
                     };
                     return Ok(Some(vec![ReplyType::TapFlat(payload_data)]));
                 }
@@ -755,433 +308,17 @@ impl Obu {
                 .write()
                 .expect("routing table write lock poisoned during heartbeat reply handling")
                 .handle_heartbeat_reply(msg, self.device.mac_address()),
-            PacketType::Control(Control::KeyExchangeInit(ke_init)) => {
-                self.handle_key_exchange_init(ke_init, msg)
-            }
-            PacketType::Control(Control::KeyExchangeReply(ke_reply)) => {
-                self.handle_key_exchange_reply(ke_reply, msg)
-            }
-            PacketType::Control(Control::SessionTerminated(st)) => {
-                self.handle_session_terminated(st)
-            }
-        }
-    }
-
-    fn handle_key_exchange_init(
-        &self,
-        ke_init: &KeyExchangeInit<'_>,
-        msg: &Message<'_>,
-    ) -> Result<Option<Vec<ReplyType>>> {
-        // OBUs forward KeyExchangeInit up the tree toward the server.
-        let routing = self
-            .routing
-            .read()
-            .expect("routing table read lock poisoned");
-        let Some(upstream) = routing.get_route_to(None) else {
-            tracing::warn!(
-                obu = %ke_init.sender(),
-                "No upstream route — dropping KeyExchangeInit (relay OBU has no path to server)"
-            );
-            return Ok(None);
-        };
-
-        // Record the downstream path so we can route the reply back without
-        // relying solely on the heartbeat-reply-based routing table, which may
-        // not yet have an entry for the initiating OBU when the exchange starts.
-        if let Ok(from_mac) = msg.from() {
-            self.downstream_client_cache
-                .store_mac(ke_init.sender(), from_mac);
-        }
-
-        // Preserve all fields (algorithm, key material, signature) when forwarding.
-        let init = ke_init.clone_into_owned();
-        let fwd = Message::new(
-            self.device.mac_address(),
-            upstream.mac,
-            PacketType::Control(Control::KeyExchangeInit(init)),
-        );
-        let wire: Vec<u8> = (&fwd).into();
-        tracing::info!(
-            obu = %ke_init.sender(),
-            via = %upstream.mac,
-            signed = ke_init.is_signed(),
-            "Forwarding KeyExchangeInit upstream"
-        );
-        Ok(Some(vec![ReplyType::WireFlat(wire)]))
-    }
-
-    fn handle_session_terminated(
-        &self,
-        st: &SessionTerminated<'_>,
-    ) -> Result<Option<Vec<ReplyType>>> {
-        let target = st.target();
-        let our_mac = self.device.mac_address();
-
-        if target != our_mac {
-            // Not for us — forward toward the target OBU.
-            let routing = self
-                .routing
-                .read()
-                .expect("routing table read lock poisoned");
-            let Some(next_hop) = routing.get_route_to(Some(target)) else {
-                tracing::debug!(
-                    target = %target,
-                    "No route to forward SessionTerminated, dropping"
-                );
-                return Ok(None);
-            };
-            let owned = st.clone_into_owned();
-            let fwd = Message::new(
-                our_mac,
-                next_hop.mac,
-                PacketType::Control(Control::SessionTerminated(owned)),
-            );
-            let wire: Vec<u8> = (&fwd).into();
-            tracing::debug!(
-                target = %target,
-                via = %next_hop.mac,
-                "Forwarding SessionTerminated down the tree"
-            );
-            return Ok(Some(vec![ReplyType::WireFlat(wire)]));
-        }
-
-        // It's for us.
-        //
-        // Authenticate the revocation notice before acting on it to prevent DoS:
-        //   1. If server_signing_pubkey is configured: require a valid signature.
-        //      Unsigned messages are dropped.
-        //   2. Verify the signature over [0x04][TARGET_MAC 6B][TIMESTAMP 8B][NONCE 8B].
-        //   3. Check timestamp is within the validity window.
-        //   4. Check the nonce has not been seen within the window (replay prevention).
-        //      The cache is time-bounded: entries older than VALIDITY_SECS are pruned
-        //      on each check, so it never accumulates stale nonces that could be replayed
-        //      after a count-bounded window wraps.
-        use node_lib::messages::control::session_terminated::{
-            CLOCK_SKEW_TOLERANCE_SECS, VALIDITY_SECS,
-        };
-        if let Some(ref expected_hex) = self.args.obu_params.server_signing_pubkey {
-            let (ts, nonce, algo_id, sig) = match (
-                st.timestamp_secs(),
-                st.nonce(),
-                st.sig_algo_id(),
-                st.signature(),
-            ) {
-                (Some(t), Some(n), Some(algo), Some(s)) => (t, n, algo, s),
-                _ => {
-                    tracing::warn!(
-                        "SessionTerminated is unsigned but server_signing_pubkey is \
-                             configured — dropping (possible replay or misconfigured server)"
-                    );
-                    return Ok(None);
-                }
-            };
-
-            // Timestamp check: reject messages outside the validity window.
-            let now_secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let too_old = ts < now_secs.saturating_sub(VALIDITY_SECS);
-            let too_new = ts > now_secs.saturating_add(CLOCK_SKEW_TOLERANCE_SECS);
-            if too_old || too_new {
-                tracing::warn!(
-                    msg_ts = ts,
-                    now = now_secs,
-                    "SessionTerminated timestamp outside validity window — dropping"
-                );
-                return Ok(None);
-            }
-
-            let expected_bytes = match decode_hex(expected_hex) {
-                Some(b) if b.len() == 32 || b.len() == 1952 => b,
-                _ => {
-                    tracing::warn!(
-                        "server_signing_pubkey is invalid hex or has wrong length, \
-                         cannot verify SessionTerminated — dropping"
-                    );
-                    return Ok(None);
-                }
-            };
-
-            let algo = match node_lib::crypto::sig_algo_from_id(algo_id) {
-                Some(a) => a,
-                None => {
-                    tracing::warn!(
-                        algo_id,
-                        "SessionTerminated uses unknown signature algorithm — dropping"
-                    );
-                    return Ok(None);
-                }
-            };
-
-            let mut payload = vec![0x04u8];
-            payload.extend_from_slice(&our_mac.bytes());
-            payload.extend_from_slice(&ts.to_be_bytes());
-            payload.extend_from_slice(nonce);
-
-            if let Err(e) =
-                node_lib::crypto::verify_dh_signature(algo, &payload, &expected_bytes, sig)
-            {
-                tracing::warn!(error = %e, "SessionTerminated has invalid signature — dropping");
-                return Ok(None);
-            }
-
-            // Signature valid — check nonce freshness using a time-bounded cache.
-            let validity = std::time::Duration::from_secs(VALIDITY_SECS);
-            {
-                let mut cache = self
-                    .seen_revocation_nonces
-                    .lock()
-                    .expect("revocation nonce cache lock poisoned");
-                // Prune expired entries first.
-                while cache.front().is_some_and(|(_, t)| t.elapsed() > validity) {
-                    cache.pop_front();
-                }
-                if cache.iter().any(|(n, _)| n == nonce) {
-                    tracing::debug!("SessionTerminated nonce already seen — dropping (replay)");
-                    return Ok(None);
-                }
-                cache.push_back((*nonce, std::time::Instant::now()));
-            }
-
-            tracing::debug!(
-                ts,
-                "SessionTerminated signature, timestamp, and nonce verified"
-            );
-        }
-
-        // Clear the DH session and wake the re-keying task.
-        {
-            let mut store = self
-                .dh_key_store
-                .write()
-                .expect("dh key store write lock poisoned");
-            store.clear_session(server_virtual_mac());
-        }
-        tracing::warn!(
-            "SessionTerminated received from server — DH session cleared, re-keying immediately"
-        );
-        self.rekey_notify.notify_one();
-        Ok(None)
-    }
-
-    fn handle_key_exchange_reply(
-        &self,
-        ke_reply: &KeyExchangeReply<'_>,
-        msg: &Message<'_>,
-    ) -> Result<Option<Vec<ReplyType>>> {
-        // Log receipt unconditionally so we can confirm delivery regardless of
-        // whether encryption is enabled, the key_id matches, or the reply is
-        // for this node vs a downstream relay target.
-        tracing::info!(
-            key_id = ke_reply.key_id(),
-            dest = %ke_reply.sender(),
-            my_mac = %self.device.mac_address(),
-            wire_from = ?msg.from().ok(),
-            "KeyExchangeReply received on VANET"
-        );
-
-        if !self.args.obu_params.enable_encryption {
-            return Ok(None);
-        }
-
-        // The sender field carries the final destination OBU MAC (set by the server).
-        // Use it — rather than msg.to() — to decide whether to consume or relay:
-        // msg.to() is always the VANET next-hop (this node) due to per-hop unicast
-        // delivery enforced by the channel MAC filter, so it cannot distinguish
-        // "the reply is for me" from "the reply arrived here via me as a relay hop".
-        let dest = ke_reply.sender();
-        if dest != self.device.mac_address() {
-            // Not for us — forward down the tree toward the target OBU.
-            //
-            // Prefer the downstream_client_cache over the routing table: it is
-            // populated when we forward a KeyExchangeInit upstream, so it is
-            // available immediately even before heartbeat-reply-based routing
-            // entries exist for the downstream OBU.
-            let cache_hit = self.downstream_client_cache.get(dest);
-            let next_hop_mac = cache_hit.or_else(|| {
-                let routing = self
-                    .routing
-                    .read()
-                    .expect("routing table read lock poisoned");
-                routing.get_route_to(Some(dest)).map(|r| r.mac)
-            });
-            let Some(next_hop_mac) = next_hop_mac else {
-                tracing::warn!(
-                    dest = %dest,
-                    key_id = ke_reply.key_id(),
-                    "No route to forward KeyExchangeReply (not in downstream cache or routing table), dropping"
-                );
-                return Ok(None);
-            };
-
-            // Preserve all fields (algorithm, key material, signature) when forwarding.
-            let reply = ke_reply.clone_into_owned();
-            let fwd = Message::new(
-                self.device.mac_address(),
-                next_hop_mac,
-                PacketType::Control(Control::KeyExchangeReply(reply)),
-            );
-            let wire: Vec<u8> = (&fwd).into();
-            tracing::info!(
-                dest = %dest,
-                via = %next_hop_mac,
-                key_id = ke_reply.key_id(),
-                "Relaying KeyExchangeReply down the tree"
-            );
-            return Ok(Some(vec![ReplyType::WireFlat(wire)]));
-        }
-
-        // It's for us — verify the server's signature before completing the exchange.
-        if self.args.obu_params.enable_dh_signatures {
-            match (
-                ke_reply.sig_algo_id(),
-                ke_reply.signing_pubkey(),
-                ke_reply.signature(),
-            ) {
-                (Some(sig_algo), Some(spk), Some(sig)) => {
-                    let algo = match sig_algo_from_id(sig_algo) {
-                        Some(a) => a,
-                        None => {
-                            tracing::warn!(
-                                sig_algo_id = sig_algo,
-                                key_id = ke_reply.key_id(),
-                                "KeyExchangeReply uses unknown signature algorithm, dropping"
-                            );
-                            return Ok(None);
-                        }
-                    };
-                    let base = ke_reply.base_payload();
-                    if let Err(e) = node_lib::crypto::verify_dh_signature(algo, &base, spk, sig) {
-                        tracing::warn!(
-                            error = %e,
-                            key_id = ke_reply.key_id(),
-                            "KeyExchangeReply has invalid signature, dropping"
-                        );
-                        return Ok(None);
-                    }
-                    tracing::debug!(
-                        key_id = ke_reply.key_id(),
-                        "KeyExchangeReply signature verified"
-                    );
-                }
-                _ => {
-                    tracing::warn!(
-                        key_id = ke_reply.key_id(),
-                        "KeyExchangeReply is unsigned but enable_dh_signatures is set, dropping"
-                    );
-                    return Ok(None);
-                }
+            PacketType::Auth(Auth::KeyExchangeInit(ke_init)) => self
+                .crypto
+                .handle_key_exchange_init(ke_init, msg, self.device.mac_address(), &self.routing),
+            PacketType::Auth(Auth::KeyExchangeReply(ke_reply)) => self
+                .crypto
+                .handle_key_exchange_reply(ke_reply, msg, self.device.mac_address(), &self.routing),
+            PacketType::Auth(Auth::SessionTerminated(st)) => {
+                self.crypto
+                    .handle_session_terminated(st, self.device.mac_address(), &self.routing)
             }
         }
-
-        // PKI: if a pinned server public key is configured, reject replies
-        // from any server whose signing key doesn't match.
-        // Signature verification must be enabled; without it the key bytes are
-        // unverified and an attacker could include the pinned key in a forged reply.
-        if self.args.obu_params.server_signing_pubkey.is_some()
-            && !self.args.obu_params.enable_dh_signatures
-        {
-            tracing::warn!(
-                key_id = ke_reply.key_id(),
-                "server_signing_pubkey is configured but enable_dh_signatures is false; \
-                 dropping KeyExchangeReply to prevent key-pinning bypass"
-            );
-            return Ok(None);
-        }
-        if let Some(ref expected_hex) = self.args.obu_params.server_signing_pubkey {
-            let expected_bytes =
-                decode_hex(expected_hex).filter(|b| b.len() == 32 || b.len() == 1952);
-            if expected_bytes.is_none() && !expected_hex.is_empty() {
-                tracing::warn!(
-                    key_id = ke_reply.key_id(),
-                    "server_signing_pubkey is invalid hex or has wrong length \
-                     (expected 32B Ed25519 or 1952B ML-DSA-65), dropping reply"
-                );
-                return Ok(None);
-            }
-            match (ke_reply.signing_pubkey(), expected_bytes) {
-                (Some(spk), Some(ref expected)) if spk == expected.as_slice() => {
-                    tracing::debug!(
-                        key_id = ke_reply.key_id(),
-                        "KeyExchangeReply signing key matches pinned server pubkey"
-                    );
-                }
-                (Some(_), Some(_)) => {
-                    tracing::warn!(
-                        key_id = ke_reply.key_id(),
-                        "KeyExchangeReply signing key does not match pinned server pubkey, dropping"
-                    );
-                    return Ok(None);
-                }
-                (None, _) => {
-                    tracing::warn!(
-                        key_id = ke_reply.key_id(),
-                        "KeyExchangeReply is unsigned but server_signing_pubkey is configured, dropping"
-                    );
-                    return Ok(None);
-                }
-                (_, None) => {
-                    tracing::warn!(
-                        "server_signing_pubkey is not valid hex, cannot verify reply — dropping"
-                    );
-                    return Ok(None);
-                }
-            }
-        }
-
-        // Validate that the reply algorithm matches what we initiated.
-        // Rejecting mismatches prevents an attacker from downgrading the algorithm
-        // by rewriting the algo_id byte in a relayed reply.
-        {
-            use node_lib::messages::control::key_exchange::{KE_ALGO_ML_KEM_768, KE_ALGO_X25519};
-            let expected_algo_id = match self.crypto_config.dh_group {
-                node_lib::crypto::DhGroup::X25519 => KE_ALGO_X25519,
-                node_lib::crypto::DhGroup::MlKem768 => KE_ALGO_ML_KEM_768,
-            };
-            if ke_reply.algo_id() != expected_algo_id {
-                tracing::warn!(
-                    key_id = ke_reply.key_id(),
-                    expected = expected_algo_id,
-                    received = ke_reply.algo_id(),
-                    "KeyExchangeReply algo_id does not match initiated algorithm, dropping"
-                );
-                return Ok(None);
-            }
-        }
-
-        // Complete the key exchange.
-        let key_id = ke_reply.key_id();
-        let peer_response = ke_reply.key_material();
-
-        let result = {
-            let mut store = self
-                .dh_key_store
-                .write()
-                .expect("dh key store write lock poisoned");
-            store.complete_exchange(server_virtual_mac(), key_id, peer_response)
-        };
-
-        match result {
-            Some((ref derived_key, elapsed)) => {
-                tracing::info!(
-                    key_id = key_id,
-                    cipher = %self.crypto_config.cipher,
-                    kdf = %self.crypto_config.kdf,
-                    key_len = derived_key.len(),
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    "DH key exchange with server completed, session key established"
-                );
-            }
-            None => {
-                tracing::warn!(
-                    key_id = key_id,
-                    "Failed to complete DH key exchange with server — no matching pending exchange"
-                );
-            }
-        }
-
-        Ok(None)
     }
 }
 
@@ -1191,7 +328,7 @@ pub(crate) fn handle_msg_for_test(
     device_mac: mac_address::MacAddress,
     msg: &node_lib::messages::message::Message<'_>,
 ) -> anyhow::Result<Option<Vec<ReplyType>>> {
-    use node_lib::messages::{control::Control, data::Data, packet_type::PacketType};
+    use node_lib::messages::{auth::Auth, control::Control, data::Data, packet_type::PacketType};
 
     match msg.get_packet_type() {
         PacketType::Data(Data::Upstream(buf)) => {
@@ -1247,9 +384,9 @@ pub(crate) fn handle_msg_for_test(
             .write()
             .expect("routing table write lock poisoned in test helper")
             .handle_heartbeat_reply(msg, device_mac),
-        PacketType::Control(Control::KeyExchangeInit(_))
-        | PacketType::Control(Control::KeyExchangeReply(_))
-        | PacketType::Control(Control::SessionTerminated(_)) => {
+        PacketType::Auth(Auth::KeyExchangeInit(_))
+        | PacketType::Auth(Auth::KeyExchangeReply(_))
+        | PacketType::Auth(Auth::SessionTerminated(_)) => {
             // Key exchange and session messages not handled in basic test helper
             Ok(None)
         }
