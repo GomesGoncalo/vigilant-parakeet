@@ -18,7 +18,7 @@ use node_lib::messages::{
     auth::Auth, control::Control, data::Data, message::Message, packet_type::PacketType,
 };
 use routing::Routing;
-use session::{CryptoState, Session};
+use session::CryptoState;
 use std::sync::Arc;
 use tokio::time::Instant;
 use tracing::Instrument;
@@ -31,7 +31,6 @@ pub struct Obu {
     routing: Shared<Routing>,
     tun: SharedTun,
     device: SharedDevice,
-    session: Arc<Session>,
     node_name: String,
     crypto: Arc<CryptoState>,
 }
@@ -51,9 +50,8 @@ impl Obu {
 
         let obu = Arc::new(Self {
             routing,
-            tun: tun.clone(),
+            tun,
             device,
-            session: Session::new(tun).into(),
             node_name,
             crypto,
             args,
@@ -81,7 +79,6 @@ impl Obu {
         }
         CryptoState::start_session_task(
             obu.crypto.clone(),
-            obu.session.clone(),
             obu.tun.clone(),
             obu.device.clone(),
             obu.routing.clone(),

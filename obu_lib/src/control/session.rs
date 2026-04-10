@@ -3,8 +3,6 @@ use super::node::{self, ReplyType};
 use super::routing::Routing;
 use anyhow::{anyhow, Result};
 use common::network_interface::NetworkInterface;
-use common::tun::Tun;
-use futures::Future;
 use mac_address::MacAddress;
 use node_lib::control::client_cache::ClientCache;
 use node_lib::crypto::{CryptoConfig, SigningKeypair};
@@ -64,30 +62,6 @@ fn encode_hex(bytes: &[u8]) -> String {
 /// fixed sentinel MAC as the store key.
 pub(super) fn server_virtual_mac() -> MacAddress {
     MacAddress::new([0, 0, 0, 0, 0, 0])
-}
-
-// ── Session (TUN read) ────────────────────────────────────────────────────────
-
-pub(super) struct Session {
-    tun: Arc<Tun>,
-}
-
-impl Session {
-    pub fn new(tun: Arc<Tun>) -> Self {
-        Self { tun }
-    }
-
-    pub async fn process<Fut>(
-        &self,
-        callable: impl FnOnce([u8; 1500], usize) -> Fut,
-    ) -> Result<Option<Vec<ReplyType>>>
-    where
-        Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,
-    {
-        let mut buf: [u8; 1500] = [0u8; 1500];
-        let n = self.tun.recv(&mut buf).await?;
-        callable(buf, n).await
-    }
 }
 
 // ── CryptoState ───────────────────────────────────────────────────────────────
@@ -472,7 +446,6 @@ impl CryptoState {
     /// the established DH session key, and forwards them upstream.
     pub(super) fn start_session_task(
         crypto: Arc<Self>,
-        session: Arc<Session>,
         tun: SharedTun,
         device: SharedDevice,
         routing: Shared<Routing>,
@@ -486,63 +459,66 @@ impl CryptoState {
                     let routing_for_closure = routing.clone();
                     let routing_for_handle = routing.clone();
                     let crypto_c = crypto.clone();
-                    let messages = session
-                        .process(|x, size| async move {
-                            let y: &[u8] = &x[..size];
-                            let Some(upstream) = routing_for_closure
-                                .read()
-                                .expect("routing table read lock poisoned in session task")
-                                .get_route_to(None)
-                            else {
-                                return Ok(None);
-                            };
+                    let messages: Result<Option<Vec<ReplyType>>> = {
+                        let mut buf: [u8; 1500] = [0u8; 1500];
+                        let Ok(n) = tun.recv(&mut buf).await else {
+                            continue;
+                        };
 
-                            let payload_data = if crypto_c.enable_encryption {
-                                // Always use server_virtual_mac() — the key is
-                                // negotiated with the server, not the RSU.
-                                let dh_store_guard = crypto_c
-                                    .dh_key_store
-                                    .read()
-                                    .expect("dh key store read lock poisoned");
-                                let dh_key = dh_store_guard.get_key(server_virtual_mac());
-                                let cipher = crypto_c.crypto_config.cipher;
-                                let Some(key) = dh_key else {
-                                    tracing::debug!(
+                        let y: &[u8] = &buf[..n];
+                        let Some(upstream) = routing_for_closure
+                            .read()
+                            .expect("routing table read lock poisoned in session task")
+                            .get_route_to(None)
+                        else {
+                            continue;
+                        };
+
+                        let payload_data = if crypto_c.enable_encryption {
+                            // Always use server_virtual_mac() — the key is
+                            // negotiated with the server, not the RSU.
+                            let dh_store_guard = crypto_c
+                                .dh_key_store
+                                .read()
+                                .expect("dh key store read lock poisoned");
+                            let dh_key = dh_store_guard.get_key(server_virtual_mac());
+                            let cipher = crypto_c.crypto_config.cipher;
+                            let Some(key) = dh_key else {
+                                tracing::debug!(
+                                    size = y.len(),
+                                    cipher = %cipher,
+                                    "No DH session established with server, dropping upstream frame"
+                                );
+                                continue;
+                            };
+                            match node_lib::crypto::encrypt_with_config(cipher, y, key) {
+                                Ok(encrypted_data) => encrypted_data,
+                                Err(e) => {
+                                    tracing::error!(
                                         size = y.len(),
                                         cipher = %cipher,
-                                        "No DH session established with server, dropping upstream frame"
+                                        error = %e,
+                                        "Failed to encrypt upstream frame"
                                     );
-                                    return Ok(None);
-                                };
-                                match node_lib::crypto::encrypt_with_config(cipher, y, key) {
-                                    Ok(encrypted_data) => encrypted_data,
-                                    Err(e) => {
-                                        tracing::error!(
-                                            size = y.len(),
-                                            cipher = %cipher,
-                                            error = %e,
-                                            "Failed to encrypt upstream frame"
-                                        );
-                                        return Ok(None);
-                                    }
+                                    continue;
                                 }
-                            } else {
-                                y.to_vec()
-                            };
+                            }
+                        } else {
+                            y.to_vec()
+                        };
 
-                            let origin = devicec.mac_address();
-                            let mut wire = Vec::with_capacity(24 + payload_data.len());
-                            let tu = ToUpstream::new(origin, &payload_data);
-                            Message::serialize_upstream_forward_into(
-                                &tu,
-                                origin,
-                                upstream.mac,
-                                &mut wire,
-                            );
-                            let outgoing = vec![ReplyType::WireFlat(wire)];
-                            Ok(Some(outgoing))
-                        })
-                        .await;
+                        let origin = devicec.mac_address();
+                        let mut wire = Vec::with_capacity(24 + payload_data.len());
+                        let tu = ToUpstream::new(origin, &payload_data);
+                        Message::serialize_upstream_forward_into(
+                            &tu,
+                            origin,
+                            upstream.mac,
+                            &mut wire,
+                        );
+                        let outgoing = vec![ReplyType::WireFlat(wire)];
+                        Ok(Some(outgoing))
+                    };
 
                     if let Ok(Some(messages)) = messages {
                         let _ = node::handle_messages(
