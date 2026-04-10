@@ -171,40 +171,38 @@ impl Rsu {
             async move {
                 loop {
                     let rsu = rsu.clone();
-                    let messages = node::wire_traffic(&device, |pkt, size| {
-                        async move {
-                            let data = &pkt[..size];
-                            let mut all_responses = Vec::with_capacity(4);
-                            let mut offset = 0;
+                    let messages = node::wire_traffic(&device, |pkt, size| async move {
+                        let data = &pkt[..size];
+                        let mut all_responses = Vec::with_capacity(4);
+                        let mut offset = 0;
 
-                            while offset < data.len() {
-                                match Message::try_from(&data[offset..]) {
-                                    Ok(msg) => {
-                                        let response = rsu.handle_msg(&msg).await;
+                        while offset < data.len() {
+                            match Message::try_from(&data[offset..]) {
+                                Ok(msg) => {
+                                    let response = rsu.handle_msg(&msg).await;
 
-                                        if let Ok(Some(responses)) = response {
-                                            all_responses.extend(responses);
-                                        }
-                                        offset += msg.wire_size();
+                                    if let Ok(Some(responses)) = response {
+                                        all_responses.extend(responses);
                                     }
-                                    Err(e) => {
-                                        tracing::trace!(
-                                            offset = offset,
-                                            remaining = data.len() - offset,
-                                            total_size = data.len(),
-                                            error = %e,
-                                            "Failed to parse message, stopping batch processing"
-                                        );
-                                        break;
-                                    }
+                                    offset += msg.wire_size();
+                                }
+                                Err(e) => {
+                                    tracing::trace!(
+                                        offset = offset,
+                                        remaining = data.len() - offset,
+                                        total_size = data.len(),
+                                        error = %e,
+                                        "Failed to parse message, stopping batch processing"
+                                    );
+                                    break;
                                 }
                             }
+                        }
 
-                            if all_responses.is_empty() {
-                                Ok(None)
-                            } else {
-                                Ok(Some(all_responses))
-                            }
+                        if all_responses.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some(all_responses))
                         }
                     })
                     .await;

@@ -300,3 +300,137 @@ fn rssi_guard_keeps_cached_rsu_when_table_empty_at_startup() {
         "cached upstream must not change when RSSI table is empty (startup)"
     );
 }
+
+/// RSSI-based next-hop: prefer a strong relay over a weak direct path even
+/// when the relay has more hops.
+///
+/// OBU2 receives RSU1 heartbeats via two paths:
+///   - Direct from RSU1 (1 hop)  — RSSI = -85 dBm (weak / far)
+///   - Via OBU1 relay  (2 hops)  — RSSI = -55 dBm (strong / close)
+///
+/// Without RSSI the min-hops fallback picks RSU1 (1 hop).
+/// With RSSI the routing should switch to OBU1 (stronger first-hop signal).
+#[test]
+fn rssi_next_hop_prefers_stronger_signal_over_fewer_hops() {
+    use std::collections::HashMap;
+    use std::sync::{Arc, RwLock};
+
+    let args = crate::test_helpers::mk_test_obu_args();
+    let boot = Instant::now();
+    let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+    let rsu1: MacAddress = [0x11u8; 6].into();
+    let obu1: MacAddress = [0x22u8; 6].into(); // relay node
+
+    // One direct entry (RSU1, hops=1) and two relay-only entries (OBU1, hops=2).
+    let mut history = SourceHistory::with_capacity(4);
+    history.test_insert(
+        1,
+        SequenceEntry {
+            received_at: Duration::from_millis(0),
+            next_upstream: rsu1,
+            hops: 1,
+            downstream: HashMap::new(),
+        },
+    );
+    history.test_insert(
+        2,
+        SequenceEntry {
+            received_at: Duration::from_millis(5_000),
+            next_upstream: obu1,
+            hops: 2,
+            downstream: HashMap::new(),
+        },
+    );
+    history.test_insert(
+        3,
+        SequenceEntry {
+            received_at: Duration::from_millis(10_000),
+            next_upstream: obu1,
+            hops: 2,
+            downstream: HashMap::new(),
+        },
+    );
+    routing.routes.insert(rsu1, history);
+
+    // Without RSSI: min-hops wins → RSU1 (1 hop).
+    let route = routing.get_route_to(Some(rsu1)).expect("route present");
+    assert_eq!(route.mac, rsu1, "without RSSI should prefer fewer hops");
+
+    // Attach RSSI table: OBU1 is 30 dB stronger than RSU1.
+    let rssi_table: crate::control::routing::RssiTable = Arc::new(RwLock::new({
+        let mut m = HashMap::new();
+        m.insert(rsu1, -85.0_f32);
+        m.insert(obu1, -55.0_f32);
+        m
+    }));
+    routing.set_rssi_table(rssi_table);
+
+    // With RSSI: should prefer OBU1 despite the extra hop.
+    let route = routing
+        .get_route_to(Some(rsu1))
+        .expect("route present with rssi");
+    assert_eq!(route.mac, obu1, "with RSSI should prefer stronger next-hop");
+    assert_eq!(route.hops, 2);
+}
+
+/// RSSI hysteresis: a difference ≤ 3 dB must not trigger a next-hop switch.
+/// A difference > 3 dB must trigger a switch.
+#[test]
+fn rssi_next_hop_hysteresis_prevents_flapping() {
+    use std::collections::HashMap;
+    use std::sync::{Arc, RwLock};
+
+    let args = crate::test_helpers::mk_test_obu_args();
+    let boot = Instant::now();
+    let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+    let rsu1: MacAddress = [0x11u8; 6].into();
+    let obu1: MacAddress = [0x22u8; 6].into();
+
+    let mut history = SourceHistory::with_capacity(2);
+    history.test_insert(
+        1,
+        SequenceEntry {
+            received_at: Duration::from_millis(0),
+            next_upstream: rsu1,
+            hops: 1,
+            downstream: HashMap::new(),
+        },
+    );
+    history.test_insert(
+        2,
+        SequenceEntry {
+            received_at: Duration::from_millis(5_000),
+            next_upstream: obu1,
+            hops: 2,
+            downstream: HashMap::new(),
+        },
+    );
+    routing.routes.insert(rsu1, history);
+
+    // Cache OBU1 as current upstream (simulates prior selection).
+    routing.test_set_cached_upstream(obu1, rsu1);
+
+    let rssi_table: crate::control::routing::RssiTable = Arc::new(RwLock::new({
+        let mut m = HashMap::new();
+        m.insert(obu1, -60.0_f32);
+        m.insert(rsu1, -59.0_f32); // 1 dB stronger — below threshold
+        m
+    }));
+    routing.set_rssi_table(rssi_table.clone());
+
+    // 1 dB difference: must keep OBU1 (hysteresis).
+    let route = routing.get_route_to(Some(rsu1)).expect("route");
+    assert_eq!(route.mac, obu1, "1 dB difference should not trigger switch");
+
+    // Strengthen RSU1 to -55 dBm (5 dB over OBU1's -60 dBm) → must switch.
+    rssi_table.write().unwrap().insert(rsu1, -55.0_f32);
+    let route = routing
+        .get_route_to(Some(rsu1))
+        .expect("route after rssi update");
+    assert_eq!(
+        route.mac, rsu1,
+        "5 dB difference should trigger switch to RSU1"
+    );
+}
