@@ -5,6 +5,7 @@ use walkers::{lon_lat, MapMemory, Plugin, Position, Projector};
 const OBU_COLOR: Color32 = Color32::from_rgb(30, 100, 220);
 const RSU_COLOR: Color32 = Color32::from_rgb(220, 120, 30);
 const SERVER_COLOR: Color32 = Color32::from_rgb(140, 140, 140);
+const UPSTREAM_LINE: Color32 = Color32::from_rgba_premultiplied(80, 180, 80, 180);
 const LABEL_BG: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 160);
 
 /// walkers [`Plugin`] that draws every node in the current [`Snapshot`].
@@ -30,13 +31,36 @@ impl Plugin for NodesPlugin {
     ) {
         let painter = ui.painter();
 
-        // Scale a reference radius of 8 metres to screen pixels.  This keeps
-        // symbols a fixed *real-world* size as the user zooms in/out.
+        // Scale reference radii from metres to screen pixels.
         let ref_pos = lon_lat(-8.625, 41.157);
         let px_per_m = projector.scale_pixel_per_meter(ref_pos);
         let obu_r = (8.0 * px_per_m).clamp(3.0, 14.0);
         let rsu_half = (10.0 * px_per_m).clamp(4.0, 18.0);
 
+        let to_screen = |lat: f64, lon: f64| -> Pos2 {
+            projector.project(lon_lat(lon, lat) as Position).to_pos2()
+        };
+
+        // --- Pass 1: upstream routing lines (rendered below node symbols) ---
+        for (name, info) in &self.snapshot.node_info {
+            let Some(ref up) = info.upstream else {
+                continue;
+            };
+            let Some(ref upstream_name) = up.node_name else {
+                continue;
+            };
+            let Some(obu_pos) = self.snapshot.positions.get(name) else {
+                continue;
+            };
+            let Some(rsu_pos) = self.snapshot.positions.get(upstream_name) else {
+                continue;
+            };
+            let a = to_screen(obu_pos.lat, obu_pos.lon);
+            let b = to_screen(rsu_pos.lat, rsu_pos.lon);
+            painter.line_segment([a, b], Stroke::new(1.0, UPSTREAM_LINE));
+        }
+
+        // --- Pass 2: node symbols ---
         for (name, pos) in &self.snapshot.positions {
             let node_type = self
                 .snapshot
@@ -45,8 +69,7 @@ impl Plugin for NodesPlugin {
                 .map(|n| n.node_type.as_str())
                 .unwrap_or("Obu");
 
-            let walkers_pos: Position = lon_lat(pos.lon, pos.lat);
-            let screen: Pos2 = projector.project(walkers_pos).to_pos2();
+            let screen = to_screen(pos.lat, pos.lon);
 
             match node_type {
                 "Rsu" => {
@@ -64,11 +87,11 @@ impl Plugin for NodesPlugin {
                     );
                 }
                 _ => {
-                    // OBU — filled circle with a thin border.
+                    // OBU — filled circle with a thin white border.
                     painter.circle_filled(screen, obu_r, OBU_COLOR);
                     painter.circle_stroke(screen, obu_r, Stroke::new(1.0, Color32::WHITE));
 
-                    // Draw a small bearing indicator if the vehicle is moving.
+                    // Bearing arrow when the vehicle is moving.
                     if pos.speed > 0.5 {
                         let angle = pos.bearing.to_radians() as f32;
                         let tip = pos2(
@@ -80,7 +103,7 @@ impl Plugin for NodesPlugin {
                 }
             }
 
-            // Draw a label only when zoomed in enough (pixel radius > 6).
+            // Labels only when zoomed in enough.
             if obu_r > 6.0 {
                 draw_label(painter, screen, name, obu_r);
             }

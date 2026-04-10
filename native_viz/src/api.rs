@@ -12,10 +12,20 @@ pub struct NodePosition {
     pub bearing: f64,
 }
 
-/// Routing / type info for one node, as returned by `GET /nodes`.
+/// Upstream routing entry carried inside [`NodeInfo`].
+#[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct UpstreamInfo {
+    pub hops: u32,
+    pub mac: String,
+    pub node_name: Option<String>,
+}
+
+/// Routing / type info for one node, as returned by `GET /node_info`.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct NodeInfo {
     pub node_type: String,
+    pub upstream: Option<UpstreamInfo>,
 }
 
 /// Everything the UI needs for one rendered frame.
@@ -38,7 +48,7 @@ pub fn poll_loop(base_url: String, tx: SyncSender<Snapshot>) {
         .expect("failed to build HTTP client");
 
     let positions_url = format!("{base_url}/positions");
-    let nodes_url = format!("{base_url}/nodes");
+    let nodes_url = format!("{base_url}/node_info");
 
     let mut snapshot = Snapshot::default();
     let positions_interval = Duration::from_millis(200);
