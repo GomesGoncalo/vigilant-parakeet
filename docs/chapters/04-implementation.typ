@@ -108,28 +108,12 @@ When an OBU receives a `Heartbeat`:
 
 === Route Selection Metric
 
-The routing protocol uses a composite latency/hop-count metric implemented in
-`obu_lib::control::routing`. The design combines RSSI-aware selection with a
-hysteresis band to prevent RSU flapping under time-varying channels and
-mobility, while remaining easy to reason about and test.
-
-The latency metric is sensitive to single-sample minima under high-variance
-channels (e.g., small-scale fading) and to transient packet loss, which can
-manifest as RSU flapping when vehicles move through fading dips or when probe
-timing coincides with brief congestion. The mechanisms described below address
-these dynamics.
-
-*Latency-based scoring:* when latency measurements are available, each candidate
-next-hop m is scored by the composite metric
-
-`s_m = mu_m^min + overline(mu)_m`
-
-where `mu_m^min` is the minimum observed round-trip latency to m (microseconds)
-and `overline(mu)_m` is the mean latency across recorded observations. Combining
-minimum and mean penalises candidates that are occasionally fast but highly
-variable while rewarding consistently low-latency paths. The metric requires at
-least two observations before a decision is made; candidates with fewer samples
-fall back to hop-count comparison.
+The routing protocol uses a multi-tier metric implemented in
+`obu_lib::control::routing`. Selection proceeds through three tiers in
+descending priority: latency-based scoring when round-trip measurements are
+available, RSSI-based selection when a signal table is attached, and hop-count
+minimisation as a last resort. Hysteresis is applied at each tier to prevent
+oscillation under time-varying channels and node mobility.
 
 *Routing history:* `SourceHistory` is a bounded `IndexMap` that records per-RSU
 heartbeat sequence entries in insertion order, evicting the oldest entry via
@@ -137,91 +121,86 @@ heartbeat sequence entries in insertion order, evicting the oldest entry via
 necessary because the reception-quality metric derives oldest and newest sequence
 numbers from `first()` and `last()` on the map; `shift_remove_index` shifts all
 remaining indices down in $O(n)$ time — acceptable given the small history window
-(typically 5–10 entries).
+(typically 5–10 entries). Each sequence entry stores the MAC of the node that
+delivered the heartbeat (`next_upstream`) and the hop count at which it arrived,
+forming the per-sequence view of the topology that higher-tier selection consumes.
 
-*Effective RSSI with hop-count penalty:* `select_and_cache_upstream()` uses an
-*effective RSSI* metric that accounts for multi-hop relay paths. Because a relay
-OBU may present a strong signal even when the relay→RSU leg is poor, comparing
-raw next-hop RSSI values alone would favour relay-assisted paths that have a
-well-connected relay but a distant RSU. The effective RSSI for candidate $c$ is:
+*Tier 1 — Latency-based scoring:* when round-trip latency observations are
+available for candidate next-hops, each candidate $m$ is scored by the composite
+metric
 
-$ "eff"_c = "RSSI"("next_hop"_c) - Delta_h dot k_c $
+$ s_m = mu_m^"min" + overline(mu)_m $
 
-where $"RSSI"("next_hop"_c)$ is the measured signal from the immediate
-next-hop neighbour (the RSU itself for a direct path, the relay OBU for a
-multi-hop path), $k_c$ is the number of relay hops (0 for direct reception, 1
-for one relay, etc.), and $Delta_h = 10 "dB"$ is the per-relay penalty
-constant. The penalty discounts the unknown quality of each relay→RSU leg; a
-relay-assisted path must present a sufficiently stronger first-hop signal to
-be preferred over a directly-heard RSU.
+where $mu_m^"min"$ is the minimum observed round-trip latency to $m$
+(microseconds) and $overline(mu)_m$ is the mean latency across recorded
+observations. Combining minimum and mean penalises candidates that are
+occasionally fast but highly variable while rewarding consistently low-latency
+paths. The metric requires at least one observation before a decision is made.
+A cached next-hop is retained unless the best candidate either strictly reduces
+hop count or achieves a latency score at least 30% lower, preventing oscillation
+in scenarios where RTT samples are noisy but mean link quality is stable.
 
-The cached upstream is retained when:
-$
-"eff"_"cached" > -95 "dBm" quad "and" quad "eff"_"incoming" <= "eff"_"cached" + 3 "dB"
-$
+*Tier 2 — RSSI-based next-hop selection:* when no latency measurements are yet
+available but an RSSI table is attached, `get_route_to()` selects the next-hop
+with the highest measured first-hop signal strength. This is the dominant path
+in the early phase of a vehicle's journey, before the OBU has accumulated
+sufficient round-trip samples. The RSSI table is a shared
+`Arc<RwLock<HashMap<MacAddress, f32>>>` populated by the Nakagami-m fading task
+in the simulator; in the absence of an attached table the tier is skipped. A
+3 dB switch margin is applied: the cached next-hop is retained unless the
+incoming candidate's RSSI exceeds it by more than 3 dB, corresponding to
+approximately 40% closer distance in free-space path loss. This criterion is
+equivalent to the cellular-handover A3 event with a 3 dB offset. A cached
+next-hop whose RSSI measurement is absent (startup, before the fading task has
+populated the table) is kept unconditionally, preventing every arriving heartbeat
+from evicting it until measurements become available.
 
-The liveness threshold (−95 dBm) ensures that a path whose effective signal
-has fallen below the noise floor does not block handoff. The 3 dB switch margin
-is a standard cellular-handover criterion corresponding to approximately 40%
-closer in free-space path loss.
+The same RSSI table drives the ordering of failover candidates in
+`build_candidate_list()`: when RSSI data are present, the N-best list is sorted
+by RSSI descending so that the strongest-signal next-hop is promoted first on
+failover, rather than the one with the fewest hops.
 
-*RSSI abstraction — `RssiSource` trait:* RSSI values are injected through an
-`Arc<dyn RssiSource>` rather than a concrete table, decoupling routing from the
-source of signal measurements:
+*Tier 3 — Hop-count minimisation:* in the absence of both latency measurements
+and RSSI data, `get_route_to()` falls back to selecting the next-hop that
+delivered heartbeats with the fewest hops. A cached next-hop is retained as long
+as it does not have strictly more hops than the best candidate, providing
+a weak but stable tie-breaking rule.
 
-```rust
-pub trait RssiSource: Send + Sync {
-    fn rssi_for(&self, peer: MacAddress) -> Option<f32>;
-}
-```
-
-The simulator implements this via `RwLock<HashMap<MacAddress, f32>>` populated
-by the Nakagami-m fading task. Callers outside the simulator (hardware radio
-drivers, test fixtures) provide their own implementation. The convenience method
-`set_rssi_table` accepts a concrete hash map and coerces it to
-`Arc<dyn RssiSource>`. RSSI tables are only attached to OBUs when Nakagami
-fading is enabled; without populated measurements the routing layer falls back
-to the reception-quality/hops path described below.
-
-*Quality-weighted fallback:* when no RSSI source is configured, the guard
-compares *effective reception quality*:
-
-$ "eff-quality"_c = Q_c / (k_c + 1) $
-
-where $Q_c$ is the `rsu_reception_quality` score (fraction of expected
-heartbeats received within the history window) and $k_c$ is the relay hop
-count. Dividing by $(k_c + 1)$ means a direct RSU ($k = 0$) retains its raw
-quality while each relay hop reduces the effective score proportionally,
-capturing the preference for fewer relay legs when signal strength is
-unavailable.
+*RSU-source guard in `select_and_cache_upstream()`:* beyond the per-hop-path
+selection performed by `get_route_to()`, a second guard operates at the RSU
+source level: when the OBU is already tracking a particular RSU and a heartbeat
+arrives from a different RSU, the guard decides whether to switch sources. When
+an RSSI table is available the guard retains the cached RSU source unless the
+incoming RSU's signal exceeds it by more than 3 dB and the cached signal is
+above the liveness threshold of −95 dBm. The liveness threshold ensures that a
+source whose signal has fallen near the noise floor does not block handoff. When
+no RSSI table is available the guard compares heartbeat reception ratios: the
+cached source is retained unless the incoming source's reception quality exceeds
+it by more than 30%. Reception quality $Q$ is the fraction of expected
+heartbeats (within the history window) that were actually received; a value of
+zero means the source has gone silent and the guard falls through regardless of
+the ratio.
 
 *Continuous selection:* upstream selection is re-evaluated on every
-non-duplicate heartbeat, ensuring that fading-task RSSI updates and changes in
-network topology take effect as soon as the next heartbeat arrives. The
-hysteresis guard prevents oscillation from this frequent re-evaluation.
+non-duplicate heartbeat, ensuring that fading-task RSSI updates and topology
+changes take effect as soon as the next heartbeat arrives. The hysteresis guards
+at each tier prevent oscillation from this frequent re-evaluation.
 
-*Hysteresis and flapping prevention:* the cached upstream is protected by a
-30% latency hysteresis band. Via the `get_route_to()` path, a switch occurs only
-when the new candidate's latency score is at least 30% lower than the cached
-upstream's, or when it strictly reduces hop count. This prevents oscillation in
-mobility-plus-fading scenarios where RTT samples are noisy but the mean link
-quality is stable.
+*N-best caching and failover:* on each primary-route update the top $N$
+candidates (configurable, default $N=3$) are cached in rank order.
+`failover_cached_upstream()` promotes the head of this list on send errors or
+timeouts, making failover $O(1)$ and avoiding an immediate heartbeat cycle for
+route repair.
 
-*N-best caching and failover:* on each primary-route update the top N candidates
-(default N=3) are cached in rank order. `failover_cached_upstream()` promotes
-the head of this list on send errors or timeouts, making failover O(1) and
-avoiding an immediate heartbeat cycle for route repair.
-
-Implementation notes:
-- `get_route_to(Some(target))` is a pure function reading routing state under a read lock.
-- `select_and_cache_upstream()` performs the single write to update the cached upstream and rebuild the N-best list.
+`get_route_to(Some(target))` is a pure read of routing state. The single write
+path — cache update and N-best list rebuild — is confined to
+`select_and_cache_upstream()`.
 
 Unit and integration tests in `obu_lib` exercise these mechanisms with synthetic
-channels providing controlled jitter and fading, verifying the effective-RSSI
-hop penalty, the 3 dB switch margin, the quality/hops fallback, and that
-hysteresis prevents pathological oscillation. The dashboard and `/node_info`
-endpoints expose the scoring components (raw latencies, RSSI measurements,
-normalised scores) for post-hoc analysis.
+channels providing controlled jitter and fading, verifying the 3 dB switch
+margin at both the next-hop and RSU-source levels, the quality/hops fallback,
+RSSI-ordered failover candidate ranking, and that hysteresis prevents
+pathological oscillation across all three tiers.
 
 === Loop Prevention
 
