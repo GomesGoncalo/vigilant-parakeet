@@ -330,8 +330,16 @@ impl Routing {
             }
         }
 
-        // Backfill with hop-ordered next-hops not already present.
+        // Backfill with next-hops not already present, ordered by RSSI descending
+        // when the table is available, or by hops ascending otherwise.
         if out.len() < n_best {
+            // Snapshot the RSSI table so the lock is not held during sorting.
+            let rssi_snap: HashMap<MacAddress, f32> = self
+                .rssi_table
+                .as_ref()
+                .map(|tbl| tbl.read().expect("rssi table lock").clone())
+                .unwrap_or_default();
+
             let mut hop_routes: Vec<_> = self
                 .routes
                 .iter()
@@ -341,7 +349,16 @@ impl Routing {
                 })
                 .filter(|(rsu_mac, _, _)| *rsu_mac == &src)
                 .collect();
-            hop_routes.sort_by_key(|(_, _, hops)| *hops);
+            if rssi_snap.is_empty() {
+                hop_routes.sort_by_key(|(_, _, hops)| *hops);
+            } else {
+                // Stronger RSSI (less negative) → better candidate → sort descending.
+                hop_routes.sort_by(|(_, mac_a, _), (_, mac_b, _)| {
+                    let ra = rssi_snap.get(*mac_a).copied().unwrap_or(-100.0_f32);
+                    let rb = rssi_snap.get(*mac_b).copied().unwrap_or(-100.0_f32);
+                    rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
             let mut seen: HashSet<MacAddress> = out.iter().copied().collect();
             for (_rsu, mac, _hops) in hop_routes {
                 if seen.insert(*mac) {
@@ -417,6 +434,12 @@ impl Routing {
     #[cfg(test)]
     pub fn test_set_cached_candidates(&self, cands: Vec<MacAddress>) {
         self.cache.test_set_cached_candidates(cands);
+    }
+
+    /// Test helper: directly set cached upstream and source for tests.
+    #[cfg(test)]
+    pub fn test_set_cached_upstream(&self, upstream: MacAddress, source: MacAddress) {
+        self.cache.set_upstream(upstream, source);
     }
 
     fn log_route_change(
@@ -771,12 +794,15 @@ impl Routing {
     /// 3. **For RSU targets**: Applies latency-based scoring with hysteresis:
     ///    - Prefers lower average latency (avg scoring)
     ///    - Applies 30% improvement threshold to prevent flapping
-    ///    - Falls back to hop-count when latency unavailable
+    ///    - Falls back to RSSI-based next-hop selection (3 dB hysteresis) when
+    ///      latency is unavailable and an RSSI table is attached
+    ///    - Falls back to hop-count when neither latency nor RSSI is available
     ///    - Deterministic tie-breaking by MAC address
     ///
     /// Hysteresis: Only switches from cached route when:
-    /// - New route has ≥1 fewer hops, OR
-    /// - New route has ≥30% better average latency score
+    /// - New route has ≥1 fewer hops (hop-count path), OR
+    /// - New route has ≥30% better average latency score (latency path), OR
+    /// - New next-hop has ≥3 dB stronger RSSI (RSSI path)
     ///
     /// Returns None if no route exists.
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
@@ -861,10 +887,8 @@ impl Routing {
 
         if !latency_stats.is_empty() {
             let (best_mac, best_avg) =
-                crate::control::routing_utils::pick_best_from_latency_candidates(
-                    &latency_stats,
-                )
-                .expect("latency_stats non-empty");
+                crate::control::routing_utils::pick_best_from_latency_candidates(&latency_stats)
+                    .expect("latency_stats non-empty");
             let best_hops = latency_stats[&best_mac].hops;
 
             if let Some(cached_mac) = cached {
@@ -911,7 +935,65 @@ impl Routing {
             return Some(make_route(best_mac, best_hops, best_avg));
         }
 
-        // Fallback: no latency measurements yet — prefer fewer hops.
+        // Fallback: no latency measurements yet.
+        //
+        // If the RSSI table has measurements for next-hop candidates, prefer the
+        // one with the strongest first-hop signal (3 dB hysteresis prevents
+        // flapping).  Without RSSI, fall back to min-hops with the original
+        // hop-count hysteresis.
+        let rssi_snapshot: HashMap<MacAddress, f32> = self
+            .rssi_table
+            .as_ref()
+            .map(|tbl| {
+                let guard = tbl.read().expect("rssi table lock");
+                upstream_hops
+                    .keys()
+                    .filter_map(|&mac| guard.get(&mac).map(|&r| (mac, r)))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if !rssi_snapshot.is_empty() {
+            // RSSI path: pick the next-hop with the strongest first-hop signal.
+            let best_mac = upstream_hops.keys().copied().max_by(|&a, &b| {
+                rssi_snapshot
+                    .get(&a)
+                    .copied()
+                    .unwrap_or(-100.0_f32)
+                    .partial_cmp(&rssi_snapshot.get(&b).copied().unwrap_or(-100.0_f32))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if let Some(best_mac) = best_mac {
+                let best_hops = upstream_hops[&best_mac];
+                if let Some(cached_mac) = cached {
+                    if best_mac != cached_mac {
+                        if let Some(&cached_hops) = upstream_hops.get(&cached_mac) {
+                            let best_rssi =
+                                rssi_snapshot.get(&best_mac).copied().unwrap_or(-100.0_f32);
+                            let cached_rssi = rssi_snapshot
+                                .get(&cached_mac)
+                                .copied()
+                                .unwrap_or(-100.0_f32);
+                            // 3 dB hysteresis: only switch if new next-hop is clearly stronger.
+                            if best_rssi <= cached_rssi + 3.0 {
+                                return Some(Route {
+                                    mac: cached_mac,
+                                    hops: cached_hops,
+                                    latency: None,
+                                });
+                            }
+                        }
+                    }
+                }
+                return Some(Route {
+                    mac: best_mac,
+                    hops: best_hops,
+                    latency: None,
+                });
+            }
+        }
+
+        // No RSSI data: fall back to min-hops with the original hop-count hysteresis.
         let best_hop = upstream_hops.iter().min_by_key(|(_, &h)| h);
         if let Some((&best_mac, &best_hops)) = best_hop {
             if let Some(cached_mac) = cached {

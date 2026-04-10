@@ -299,7 +299,9 @@ impl SimulatorMetrics {
             if len == 0 {
                 return 0.0;
             }
-            let idx = ((len as f64 * p).ceil() as usize).saturating_sub(1).min(len - 1);
+            let idx = ((len as f64 * p).ceil() as usize)
+                .saturating_sub(1)
+                .min(len - 1);
             all_samples[idx] as f64
         };
 

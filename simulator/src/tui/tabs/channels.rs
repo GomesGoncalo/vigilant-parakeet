@@ -163,8 +163,7 @@ impl TabRenderer for ChannelsTab {
                         };
                         let throughput_bps = stats.throughput_last(10) * 8.0;
                         let avg_latency_ms = if stats.packets_delayed > 0 {
-                            (stats.total_latency_us as f64 / stats.packets_delayed as f64)
-                                / 1000.0
+                            (stats.total_latency_us as f64 / stats.packets_delayed as f64) / 1000.0
                         } else {
                             0.0
                         };
@@ -239,10 +238,7 @@ impl TabRenderer for ChannelsTab {
 
                 // Show ratio in addition to percentage for clarity
                 let rate_display = if total > 0 {
-                    format!(
-                        "{:.1}% ({}/{})",
-                        row.loss_rate, row.packets_dropped, total
-                    )
+                    format!("{:.1}% ({}/{})", row.loss_rate, row.packets_dropped, total)
                 } else {
                     "N/A".to_string()
                 };
