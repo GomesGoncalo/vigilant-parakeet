@@ -192,10 +192,14 @@ heartbeats (within the history window) that were actually received; a value of
 zero means the source has gone silent and the guard falls through regardless of
 the ratio.
 
-*Continuous selection:* upstream selection is re-evaluated on every
-non-duplicate heartbeat, ensuring that fading-task RSSI updates and topology
-changes take effect as soon as the next heartbeat arrives. The hysteresis guards
-at each tier prevent oscillation from this frequent re-evaluation.
+*Continuous selection:* `select_and_cache_upstream()` is invoked on every
+non-duplicate heartbeat for which a valid route exists, and separately on every
+duplicate (relay delivery of an already-seen sequence). This ensures that RSSI
+updates, topology changes, and path transitions — including the loss of a direct
+path when the relay-only path is the only remaining route — take effect as soon
+as the next heartbeat arrives without waiting for a full failover cycle. The
+hysteresis guards at each tier prevent oscillation from this frequent
+re-evaluation.
 
 *N-best caching and failover:* on each primary-route update the top $N$
 candidates (configurable, default $N=3$) are cached in rank order.
