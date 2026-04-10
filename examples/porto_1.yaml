@@ -1,0 +1,31 @@
+nodes:
+  rsu1:
+    config_path: examples/porto_1/n_rsu1.yaml
+  obu1:
+    config_path: examples/porto_1/n_obu1.yaml
+  obu2:
+    config_path: examples/porto_1/n_obu2.yaml
+  server1:
+    config_path: examples/porto/n_server1.yaml
+
+mobility:
+  enabled: true
+  bbox:
+    min_lat: 41.140
+    max_lat: 41.175
+    min_lon: -8.660
+    max_lon: -8.590
+  osm_cache: osm_cache.json
+  tick_ms: 100
+  min_trip_distance_m: 10000
+  desired_speed_ms: 13.9
+
+nakagami:
+  enabled: true
+  m: 10.0              # Nakagami shape (1=Rayleigh, higher=more stable)
+  eta: 2.0            # Path-loss exponent: 2.7 for dense urban Porto
+  snr_0_db: 85.0      # Mean SNR at 1 m reference (dB); realistic for V2X DSRC TX power
+  snr_thresh_db: 10.0 # Standard DSRC SNR threshold (dB); avoids cliff near hard cutoff
+  max_range_m: 1500.0 # Hard cut-off (m); covers RSU spacing gaps (~1–1.5 km between RSUs)
+  latency_ms_per_100m: 0.5 # 0.5 ms/100m ≈ 5x realistic V2X propagation; keeps routing preference without inflating RTTs
+  update_ms: 20       # How often to recompute fading (ms)

@@ -216,11 +216,11 @@ pub type RssiTable = std::sync::Arc<std::sync::RwLock<HashMap<MacAddress, f32>>>
 /// Per-relay-hop RSSI penalty applied when comparing next-hop candidates.
 ///
 /// Each relay hop adds processing overhead, queue pressure, and an additional
-/// failure point. This penalty discounts the measured first-hop RSSI by 5 dB
+/// failure point. This penalty discounts the measured first-hop RSSI by 3 dB
 /// per relay so that longer chains must present a proportionally stronger
 /// signal to be preferred. 5 dB corresponds to roughly 78% closer in
 /// free-space path loss (20·log₁₀ model at 5.9 GHz).
-const RSSI_HOP_PENALTY_DB: f32 = 5.0;
+const RSSI_HOP_PENALTY_DB: f32 = 3.0;
 
 // ============================================================================
 // Route construction helpers
