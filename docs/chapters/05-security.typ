@@ -92,13 +92,16 @@ the existing control-plane message infrastructure.
 
 === Wire Format
 
-Two control message types are defined in
-`node_lib::messages::control::key_exchange`. Both `KeyExchangeInit` and
+Two authentication message types are defined in
+`node_lib::messages::auth`. Both `KeyExchangeInit` and
 `KeyExchangeReply` share the same variable-length layout; the distinguishing
-information is the message type discriminant in the outer `Message` container.
-An `algo_id` byte at the start of each message identifies the key-exchange
-algorithm in use, enabling receivers to parse key material of the correct
-length.
+information is the sub-type discriminant within the `Auth` packet family
+(`PacketType::Auth`, wire byte `0x02`). An `algo_id` byte at the start of
+each message identifies the key-exchange algorithm in use, enabling receivers
+to parse key material of the correct length. The `algo_id` wire constants
+(`0x01` for X25519, `0x02` for ML-KEM-768) are internal to the `auth` module;
+outside callers receive and supply a typed `DhGroup` value through the
+`dh_group()` accessor and the `new_unsigned()` / `new_signed()` constructors.
 
 *Unsigned base format*:
 
@@ -462,7 +465,9 @@ let base = ke_init.base_payload();
 let sig  = signing_keypair.sign(&base);
 ```
 
-Verification dispatches on `sig_algo_id` to the appropriate algorithm.
+Verification dispatches on the `signing_algorithm()` accessor (which maps the
+internal `sig_algo_id` wire byte to `SigningAlgorithm::Ed25519` or
+`SigningAlgorithm::MlDsa65`) to the appropriate algorithm.
 A failed verification returns `NodeError::SignatureError` and causes the
 handshake message to be silently dropped.
 
@@ -589,10 +594,10 @@ Signed:    [TARGET_OBU_MAC 6B] [TIMESTAMP_SECS 8B] [NONCE 8B]
            [SIG_ALGO_ID 1B] [SIG_LEN 2B BE] [SIGNATURE var]
 ```
 
-The server signs the payload `[0x04 | TARGET_MAC | TIMESTAMP_SECS | NONCE]`,
-where `0x04` is the `SessionTerminated` control type byte. Unsigned
-revocations (6-byte payload) are accepted only in configurations where
-`enable_dh_signatures` is disabled.
+The server signs the payload `[0x02 | TARGET_MAC | TIMESTAMP_SECS | NONCE]`,
+where `0x02` is the `SessionTerminated` sub-type byte within the `Auth`
+packet family. Unsigned revocations (6-byte payload) are accepted only in
+configurations where `enable_dh_signatures` is disabled.
 
 === Replay Prevention
 
