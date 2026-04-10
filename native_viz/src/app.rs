@@ -10,6 +10,8 @@ pub struct VizApp {
     rx: Receiver<Snapshot>,
     /// True once we have auto-centred the map on the first batch of positions.
     fitted: bool,
+    /// Tile layer opacity (0.0 = hidden, 1.0 = fully visible).
+    tile_opacity: f32,
 }
 
 impl VizApp {
@@ -26,6 +28,7 @@ impl VizApp {
             snapshot: Snapshot::default(),
             rx,
             fitted: false,
+            tile_opacity: 1.0,
         }
     }
 }
@@ -53,7 +56,7 @@ impl eframe::App for VizApp {
             .resizable(false)
             .exact_size(200.0)
             .show_inside(ui, |ui| {
-                draw_sidebar(ui, &self.snapshot);
+                draw_sidebar(ui, &self.snapshot, &mut self.tile_opacity);
             });
 
         egui::CentralPanel::default()
@@ -64,7 +67,7 @@ impl eframe::App for VizApp {
                 // serves as the initial fallback anchor.
                 let my_pos = lon_lat(-8.625, 41.157);
                 let map = Map::new(None, &mut self.map_memory, my_pos)
-                    .with_layer(&mut self.tiles, 1.0)
+                    .with_layer(&mut self.tiles, self.tile_opacity)
                     .with_plugin(NodesPlugin::new(&self.snapshot));
 
                 map.show(ui, |_, _, _, _| ());
@@ -80,7 +83,7 @@ fn centroid(positions: &std::collections::HashMap<String, crate::api::NodePositi
     (sum_lat / n, sum_lon / n)
 }
 
-fn draw_sidebar(ui: &mut egui::Ui, snap: &Snapshot) {
+fn draw_sidebar(ui: &mut egui::Ui, snap: &Snapshot, tile_opacity: &mut f32) {
     ui.add_space(8.0);
     ui.heading("vigilant-parakeet");
     ui.separator();
@@ -121,6 +124,28 @@ fn draw_sidebar(ui: &mut egui::Ui, snap: &Snapshot) {
             ui.label(n_pos.to_string());
             ui.end_row();
         });
+
+    ui.separator();
+
+    // Map opacity control
+    ui.label("Map opacity");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::Slider::new(tile_opacity, 0.0..=1.0)
+                .step_by(0.05)
+                .show_value(false),
+        );
+        if ui
+            .button(if *tile_opacity > 0.1 {
+                "🌫 Dim"
+            } else {
+                "🗺 Show"
+            })
+            .clicked()
+        {
+            *tile_opacity = if *tile_opacity > 0.1 { 0.0 } else { 1.0 };
+        }
+    });
 
     ui.separator();
 
