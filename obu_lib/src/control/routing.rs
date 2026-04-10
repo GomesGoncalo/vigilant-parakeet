@@ -213,6 +213,15 @@ mod selection_tests;
 /// the primary quality metric instead of the heartbeat reception-ratio.
 pub type RssiTable = std::sync::Arc<std::sync::RwLock<HashMap<MacAddress, f32>>>;
 
+/// Per-relay-hop RSSI penalty applied when comparing next-hop candidates.
+///
+/// Each relay hop adds processing overhead, queue pressure, and an additional
+/// failure point. This penalty discounts the measured first-hop RSSI by 5 dB
+/// per relay so that longer chains must present a proportionally stronger
+/// signal to be preferred. 5 dB corresponds to roughly 78% closer in
+/// free-space path loss (20·log₁₀ model at 5.9 GHz).
+const RSSI_HOP_PENALTY_DB: f32 = 5.0;
+
 // ============================================================================
 // Route construction helpers
 // ============================================================================
@@ -352,10 +361,13 @@ impl Routing {
             if rssi_snap.is_empty() {
                 hop_routes.sort_by_key(|(_, _, hops)| *hops);
             } else {
-                // Stronger RSSI (less negative) → better candidate → sort descending.
-                hop_routes.sort_by(|(_, mac_a, _), (_, mac_b, _)| {
-                    let ra = rssi_snap.get(*mac_a).copied().unwrap_or(-100.0_f32);
-                    let rb = rssi_snap.get(*mac_b).copied().unwrap_or(-100.0_f32);
+                // Sort by effective RSSI descending: penalise relay chains so that
+                // a longer path must have a proportionally stronger first-hop signal.
+                hop_routes.sort_by(|(_, mac_a, hops_a), (_, mac_b, hops_b)| {
+                    let ra = rssi_snap.get(*mac_a).copied().unwrap_or(-100.0_f32)
+                        - RSSI_HOP_PENALTY_DB * (*hops_a).saturating_sub(1) as f32;
+                    let rb = rssi_snap.get(*mac_b).copied().unwrap_or(-100.0_f32)
+                        - RSSI_HOP_PENALTY_DB * (*hops_b).saturating_sub(1) as f32;
                     rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
                 });
             }
@@ -954,13 +966,24 @@ impl Routing {
             .unwrap_or_default();
 
         if !rssi_snapshot.is_empty() {
-            // RSSI path: pick the next-hop with the strongest first-hop signal.
-            let best_mac = upstream_hops.keys().copied().max_by(|&a, &b| {
-                rssi_snapshot
-                    .get(&a)
+            // RSSI path: rank next-hops by effective RSSI, penalising relay
+            // chains to account for processing overhead and queue pressure at
+            // intermediate nodes.
+            //   eff_rssi = raw_rssi - RSSI_HOP_PENALTY_DB × relay_hops
+            // where relay_hops = hops - 1 (0 for direct path to RSU).
+            let eff_rssi = |mac: MacAddress| -> f32 {
+                let raw = rssi_snapshot.get(&mac).copied().unwrap_or(-100.0_f32);
+                let relay_hops = upstream_hops
+                    .get(&mac)
                     .copied()
-                    .unwrap_or(-100.0_f32)
-                    .partial_cmp(&rssi_snapshot.get(&b).copied().unwrap_or(-100.0_f32))
+                    .unwrap_or(1)
+                    .saturating_sub(1);
+                raw - RSSI_HOP_PENALTY_DB * relay_hops as f32
+            };
+
+            let best_mac = upstream_hops.keys().copied().max_by(|&a, &b| {
+                eff_rssi(a)
+                    .partial_cmp(&eff_rssi(b))
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
             if let Some(best_mac) = best_mac {
@@ -968,14 +991,9 @@ impl Routing {
                 if let Some(cached_mac) = cached {
                     if best_mac != cached_mac {
                         if let Some(&cached_hops) = upstream_hops.get(&cached_mac) {
-                            let best_rssi =
-                                rssi_snapshot.get(&best_mac).copied().unwrap_or(-100.0_f32);
-                            let cached_rssi = rssi_snapshot
-                                .get(&cached_mac)
-                                .copied()
-                                .unwrap_or(-100.0_f32);
-                            // 3 dB hysteresis: only switch if new next-hop is clearly stronger.
-                            if best_rssi <= cached_rssi + 3.0 {
+                            // 3 dB hysteresis on effective RSSI: only switch if the
+                            // new next-hop is clearly better after the hop penalty.
+                            if eff_rssi(best_mac) <= eff_rssi(cached_mac) + 3.0 {
                                 return Some(Route {
                                     mac: cached_mac,
                                     hops: cached_hops,

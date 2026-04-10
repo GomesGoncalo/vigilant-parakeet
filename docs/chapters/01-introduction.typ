@@ -93,12 +93,13 @@ The primary contributions of this work are:
 
 - *RSSI-aware and reworked routing*: the heartbeat-based routing protocol
   employs a three-tier selection strategy — latency-based scoring when
-  round-trip measurements are available, RSSI-based next-hop selection with a
-  3 dB switch margin when a signal table is attached, and hop-count
-  minimisation as a last resort. A reception-quality guard at the RSU-source
-  level prevents switching to a weaker RSU when no RSSI data are available, and
-  hysteresis at each tier prevents RSU flapping under fading and mobility (see
-  @implementation).
+  round-trip measurements are available, effective-RSSI next-hop selection
+  (raw signal discounted by a 5 dBm per-relay penalty to account for relay
+  load and processing overhead) with a 3 dB switch margin when a signal table
+  is attached, and hop-count minimisation as a last resort. A
+  reception-quality guard at the RSU-source level prevents switching to a
+  weaker RSU when no RSSI data are available, and hysteresis at each tier
+  prevents RSU flapping under fading and mobility (see @implementation).
 
 - *Key-exchange robustness improvements*: downstream client caching, reply
   forwarding via a ClientCache, and prompt DH retry behaviours improve session
