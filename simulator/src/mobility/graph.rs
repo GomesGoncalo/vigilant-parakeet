@@ -5,7 +5,7 @@
 
 use crate::mobility::osm::{BoundingBox, OsmNode, OsmWay};
 use anyhow::{bail, Result};
-use petgraph::algo::dijkstra;
+use petgraph::algo::{dijkstra, kosaraju_scc};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use rand::{Rng, RngExt};
@@ -88,6 +88,40 @@ impl RoadGraph {
             vertices = graph.node_count(),
             edges = graph.edge_count(),
             "Road graph built"
+        );
+
+        // ── Prune to the largest strongly-connected component ──────────────
+        // Nodes in isolated or one-way dead-end sub-graphs cannot route to/from
+        // the main network, causing vehicles to appear stranded off-road.
+        let sccs = kosaraju_scc(&graph);
+        let largest_scc: std::collections::HashSet<NodeIndex> = sccs
+            .into_iter()
+            .max_by_key(|c| c.len())
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        // Collect nodes NOT in the largest SCC and remove them.
+        let to_remove: Vec<NodeIndex> = graph
+            .node_indices()
+            .filter(|n| !largest_scc.contains(n))
+            .collect();
+        // Remove in reverse index order so indices stay valid while removing.
+        let mut sorted_remove = to_remove;
+        sorted_remove.sort_unstable_by(|a, b| b.index().cmp(&a.index()));
+        for n in sorted_remove {
+            graph.remove_node(n);
+        }
+        // Rebuild node_index to reflect the new NodeIndex values after removal.
+        node_index.clear();
+        for idx in graph.node_indices() {
+            node_index.insert(graph[idx].id, idx);
+        }
+
+        tracing::info!(
+            vertices = graph.node_count(),
+            edges = graph.edge_count(),
+            "Road graph pruned to largest SCC"
         );
 
         Self {
@@ -277,13 +311,29 @@ mod tests {
     fn distance_m_unreachable_is_infinite() {
         // Build a one-way graph from 0→1→2 only (no reverse edges)
         let nodes = vec![
-            OsmNode { id: 1, lat: 0.0, lon: 0.0 },
-            OsmNode { id: 2, lat: 0.001, lon: 0.0 },
+            OsmNode {
+                id: 1,
+                lat: 0.0,
+                lon: 0.0,
+            },
+            OsmNode {
+                id: 2,
+                lat: 0.001,
+                lon: 0.0,
+            },
         ];
-        let ways = vec![OsmWay { id: 1, node_ids: vec![1, 2], oneway: true }];
+        let ways = vec![OsmWay {
+            id: 1,
+            node_ids: vec![1, 2],
+            oneway: true,
+        }];
         let g = RoadGraph::from_osm(&nodes, &ways, (0.0005, 0.0));
         // Forward is reachable; reverse is not
-        assert!(g.distance_m(NodeIndex::new(0), NodeIndex::new(1)).is_finite());
-        assert!(g.distance_m(NodeIndex::new(1), NodeIndex::new(0)).is_infinite());
+        assert!(g
+            .distance_m(NodeIndex::new(0), NodeIndex::new(1))
+            .is_finite());
+        assert!(g
+            .distance_m(NodeIndex::new(1), NodeIndex::new(0))
+            .is_infinite());
     }
 }
