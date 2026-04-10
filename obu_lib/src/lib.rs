@@ -8,8 +8,6 @@ pub use builder::ObuBuilder;
 
 pub mod control;
 
-mod session;
-
 pub use control::routing::RssiTable;
 pub use control::Obu;
 
