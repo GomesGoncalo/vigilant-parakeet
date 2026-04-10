@@ -68,24 +68,13 @@ pub(super) fn server_virtual_mac() -> MacAddress {
 
 // ── Session (TUN read) ────────────────────────────────────────────────────────
 
-// Session support is under development - types are placeholders for future implementation
-#[allow(dead_code)]
-pub struct SessionParams {}
-
-#[allow(dead_code)]
-pub(crate) struct InnerSession {
+pub(super) struct Session {
     tun: Arc<Tun>,
-}
-
-#[allow(dead_code)]
-pub enum Session {
-    NoSession(Arc<Tun>),
-    ValidSession(InnerSession),
 }
 
 impl Session {
     pub fn new(tun: Arc<Tun>) -> Self {
-        Self::NoSession(tun)
+        Self { tun }
     }
 
     pub async fn process<Fut>(
@@ -95,18 +84,9 @@ impl Session {
     where
         Fut: Future<Output = Result<Option<Vec<ReplyType>>>>,
     {
-        match self {
-            Self::NoSession(tun) => {
-                // allocate a zeroed buffer and read into it safely
-                let mut buf: [u8; 1500] = [0u8; 1500];
-                let n = tun.recv(&mut buf).await?;
-                callable(buf, n).await
-            }
-            Self::ValidSession(_session) => {
-                // session handling not implemented yet
-                todo!()
-            }
-        }
+        let mut buf: [u8; 1500] = [0u8; 1500];
+        let n = self.tun.recv(&mut buf).await?;
+        callable(buf, n).await
     }
 }
 
