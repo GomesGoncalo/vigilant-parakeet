@@ -63,7 +63,7 @@ fn default_tick_ms() -> u64 {
     100
 }
 fn default_min_trip_distance_m() -> f64 {
-    804.0
+    3000.0
 }
 fn default_desired_speed_ms() -> f64 {
     13.9
