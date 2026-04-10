@@ -272,4 +272,18 @@ mod tests {
         assert!(d > 0.0);
         assert!(d.is_finite());
     }
+
+    #[test]
+    fn distance_m_unreachable_is_infinite() {
+        // Build a one-way graph from 0→1→2 only (no reverse edges)
+        let nodes = vec![
+            OsmNode { id: 1, lat: 0.0, lon: 0.0 },
+            OsmNode { id: 2, lat: 0.001, lon: 0.0 },
+        ];
+        let ways = vec![OsmWay { id: 1, node_ids: vec![1, 2], oneway: true }];
+        let g = RoadGraph::from_osm(&nodes, &ways, (0.0005, 0.0));
+        // Forward is reachable; reverse is not
+        assert!(g.distance_m(NodeIndex::new(0), NodeIndex::new(1)).is_finite());
+        assert!(g.distance_m(NodeIndex::new(1), NodeIndex::new(0)).is_infinite());
+    }
 }

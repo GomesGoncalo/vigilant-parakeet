@@ -133,7 +133,7 @@ impl VehicleState {
 
     /// Returns `true` when the vehicle has reached the last waypoint.
     pub fn is_done(&self) -> bool {
-        self.route_idx + 1 >= self.route.len() && self.speed == 0.0
+        self.route_idx + 2 >= self.route.len() && self.speed == 0.0
     }
 
     /// Current start node of the edge being traversed.
