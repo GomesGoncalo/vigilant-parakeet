@@ -92,10 +92,13 @@ The primary contributions of this work are:
   for realistic vehicle trajectories and reproducible experiments.
 
 - *RSSI-aware and reworked routing*: the heartbeat-based routing protocol
-  employs hop-penalised effective-RSSI selection through a pluggable
-  `RssiSource` abstraction, with a reception-quality/hops fallback for
-  environments without signal-strength measurements, and a hysteresis guard
-  to prevent RSU flapping under fading and mobility (see @implementation).
+  employs a three-tier selection strategy — latency-based scoring when
+  round-trip measurements are available, RSSI-based next-hop selection with a
+  3 dB switch margin when a signal table is attached, and hop-count
+  minimisation as a last resort. A reception-quality guard at the RSU-source
+  level prevents switching to a weaker RSU when no RSSI data are available, and
+  hysteresis at each tier prevents RSU flapping under fading and mobility (see
+  @implementation).
 
 - *Key-exchange robustness improvements*: downstream client caching, reply
   forwarding via a ClientCache, and prompt DH retry behaviours improve session
@@ -121,9 +124,9 @@ The remainder of this thesis is organised as follows.
   rationale behind its crate decomposition.
 
 - @implementation details the implementation of the routing protocol (including
-  the effective-RSSI hop-penalty selection, `RssiSource` abstraction, and
-  hysteresis mechanisms), the simulator, the test infrastructure, and the
-  visualisation layer.
+  the three-tier RSSI/latency/hops metric, hysteresis mechanisms, and N-best
+  failover), the simulator, the test infrastructure, and the visualisation
+  layer.
 
 - @security presents the security architecture: threat model, DH key exchange
   (X25519 and ML-KEM-768), HKDF key derivation, configurable AEAD cipher
