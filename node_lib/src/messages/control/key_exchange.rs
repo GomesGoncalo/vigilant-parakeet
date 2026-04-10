@@ -351,6 +351,21 @@ impl<'a> TryFrom<&'a [u8]> for KeyExchangeInit<'a> {
     }
 }
 
+impl<'a> KeyExchangeInit<'a> {
+    /// Wire size in bytes without allocating.
+    pub fn wire_size(&self) -> usize {
+        // algo_id(1) + key_id(4) + km_len(2) + key_material + sender(6)
+        let base = 1 + self.key_id.len() + 2 + self.key_material.len() + self.sender.len();
+        match (&self.sig_algo_id, &self.signing_pubkey, &self.signature) {
+            (Some(_), Some(spk), Some(sig)) => {
+                // sig_algo_id(1) + spk_len(2) + spk + sig_len(2) + sig
+                base + 1 + 2 + spk.len() + 2 + sig.len()
+            }
+            _ => base,
+        }
+    }
+}
+
 impl<'a> From<&KeyExchangeInit<'a>> for Vec<u8> {
     fn from(value: &KeyExchangeInit<'a>) -> Self {
         let km_len = value.key_material.len() as u16;
@@ -666,6 +681,21 @@ impl<'a> TryFrom<&'a [u8]> for KeyExchangeReply<'a> {
             signing_pubkey,
             signature,
         })
+    }
+}
+
+impl<'a> KeyExchangeReply<'a> {
+    /// Wire size in bytes without allocating.
+    pub fn wire_size(&self) -> usize {
+        // algo_id(1) + key_id(4) + km_len(2) + key_material + sender(6)
+        let base = 1 + self.key_id.len() + 2 + self.key_material.len() + self.sender.len();
+        match (&self.sig_algo_id, &self.signing_pubkey, &self.signature) {
+            (Some(_), Some(spk), Some(sig)) => {
+                // sig_algo_id(1) + spk_len(2) + spk + sig_len(2) + sig
+                base + 1 + 2 + spk.len() + 2 + sig.len()
+            }
+            _ => base,
+        }
     }
 }
 

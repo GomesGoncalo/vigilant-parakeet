@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use super::{logging::LogFilter, tabs::Tab};
 
@@ -135,11 +136,21 @@ pub struct TuiState {
     // Percentile history for tail latency
     pub p95_history: Vec<(f64, f64)>,
     pub p99_history: Vec<(f64, f64)>,
+    // Jitter (latency stddev) history in ms
+    pub jitter_history: Vec<(f64, f64)>,
+    // Process resource usage history
+    pub cpu_history: Vec<(f64, f64)>,
+    pub mem_history: Vec<(f64, f64)>,
 
     // Previous values for calculating deltas
     pub prev_packets_sent: u64,
     pub prev_packets_dropped: u64,
     pub prev_timestamp: f64,
+    // Monotonically increasing tick counter (used for periodic cleanup scheduling)
+    pub tick_count: u64,
+
+    // sysinfo handle for process CPU/memory sampling
+    sys: System,
 
     // UI state
     pub active_tab: Tab,
@@ -180,9 +191,14 @@ impl TuiState {
             latency_history: Vec::new(),
             p95_history: Vec::new(),
             p99_history: Vec::new(),
+            jitter_history: Vec::new(),
+            cpu_history: Vec::new(),
+            mem_history: Vec::new(),
             prev_packets_sent: 0,
             prev_packets_dropped: 0,
             prev_timestamp: 0.0,
+            tick_count: 0,
+            sys: System::new(),
             active_tab: Tab::Metrics,
             selected_topology_index: 0,
             topology_item_count: 0,
@@ -261,38 +277,27 @@ impl TuiState {
         self.latency_history
             .push((elapsed, summary.avg_latency_us / 1000.0)); // Convert to ms
 
-        // Compute p95/p99 based on merged channel latency samples in metrics
-        let channel_map = self.metrics.channel_stats();
-        let mut all_samples: Vec<u64> = Vec::new();
-        let mut total_bytes_last10: u64 = 0;
-        for (_k, stats) in channel_map.iter() {
-            for &s in stats.latency_samples.iter() {
-                all_samples.push(s);
-            }
-            // Sum bytes from per-channel throughput windows (last ~10s)
-            total_bytes_last10 = total_bytes_last10
-                .saturating_add(stats.throughput_window.iter().map(|(_, b)| *b).sum::<u64>());
+        // Compute p95/p99/jitter/throughput from per-channel history without cloning
+        // the VecDeque buffers (visit_channel_stats / compute_aggregated_channel_stats
+        // hold the lock only for the duration of the computation).
+        // Cleanup stale channels every ~60s (240 ticks).
+        self.tick_count += 1;
+        if self.tick_count % (TUI_UPDATES_PER_SECOND * 60) as u64 == 0 {
+            self.metrics.cleanup_stale_channels(60);
         }
-        all_samples.sort_unstable();
-        let p95_val = if !all_samples.is_empty() {
-            let idx = ((all_samples.len() as f64) * 0.95).ceil() as usize - 1;
-            (all_samples[idx] as f64) / 1000.0
-        } else {
-            0.0
-        };
-        let p99_val = if !all_samples.is_empty() {
-            let idx = ((all_samples.len() as f64) * 0.99).ceil() as usize - 1;
-            (all_samples[idx] as f64) / 1000.0
-        } else {
-            0.0
-        };
+
+        let agg = self.metrics.compute_aggregated_channel_stats();
+        let p95_val = agg.p95_us / 1000.0;
+        let p99_val = agg.p99_us / 1000.0;
+        let jitter_val = agg.jitter_us / 1000.0;
 
         self.p95_history.push((elapsed, p95_val));
         self.p99_history.push((elapsed, p99_val));
+        self.jitter_history.push((elapsed, jitter_val));
 
-        // Record throughput in bits/sec (approximate based on last-10s window)
-        let throughput_bps = if total_bytes_last10 > 0 {
-            (total_bytes_last10 as f64 / 10.0) * 8.0
+        // Record throughput in bits/sec (based on last-10s window, timestamp-filtered)
+        let throughput_bps = if agg.throughput_bytes_last10 > 0 {
+            (agg.throughput_bytes_last10 as f64 / 10.0) * 8.0
         } else {
             0.0
         };
@@ -319,6 +324,33 @@ impl TuiState {
         }
         if self.p99_history.len() > MAX_HISTORY {
             self.p99_history.remove(0);
+        }
+        if self.jitter_history.len() > MAX_HISTORY {
+            self.jitter_history.remove(0);
+        }
+
+        // Sample simulator process CPU and memory
+        let pid = Pid::from_u32(std::process::id());
+        self.sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            false,
+            ProcessRefreshKind::nothing().with_memory().with_cpu(),
+        );
+        let (cpu_pct, mem_mb) = if let Some(proc) = self.sys.process(pid) {
+            (
+                proc.cpu_usage() as f64,
+                proc.memory() as f64 / 1024.0 / 1024.0,
+            )
+        } else {
+            (0.0, 0.0)
+        };
+        self.cpu_history.push((elapsed, cpu_pct));
+        self.mem_history.push((elapsed, mem_mb));
+        if self.cpu_history.len() > MAX_HISTORY {
+            self.cpu_history.remove(0);
+        }
+        if self.mem_history.len() > MAX_HISTORY {
+            self.mem_history.remove(0);
         }
 
         // Update previous values

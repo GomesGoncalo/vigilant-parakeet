@@ -28,6 +28,11 @@ pub struct MetricsTabState<'a> {
     pub throughput_bps_history: &'a [(f64, f64)],
     pub throughput_history: &'a [(f64, f64)],
     pub latency_history: &'a [(f64, f64)],
+    pub p95_history: &'a [(f64, f64)],
+    pub p99_history: &'a [(f64, f64)],
+    pub jitter_history: &'a [(f64, f64)],
+    pub cpu_history: &'a [(f64, f64)],
+    pub mem_history: &'a [(f64, f64)],
 }
 
 /// Metrics tab renderer
@@ -49,6 +54,11 @@ impl TabRenderer for MetricsTab {
             throughput_bps_history: &tui_state.throughput_bps_history,
             throughput_history: &tui_state.throughput_history,
             latency_history: &tui_state.latency_history,
+            p95_history: &tui_state.p95_history,
+            p99_history: &tui_state.p99_history,
+            jitter_history: &tui_state.jitter_history,
+            cpu_history: &tui_state.cpu_history,
+            mem_history: &tui_state.mem_history,
         }
     }
 
@@ -61,6 +71,11 @@ impl TabRenderer for MetricsTab {
             throughput_bps_history: &tui_state.throughput_bps_history,
             throughput_history: &tui_state.throughput_history,
             latency_history: &tui_state.latency_history,
+            p95_history: &tui_state.p95_history,
+            p99_history: &tui_state.p99_history,
+            jitter_history: &tui_state.jitter_history,
+            cpu_history: &tui_state.cpu_history,
+            mem_history: &tui_state.mem_history,
         }
     }
 
@@ -80,7 +95,7 @@ impl TabRenderer for MetricsTab {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(6), // Stats summary
+                Constraint::Length(7), // Stats summary (extra row for CPU/mem)
                 Constraint::Min(10),   // Graphs
             ])
             .split(area);
@@ -106,55 +121,16 @@ impl TabRenderer for MetricsTab {
             Color::Green
         };
 
-        // Compute overall p95/p99 latency from channel samples and total throughput bytes/sec
-        let channel_map = state.metrics.channel_stats();
-        let mut all_samples: Vec<u64> = Vec::new();
-        let mut total_bytes_last10: u64 = 0;
-        for (_k, stats) in channel_map.iter() {
-            for &s in stats.latency_samples.iter() {
-                all_samples.push(s);
-            }
-            // Sum throughput window bytes
-            total_bytes_last10 = total_bytes_last10
-                .saturating_add(stats.throughput_window.iter().map(|(_, b)| *b).sum::<u64>());
-        }
-        all_samples.sort_unstable();
-        let p95_ms = if !all_samples.is_empty() {
-            let idx = ((all_samples.len() as f64) * 0.95).ceil() as usize - 1;
-            (all_samples[idx] as f64) / 1000.0
-        } else {
-            0.0
-        };
-        let p99_ms = if !all_samples.is_empty() {
-            let idx = ((all_samples.len() as f64) * 0.99).ceil() as usize - 1;
-            (all_samples[idx] as f64) / 1000.0
-        } else {
-            0.0
-        };
-
-        // Compute jitter (stddev) in ms from samples
-        let jitter_ms = if !all_samples.is_empty() {
-            let mean_us =
-                all_samples.iter().map(|&v| v as f64).sum::<f64>() / (all_samples.len() as f64);
-            let var = all_samples
-                .iter()
-                .map(|&v| {
-                    let d = (v as f64) - mean_us;
-                    d * d
-                })
-                .sum::<f64>()
-                / (all_samples.len() as f64);
-            (var.sqrt()) / 1000.0
-        } else {
-            0.0
-        };
-
-        // Approximate throughput bytes/sec by summing bytes in last 10s windows
-        let throughput_bps = if total_bytes_last10 > 0 {
-            total_bytes_last10 as f64 / 10.0
-        } else {
-            0.0
-        };
+        // Use pre-computed history values (computed once per tick in TuiState::update)
+        let p95_ms = state.p95_history.last().map(|&(_, v)| v).unwrap_or(0.0);
+        let p99_ms = state.p99_history.last().map(|&(_, v)| v).unwrap_or(0.0);
+        let jitter_ms = state.jitter_history.last().map(|&(_, v)| v).unwrap_or(0.0);
+        // throughput_bps_history stores bits/sec; display as bytes/sec
+        let throughput_bps = state
+            .throughput_bps_history
+            .last()
+            .map(|&(_, v)| v / 8.0)
+            .unwrap_or(0.0);
 
         let stats_items = vec![
             ListItem::new(Line::from(vec![
@@ -188,6 +164,32 @@ impl TabRenderer for MetricsTab {
             ])),
         ];
 
+        // Current CPU and memory from the last sample
+        let (current_cpu, current_mem_mb) = state
+            .cpu_history
+            .last()
+            .and_then(|&(_, c)| state.mem_history.last().map(|&(_, m)| (c, m)))
+            .unwrap_or((0.0, 0.0));
+
+        let cpu_color = if current_cpu > 80.0 {
+            Color::Red
+        } else if current_cpu > 50.0 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+
+        let mut stats_items = stats_items;
+        stats_items.push(ListItem::new(Line::from(vec![
+            Span::styled("CPU: ", Style::default().fg(cpu_color)),
+            Span::styled(
+                format!("{:.1}%", current_cpu),
+                Style::default().fg(cpu_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  │  Memory: ", Style::default().fg(Color::Cyan)),
+            Span::raw(format!("{:.1} MiB", current_mem_mb)),
+        ])));
+
         let stats_list = List::new(stats_items)
             .block(Block::default().borders(Borders::ALL).title("Statistics"));
         f.render_widget(stats_list, chunks[0]);
@@ -195,7 +197,11 @@ impl TabRenderer for MetricsTab {
         // Graphs section
         let graph_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([
+                Constraint::Percentage(34),
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+            ])
             .split(chunks[1]);
 
         let top_graph_chunks = Layout::default()
@@ -207,6 +213,11 @@ impl TabRenderer for MetricsTab {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(graph_chunks[1]);
+
+        let resource_graph_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(graph_chunks[2]);
 
         // Packet loss percentage graph (top-left)
         render_chart(
@@ -301,6 +312,24 @@ impl TabRenderer for MetricsTab {
             "Avg Latency (ms)",
             state.latency_history,
             Color::Cyan,
+        );
+
+        // CPU usage chart (resource-left)
+        render_chart(
+            f,
+            resource_graph_chunks[0],
+            "CPU Usage (%)",
+            state.cpu_history,
+            Color::Yellow,
+        );
+
+        // Memory usage chart (resource-right)
+        render_chart(
+            f,
+            resource_graph_chunks[1],
+            "Memory (MiB)",
+            state.mem_history,
+            Color::LightBlue,
         );
     }
 

@@ -97,6 +97,15 @@ impl<'a> SessionTerminated<'a> {
         self.signature.as_deref()
     }
 
+    /// Wire size in bytes without allocating.
+    pub fn wire_size(&self) -> usize {
+        // target(6) + optional signed extension: timestamp(8)+nonce(8)+algo(1)+sig_len(2)+sig
+        6 + match &self.signature {
+            Some(sig) => 8 + 8 + 1 + 2 + sig.len(),
+            None => 0,
+        }
+    }
+
     /// Clone into an owned version (for forwarding through intermediate OBUs).
     pub fn clone_into_owned(&self) -> SessionTerminated<'static> {
         SessionTerminated {

@@ -37,6 +37,13 @@ impl<'a> Message<'a> {
         &self.next
     }
 
+    /// Total encoded size in bytes without allocating.
+    /// Equivalent to `Vec::<u8>::from(self).len()` but allocation-free.
+    pub fn wire_size(&self) -> usize {
+        // to(6) + from(6) + marker(2) + PacketType
+        14 + self.next.wire_size()
+    }
+
     /// Zero-copy serialization of a HeartbeatReply message directly from a borrowed Heartbeat.
     /// This completely avoids intermediate Message and HeartbeatReply allocations.
     ///
@@ -394,5 +401,37 @@ mod tests {
         let parsed_msg = Message::try_from(&wire_zero_copy[..]).expect("should parse");
         assert_eq!(parsed_msg.from().unwrap(), from);
         assert_eq!(parsed_msg.to().unwrap(), to);
+    }
+
+    #[test]
+    fn wire_size_matches_serialized_length() {
+        use crate::messages::control::{heartbeat::Heartbeat, Control};
+        use crate::messages::data::{Data, ToDownstream, ToUpstream};
+        use crate::messages::packet_type::PacketType;
+        use mac_address::MacAddress;
+        use std::time::Duration;
+
+        let from: MacAddress = [1u8; 6].into();
+        let to: MacAddress = [2u8; 6].into();
+
+        // Heartbeat
+        let hb = Heartbeat::new(Duration::default(), 42, from);
+        let msg = Message::new(from, to, PacketType::Control(Control::Heartbeat(hb)));
+        let wire: Vec<u8> = (&msg).into();
+        assert_eq!(msg.wire_size(), wire.len(), "Heartbeat wire_size mismatch");
+
+        // Data::Upstream
+        let payload = b"hello world";
+        let upstream = ToUpstream::new(from, payload);
+        let msg = Message::new(from, to, PacketType::Data(Data::Upstream(upstream)));
+        let wire: Vec<u8> = (&msg).into();
+        assert_eq!(msg.wire_size(), wire.len(), "Upstream wire_size mismatch");
+
+        // Data::Downstream
+        let origin = [3u8; 6];
+        let downstream = ToDownstream::new(&origin, to, payload);
+        let msg = Message::new(from, to, PacketType::Data(Data::Downstream(downstream)));
+        let wire: Vec<u8> = (&msg).into();
+        assert_eq!(msg.wire_size(), wire.len(), "Downstream wire_size mismatch");
     }
 }

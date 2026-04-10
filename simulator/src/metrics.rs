@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// Per-channel packet statistics (from source -> destination)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ChannelStats {
     /// Number of packets successfully delivered through this channel
     pub packets_sent: u64,
@@ -40,6 +40,23 @@ pub struct ChannelStats {
     pub latency_samples: VecDeque<u64>,
     /// Rolling window of (timestamp, bytes) for throughput calculation (last 10 seconds)
     pub throughput_window: VecDeque<(Instant, u64)>,
+    /// Timestamp of the last packet recorded on this channel (for stale cleanup)
+    pub last_seen: Instant,
+}
+
+impl Default for ChannelStats {
+    fn default() -> Self {
+        Self {
+            packets_sent: 0,
+            packets_dropped: 0,
+            bytes_sent: 0,
+            total_latency_us: 0,
+            packets_delayed: 0,
+            latency_samples: VecDeque::with_capacity(1000),
+            throughput_window: VecDeque::with_capacity(2000),
+            last_seen: Instant::now(),
+        }
+    }
 }
 
 impl ChannelStats {
@@ -60,6 +77,21 @@ impl ChannelStats {
         // Divide by the fixed window size so the result is stable from the start
         total_bytes as f64 / n as f64
     }
+}
+
+/// Aggregate latency percentiles and throughput computed from per-channel history
+/// without cloning the VecDeque buffers.
+#[cfg(feature = "tui")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AggregatedChannelStats {
+    /// 95th-percentile latency in microseconds.
+    pub p95_us: f64,
+    /// 99th-percentile latency in microseconds.
+    pub p99_us: f64,
+    /// Latency standard deviation (jitter) in microseconds.
+    pub jitter_us: f64,
+    /// Total bytes observed in the last 10 seconds across all channels.
+    pub throughput_bytes_last10: u64,
 }
 
 /// Real-time metrics for simulation observability.
@@ -109,6 +141,7 @@ impl SimulatorMetrics {
             let entry = stats.entry(key).or_default();
 
             let now = Instant::now();
+            entry.last_seen = now;
 
             // Add new data point to throughput window
             entry.throughput_window.push_back((now, bytes as u64));
@@ -121,6 +154,12 @@ impl SimulatorMetrics {
                 } else {
                     break;
                 }
+            }
+
+            // Cap per-channel window entries to prevent unbounded growth at high packet rates
+            const MAX_WINDOW_ENTRIES: usize = 2000;
+            if entry.throughput_window.len() > MAX_WINDOW_ENTRIES {
+                entry.throughput_window.pop_front();
             }
 
             entry.packets_sent += 1;
@@ -139,7 +178,9 @@ impl SimulatorMetrics {
         self.packets_dropped.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut stats) = self.channel_stats.lock() {
             let key = format!("{}->{}", from, to);
-            stats.entry(key).or_default().packets_dropped += 1;
+            let entry = stats.entry(key).or_default();
+            entry.last_seen = Instant::now();
+            entry.packets_dropped += 1;
         }
     }
 
@@ -154,6 +195,7 @@ impl SimulatorMetrics {
         if let Ok(mut stats) = self.channel_stats.lock() {
             let key = format!("{}->{}", from, to);
             let entry = stats.entry(key).or_default();
+            entry.last_seen = Instant::now();
             entry.total_latency_us += latency.as_micros() as u64;
             entry.packets_delayed += 1;
             // Record sample for percentile estimates; keep last 1000 samples
@@ -161,6 +203,17 @@ impl SimulatorMetrics {
             if entry.latency_samples.len() > 1000 {
                 entry.latency_samples.pop_front();
             }
+        }
+    }
+
+    /// Remove channel entries that have seen no traffic in the last `stale_secs` seconds.
+    /// Call this periodically to prevent unbounded HashMap growth as OBUs connect to
+    /// different RSUs over time.
+    #[allow(dead_code)]
+    pub fn cleanup_stale_channels(&self, stale_secs: u64) {
+        if let Ok(mut stats) = self.channel_stats.lock() {
+            let cutoff = Instant::now() - Duration::from_secs(stale_secs);
+            stats.retain(|_, v| v.last_seen >= cutoff);
         }
     }
 
@@ -195,6 +248,82 @@ impl SimulatorMetrics {
     #[allow(dead_code)]
     pub fn channel_stats(&self) -> HashMap<String, ChannelStats> {
         self.channel_stats.lock().unwrap().clone()
+    }
+
+    /// Visit per-channel stats without cloning the map.
+    #[cfg(feature = "tui")]
+    ///
+    /// Holds the lock only for the duration of `visitor`. Callers that only
+    /// need to read scalar fields or iterate the VecDeque in-place should
+    /// prefer this over `channel_stats()` to avoid cloning the history buffers.
+    pub fn visit_channel_stats<F>(&self, visitor: F)
+    where
+        F: FnOnce(&HashMap<String, ChannelStats>),
+    {
+        if let Ok(guard) = self.channel_stats.lock() {
+            visitor(&guard);
+        }
+    }
+
+    /// Compute p95/p99 latency, jitter, and 10-second byte throughput from the
+    /// per-channel history in a single lock acquisition — no VecDeque clone.
+    #[cfg(feature = "tui")]
+    pub fn compute_aggregated_channel_stats(&self) -> AggregatedChannelStats {
+        let now = Instant::now();
+        let cutoff = now - Duration::from_secs(10);
+        let Ok(guard) = self.channel_stats.lock() else {
+            return AggregatedChannelStats::default();
+        };
+
+        let mut all_samples: Vec<u64> = Vec::new();
+        let mut total_bytes: u64 = 0;
+
+        for entry in guard.values() {
+            let (a, b) = entry.latency_samples.as_slices();
+            all_samples.extend_from_slice(a);
+            all_samples.extend_from_slice(b);
+            total_bytes = total_bytes.saturating_add(
+                entry
+                    .throughput_window
+                    .iter()
+                    .filter(|(ts, _)| *ts >= cutoff)
+                    .map(|(_, bytes)| bytes)
+                    .sum::<u64>(),
+            );
+        }
+
+        all_samples.sort_unstable();
+        let len = all_samples.len();
+
+        let percentile = |p: f64| -> f64 {
+            if len == 0 {
+                return 0.0;
+            }
+            let idx = ((len as f64 * p).ceil() as usize).saturating_sub(1).min(len - 1);
+            all_samples[idx] as f64
+        };
+
+        let jitter = if len > 0 {
+            let mean = all_samples.iter().sum::<u64>() as f64 / len as f64;
+            let var = all_samples
+                .iter()
+                .map(|&v| {
+                    let d = v as f64 - mean;
+                    d * d
+                })
+                .sum::<f64>()
+                / len as f64;
+            var.sqrt()
+        } else {
+            0.0
+        };
+
+        AggregatedChannelStats {
+            p95_us: percentile(0.95),
+            p99_us: percentile(0.99),
+            jitter_us: jitter,
+            throughput_bytes_last10: total_bytes,
+        }
     }
 
     /// Get current metrics summary.

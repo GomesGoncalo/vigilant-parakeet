@@ -1,6 +1,6 @@
 // Channels tab rendering
 use crate::{
-    metrics::{ChannelStats, SimulatorMetrics},
+    metrics::SimulatorMetrics,
     tui::{
         state::{ChannelSortMode, DisplayChannelStats, SortDirection, TuiState},
         utils::format_bits_per_sec,
@@ -18,9 +18,12 @@ use std::{collections::HashMap, sync::Arc};
 use super::TabRenderer;
 
 /// Computed display data for a single channel row (avoids re-computing during sort).
+/// Holds only scalars — no VecDeque history buffers.
 struct ChannelDisplayRow {
     name: String,
-    stats: ChannelStats,
+    packets_sent: u64,
+    packets_dropped: u64,
+    packets_delayed: u64,
     loss_rate: f64,
     throughput_bps: f64,
     avg_latency_ms: f64,
@@ -67,9 +70,6 @@ impl TabRenderer for ChannelsTab {
     }
 
     fn render(f: &mut Frame, area: Rect, state: Self::State<'_>) {
-        // Get per-channel stats from metrics
-        // Fetch live channel stats; if paused we'll try to use a precomputed display snapshot
-        let live_stats = state.metrics.channel_stats();
         let display_map = state.paused_channel_display.as_ref();
 
         // Create header row and highlight the active sort column
@@ -131,47 +131,56 @@ impl TabRenderer for ChannelsTab {
 
         let header = Row::new(header_cells).bottom_margin(1);
 
-        // Create data rows - compute either from display snapshot (if paused) or live_stats
-        let mut channel_data: Vec<ChannelDisplayRow> = live_stats
-            .iter()
-            .map(|(name, stats)| {
-                if let Some(display) = display_map.and_then(|m| m.get(name)) {
-                    let total = display.packets_sent + display.packets_dropped;
-                    let loss_rate = if total > 0 {
-                        (display.packets_dropped as f64 / total as f64) * 100.0
+        // Build display rows without cloning ChannelStats VecDeque history buffers.
+        // visit_channel_stats holds the lock only for the duration of the closure.
+        let mut channel_data: Vec<ChannelDisplayRow> = Vec::new();
+        state.metrics.visit_channel_stats(|live_stats| {
+            channel_data = live_stats
+                .iter()
+                .map(|(name, stats)| {
+                    if let Some(display) = display_map.and_then(|m| m.get(name)) {
+                        let total = display.packets_sent + display.packets_dropped;
+                        let loss_rate = if total > 0 {
+                            (display.packets_dropped as f64 / total as f64) * 100.0
+                        } else {
+                            0.0
+                        };
+                        ChannelDisplayRow {
+                            name: name.clone(),
+                            packets_sent: display.packets_sent,
+                            packets_dropped: display.packets_dropped,
+                            packets_delayed: stats.packets_delayed,
+                            loss_rate,
+                            throughput_bps: display.throughput_bps,
+                            avg_latency_ms: display.avg_latency_ms,
+                        }
                     } else {
-                        0.0
-                    };
-                    ChannelDisplayRow {
-                        name: name.clone(),
-                        stats: stats.clone(),
-                        loss_rate,
-                        throughput_bps: display.throughput_bps,
-                        avg_latency_ms: display.avg_latency_ms,
+                        let total = stats.packets_sent + stats.packets_dropped;
+                        let loss_rate = if total > 0 {
+                            (stats.packets_dropped as f64 / total as f64) * 100.0
+                        } else {
+                            0.0
+                        };
+                        let throughput_bps = stats.throughput_last(10) * 8.0;
+                        let avg_latency_ms = if stats.packets_delayed > 0 {
+                            (stats.total_latency_us as f64 / stats.packets_delayed as f64)
+                                / 1000.0
+                        } else {
+                            0.0
+                        };
+                        ChannelDisplayRow {
+                            name: name.clone(),
+                            packets_sent: stats.packets_sent,
+                            packets_dropped: stats.packets_dropped,
+                            packets_delayed: stats.packets_delayed,
+                            loss_rate,
+                            throughput_bps,
+                            avg_latency_ms,
+                        }
                     }
-                } else {
-                    let total = stats.packets_sent + stats.packets_dropped;
-                    let loss_rate = if total > 0 {
-                        (stats.packets_dropped as f64 / total as f64) * 100.0
-                    } else {
-                        0.0
-                    };
-                    let throughput_bps = stats.throughput_last(10) * 8.0;
-                    let avg_latency_ms = if stats.packets_delayed > 0 {
-                        (stats.total_latency_us as f64 / stats.packets_delayed as f64) / 1000.0
-                    } else {
-                        0.0
-                    };
-                    ChannelDisplayRow {
-                        name: name.clone(),
-                        stats: stats.clone(),
-                        loss_rate,
-                        throughput_bps,
-                        avg_latency_ms,
-                    }
-                }
-            })
-            .collect();
+                })
+                .collect();
+        });
 
         // Sort based on current sort mode and direction
         match state.channel_sort_mode {
@@ -217,7 +226,7 @@ impl TabRenderer for ChannelsTab {
         let rows: Vec<Row> = channel_data
             .iter()
             .map(|row| {
-                let total = row.stats.packets_sent + row.stats.packets_dropped;
+                let total = row.packets_sent + row.packets_dropped;
 
                 // Color code the loss rate
                 let loss_color = if row.loss_rate < 1.0 {
@@ -232,7 +241,7 @@ impl TabRenderer for ChannelsTab {
                 let rate_display = if total > 0 {
                     format!(
                         "{:.1}% ({}/{})",
-                        row.loss_rate, row.stats.packets_dropped, total
+                        row.loss_rate, row.packets_dropped, total
                     )
                 } else {
                     "N/A".to_string()
@@ -242,7 +251,7 @@ impl TabRenderer for ChannelsTab {
                 let throughput_display = format_bits_per_sec(row.throughput_bps);
 
                 // Format latency
-                let latency_display = if row.stats.packets_delayed > 0 {
+                let latency_display = if row.packets_delayed > 0 {
                     format!("{:.2} ms", row.avg_latency_ms)
                 } else {
                     "N/A".to_string()

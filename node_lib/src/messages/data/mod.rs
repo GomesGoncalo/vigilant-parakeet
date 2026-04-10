@@ -162,6 +162,18 @@ impl<'a> TryFrom<&'a [u8]> for Data<'a> {
     }
 }
 
+impl<'a> Data<'a> {
+    /// Wire size of the data payload in bytes (excludes the 1-byte type tag).
+    pub fn wire_size(&self) -> usize {
+        match self {
+            // origin(6) + data
+            Data::Upstream(u) => 6 + u.data.len(),
+            // origin(6) + destination(6) + data
+            Data::Downstream(d) => 12 + d.data.len(),
+        }
+    }
+}
+
 impl<'a> From<&Data<'a>> for Vec<u8> {
     fn from(value: &Data<'a>) -> Self {
         let mut buf = Vec::with_capacity(32);

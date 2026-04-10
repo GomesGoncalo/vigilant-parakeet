@@ -17,6 +17,19 @@ pub enum Control<'a> {
     SessionTerminated(SessionTerminated<'a>),
 }
 
+impl<'a> Control<'a> {
+    /// Wire size of the control payload in bytes (excludes the 1-byte type tag).
+    pub fn wire_size(&self) -> usize {
+        match self {
+            Control::Heartbeat(hb) => hb.wire_size(),
+            Control::HeartbeatReply(hbr) => hbr.wire_size(),
+            Control::KeyExchangeInit(k) => k.wire_size(),
+            Control::KeyExchangeReply(k) => k.wire_size(),
+            Control::SessionTerminated(s) => s.wire_size(),
+        }
+    }
+}
+
 impl<'a> TryFrom<&'a [u8]> for Control<'a> {
     type Error = NodeError;
 

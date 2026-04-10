@@ -279,7 +279,7 @@ impl Routing {
         }
 
         let (mac, avg_us) =
-            crate::control::routing_utils::pick_best_from_latency_candidates(per_next)?;
+            crate::control::routing_utils::pick_best_from_latency_candidates(&per_next)?;
         Some(Route {
             hops: min_hops,
             mac,

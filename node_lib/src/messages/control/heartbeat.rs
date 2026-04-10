@@ -69,6 +69,12 @@ impl<'a> Heartbeat<'a> {
     pub(crate) fn source_bytes(&self) -> &[u8] {
         &self.source
     }
+
+    /// Wire size in bytes: duration(16) + id(4) + hops(4) + source(6) = 30.
+    #[inline]
+    pub fn wire_size(&self) -> usize {
+        30
+    }
 }
 
 impl<'a> TryFrom<&'a [u8]> for Heartbeat<'a> {
@@ -232,6 +238,12 @@ impl<'a> HeartbeatReply<'a> {
                 .try_into()
                 .unwrap(),
         )
+    }
+
+    /// Wire size in bytes: duration(16) + id(4) + hops(4) + source(6) + sender(6) = 36.
+    #[inline]
+    pub fn wire_size(&self) -> usize {
+        36
     }
 }
 

@@ -321,7 +321,7 @@ impl Routing {
         let latency_stats = self.collect_downstream_stats(src);
         if !latency_stats.is_empty() {
             let scored =
-                crate::control::routing_utils::score_and_sort_latency_candidates(latency_stats);
+                crate::control::routing_utils::score_and_sort_latency_candidates(&latency_stats);
             for c in scored {
                 if out.len() >= n_best {
                     break;
@@ -380,7 +380,7 @@ impl Routing {
     ///
     /// Only observations that carry a latency measurement are included.
     fn collect_downstream_stats(&self, target: MacAddress) -> HashMap<MacAddress, NextHopStats> {
-        let mut stats: HashMap<MacAddress, NextHopStats> = HashMap::new();
+        let mut stats: HashMap<MacAddress, NextHopStats> = HashMap::with_capacity(4);
         for (_rsu, seqs) in self.routes.iter() {
             for (_seq, e) in seqs.iter() {
                 if let Some(vec) = e.downstream.get(&target) {
@@ -800,7 +800,7 @@ impl Routing {
         // OBUs (e.g., two-hop paths) using observed neighbors and latencies.
         if !self.routes.contains_key(&target_mac) {
             // Collect candidate next hops that lead to target_mac along with hop-count and latency.
-            let mut candidates: Vec<(u32, MacAddress, u128)> = Vec::new();
+            let mut candidates: Vec<(u32, MacAddress, u128)> = Vec::with_capacity(8);
             for (_rsu, seqs) in self.routes.iter() {
                 for (_seq, e) in seqs.iter() {
                     if let Some(vec) = e.downstream.get(&target_mac) {
@@ -821,7 +821,7 @@ impl Routing {
                 .expect("candidates is non-empty, min must exist");
             use crate::control::routing_utils::pick_best_next_hop;
 
-            let mut per_next: HashMap<MacAddress, NextHopStats> = HashMap::new();
+            let mut per_next: HashMap<MacAddress, NextHopStats> = HashMap::with_capacity(4);
             for (_h, mac, us) in candidates.into_iter().filter(|(h, _, _)| *h == min_hops) {
                 let e = per_next.entry(mac).or_insert(NextHopStats {
                     min_us: u128::MAX,
@@ -847,25 +847,22 @@ impl Routing {
 
         // Build a mac → min-hops map for all relay paths toward target_mac.
         // Used as fallback when a candidate has no latency measurements yet.
-        let upstream_hops: HashMap<MacAddress, u32> = self
-            .routes
-            .get(&target_mac)
-            .into_iter()
-            .flat_map(|seqs| seqs.values())
-            .fold(HashMap::new(), |mut m, e| {
-                let slot = m.entry(e.next_upstream).or_insert(e.hops);
+        let mut upstream_hops: HashMap<MacAddress, u32> = HashMap::with_capacity(4);
+        if let Some(seqs) = self.routes.get(&target_mac) {
+            for e in seqs.values() {
+                let slot = upstream_hops.entry(e.next_upstream).or_insert(e.hops);
                 if e.hops < *slot {
                     *slot = e.hops;
                 }
-                m
-            });
+            }
+        }
 
         let latency_stats = self.collect_downstream_stats(target_mac);
 
         if !latency_stats.is_empty() {
             let (best_mac, best_avg) =
                 crate::control::routing_utils::pick_best_from_latency_candidates(
-                    latency_stats.clone(),
+                    &latency_stats,
                 )
                 .expect("latency_stats non-empty");
             let best_hops = latency_stats[&best_mac].hops;

@@ -57,11 +57,11 @@ pub fn pick_best_next_hop(
 /// Given a map of next-hop -> `NextHopStats`, score each entry and return a
 /// `Vec<ScoredCandidate>` sorted by score, then hops, then MAC.
 pub fn score_and_sort_latency_candidates(
-    candidates: HashMap<MacAddress, NextHopStats>,
+    candidates: &HashMap<MacAddress, NextHopStats>,
 ) -> Vec<ScoredCandidate> {
     let mut scored: Vec<ScoredCandidate> = candidates
-        .into_iter()
-        .map(|(mac, stats)| {
+        .iter()
+        .map(|(&mac, stats)| {
             let avg_us = if stats.count > 0 {
                 stats.sum_us / (stats.count as u128)
             } else {
@@ -87,7 +87,7 @@ pub fn score_and_sort_latency_candidates(
 /// Pick the best next hop from a `NextHopStats` map.
 /// Returns `(MacAddress, avg_us)` or `None` when the map is empty.
 pub fn pick_best_from_latency_candidates(
-    candidates: HashMap<MacAddress, NextHopStats>,
+    candidates: &HashMap<MacAddress, NextHopStats>,
 ) -> Option<(MacAddress, u128)> {
     let scored = score_and_sort_latency_candidates(candidates);
     scored.first().map(|c| (c.mac, c.avg_us))
@@ -138,7 +138,7 @@ mod tests {
         // Both candidates: min=10, sum=20, n=2, hops=1 -> tie on score; a should win
         m.insert(a, stats(10, 20, 2, 1));
         m.insert(b, stats(10, 20, 2, 1));
-        let best = super::pick_best_from_latency_candidates(m).expect("some");
+        let best = super::pick_best_from_latency_candidates(&m).expect("some");
         assert_eq!(best.0.bytes(), a.bytes());
     }
 
@@ -150,7 +150,7 @@ mod tests {
         // a has no measurements (count=0 -> avg=MAX); b has measurements -> b wins
         m.insert(a, stats(u128::MAX, 0, 0, 1));
         m.insert(b, stats(50, 100, 2, 1));
-        let best = super::pick_best_from_latency_candidates(m).expect("some");
+        let best = super::pick_best_from_latency_candidates(&m).expect("some");
         assert_eq!(best.0, b);
     }
 
@@ -163,7 +163,7 @@ mod tests {
         let mut m = HashMap::new();
         m.insert(a, stats(1, 0, 0, 1));
         m.insert(b, stats(100, 100, 1, 1));
-        let best = super::pick_best_from_latency_candidates(m).expect("some");
+        let best = super::pick_best_from_latency_candidates(&m).expect("some");
         assert_eq!(best.0, b);
     }
 
@@ -179,7 +179,7 @@ mod tests {
         m.insert(b, stats(50, 50, 1, 1));
         m.insert(c, stats(50, 50, 1, 1));
 
-        let ordered = super::score_and_sort_latency_candidates(m);
+        let ordered = super::score_and_sort_latency_candidates(&m);
         assert_eq!(ordered.len(), 3);
         assert_eq!(ordered[0].mac.bytes(), b.bytes());
         assert_eq!(ordered[1].mac.bytes(), c.bytes());
@@ -224,7 +224,7 @@ mod tests {
             );
         }
 
-        let actual = super::score_and_sort_latency_candidates(m.clone());
+        let actual = super::score_and_sort_latency_candidates(&m);
 
         let mut expected: Vec<ScoredCandidate> = m
             .into_iter()
@@ -276,7 +276,7 @@ mod tests {
                 })
                 .collect();
 
-            let actual = super::score_and_sort_latency_candidates(mapped.clone());
+            let actual = super::score_and_sort_latency_candidates(&mapped);
 
             let mut expected: Vec<ScoredCandidate> = mapped
                 .into_iter()

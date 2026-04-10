@@ -12,7 +12,7 @@ use std::{
     sync::{Arc, RwLock},
     time::Duration,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio::time::Instant;
 
 /// Channel send error types
@@ -36,6 +36,12 @@ struct Packet {
     instant: Instant,
 }
 
+/// Maximum number of packets buffered per channel before congestion-dropping.
+/// Prevents unbounded memory growth when latency is high relative to send rate.
+/// Kept at 32 (one tokio mpsc block) to minimise block allocations: each Packet
+/// is ~9 KB so 256 depth would require 8 × 288 KB blocks ≈ 2.3 MB per channel.
+const CHANNEL_QUEUE_DEPTH: usize = 32;
+
 /// Simulated network channel between two nodes
 ///
 /// Provides configurable network conditions:
@@ -46,9 +52,15 @@ struct Packet {
 /// The channel filters packets by MAC address and applies the configured
 /// network conditions before forwarding to the destination interface.
 pub struct Channel {
-    tx: mpsc::UnboundedSender<Packet>,
-    #[cfg_attr(not(feature = "webview"), allow(dead_code))]
-    param_notify_tx: mpsc::UnboundedSender<()>,
+    tx: mpsc::Sender<Packet>,
+    /// Coalescing notifier for parameter changes. Uses `Notify` (not a channel)
+    /// so multiple rapid updates from the fading/mobility task are collapsed into
+    /// one wakeup — preventing unbounded memory growth in the notification buffer.
+    #[cfg_attr(
+        not(any(test, feature = "webview", feature = "mobility")),
+        allow(dead_code)
+    )]
+    param_notify: Arc<Notify>,
     parameters: RwLock<ChannelParameters>,
     mac: MacAddress,
     tun: Arc<Tun>,
@@ -86,7 +98,7 @@ impl Channel {
             .write()
             .expect("channel parameters lock poisoned");
         inner.loss = loss.clamp(0.0, 1.0);
-        let _ = self.param_notify_tx.send(());
+        self.param_notify.notify_one();
     }
 
     /// Update loss and latency atomically.
@@ -99,7 +111,7 @@ impl Channel {
             .expect("channel parameters lock poisoned");
         inner.loss = loss.clamp(0.0, 1.0);
         inner.latency = std::time::Duration::from_millis(latency_ms);
-        let _ = self.param_notify_tx.send(());
+        self.param_notify.notify_one();
     }
 
     /// Update channel parameters dynamically
@@ -130,7 +142,7 @@ impl Channel {
             .write()
             .expect("channel parameters lock poisoned");
         *inner_params = result;
-        let _ = self.param_notify_tx.send(());
+        self.param_notify.notify_one();
         Ok(())
     }
 
@@ -153,14 +165,18 @@ impl Channel {
         from: &String,
         to: &String,
     ) -> Arc<Self> {
-        // Use unbounded channels for zero-copy fast path
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let (param_notify_tx, mut param_notify_rx) = mpsc::unbounded_channel();
+        // Bounded packet queue: prevents unbounded memory growth when latency > 0.
+        // Packets beyond CHANNEL_QUEUE_DEPTH are congestion-dropped (realistic behaviour).
+        let (tx, mut rx) = mpsc::channel(CHANNEL_QUEUE_DEPTH);
+        // Notify instead of a channel: multiple rapid param changes (e.g. fading task)
+        // collapse into one pending wakeup, so the buffer never grows unboundedly.
+        let param_notify = Arc::new(Notify::new());
+        let notify_for_task = param_notify.clone();
 
         tracing::info!(from, to, ?parameters, "Created channel");
         let this = Arc::new(Self {
             tx,
-            param_notify_tx,
+            param_notify,
             parameters: parameters.into(),
             mac,
             tun,
@@ -219,7 +235,7 @@ impl Channel {
                                 let _ = thisc.tun.send_all(&packet.packet[..packet.size]).await;
                                 break;
                             },
-                            _ = param_notify_rx.recv() => {
+                            _ = notify_for_task.notified() => {
                                 // Parameters changed, recalculate duration
                             },
                         }
@@ -248,13 +264,18 @@ impl Channel {
     ) -> Result<(), ChannelError> {
         self.should_send(&packet[..size])?;
 
-        // Send packet through unbounded channel - no blocking on fast path
-        // This should never fail with unbounded channel unless receiver is dropped
-        let _ = self.tx.send(Packet {
-            packet,
-            size,
-            instant: Instant::now(),
-        });
+        // Try to enqueue; if the queue is full, treat as a congestion drop.
+        if self
+            .tx
+            .try_send(Packet {
+                packet,
+                size,
+                instant: Instant::now(),
+            })
+            .is_err()
+        {
+            return Err(ChannelError::Dropped);
+        }
 
         Ok(())
     }

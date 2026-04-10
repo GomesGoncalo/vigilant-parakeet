@@ -7,6 +7,16 @@ pub enum PacketType<'a> {
     Data(Data<'a>),
 }
 
+impl<'a> PacketType<'a> {
+    /// Wire size of this packet type in bytes (includes the 1-byte type tag).
+    pub fn wire_size(&self) -> usize {
+        1 + match self {
+            PacketType::Control(c) => 1 + c.wire_size(),
+            PacketType::Data(d) => 1 + d.wire_size(),
+        }
+    }
+}
+
 impl<'a> TryFrom<&'a [u8]> for PacketType<'a> {
     type Error = NodeError;
 

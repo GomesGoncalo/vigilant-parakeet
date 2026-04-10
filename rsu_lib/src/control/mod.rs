@@ -174,7 +174,7 @@ impl Rsu {
                     let messages = node::wire_traffic(&device, |pkt, size| {
                         async move {
                             let data = &pkt[..size];
-                            let mut all_responses = Vec::new();
+                            let mut all_responses = Vec::with_capacity(4);
                             let mut offset = 0;
 
                             while offset < data.len() {
@@ -185,10 +185,7 @@ impl Rsu {
                                         if let Ok(Some(responses)) = response {
                                             all_responses.extend(responses);
                                         }
-                                        // Use flat serialization for better performance
-                                        let msg_bytes: Vec<u8> = (&msg).into();
-                                        let msg_size: usize = msg_bytes.len();
-                                        offset += msg_size;
+                                        offset += msg.wire_size();
                                     }
                                     Err(e) => {
                                         tracing::trace!(

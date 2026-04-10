@@ -32,6 +32,9 @@ mod webview;
 use node_factory::create_node_from_settings;
 use simulator::Simulator;
 
+#[global_allocator]
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = SimArgs::parse();
