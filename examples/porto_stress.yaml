@@ -1,4 +1,5 @@
 nodes:
+  # RSUs — 20 nodes in a uniform 4×5 grid across the Porto bbox
   rsu1:
     config_path: examples/porto/n_rsu1.yaml
   rsu2:
@@ -21,6 +22,25 @@ nodes:
     config_path: examples/porto/n_rsu10.yaml
   rsu11:
     config_path: examples/porto/n_rsu11.yaml
+  rsu12:
+    config_path: examples/porto/n_rsu12.yaml
+  rsu13:
+    config_path: examples/porto/n_rsu13.yaml
+  rsu14:
+    config_path: examples/porto/n_rsu14.yaml
+  rsu15:
+    config_path: examples/porto/n_rsu15.yaml
+  rsu16:
+    config_path: examples/porto/n_rsu16.yaml
+  rsu17:
+    config_path: examples/porto/n_rsu17.yaml
+  rsu18:
+    config_path: examples/porto/n_rsu18.yaml
+  rsu19:
+    config_path: examples/porto/n_rsu19.yaml
+  rsu20:
+    config_path: examples/porto/n_rsu20.yaml
+  # OBUs — 70 mobile nodes
   obu1:
     config_path: examples/porto/n_obu1.yaml
   obu2:
@@ -61,6 +81,106 @@ nodes:
     config_path: examples/porto/n_obu19.yaml
   obu20:
     config_path: examples/porto/n_obu20.yaml
+  obu21:
+    config_path: examples/porto/n_obu21.yaml
+  obu22:
+    config_path: examples/porto/n_obu22.yaml
+  obu23:
+    config_path: examples/porto/n_obu23.yaml
+  obu24:
+    config_path: examples/porto/n_obu24.yaml
+  obu25:
+    config_path: examples/porto/n_obu25.yaml
+  obu26:
+    config_path: examples/porto/n_obu26.yaml
+  obu27:
+    config_path: examples/porto/n_obu27.yaml
+  obu28:
+    config_path: examples/porto/n_obu28.yaml
+  obu29:
+    config_path: examples/porto/n_obu29.yaml
+  obu30:
+    config_path: examples/porto/n_obu30.yaml
+  obu31:
+    config_path: examples/porto/n_obu31.yaml
+  obu32:
+    config_path: examples/porto/n_obu32.yaml
+  obu33:
+    config_path: examples/porto/n_obu33.yaml
+  obu34:
+    config_path: examples/porto/n_obu34.yaml
+  obu35:
+    config_path: examples/porto/n_obu35.yaml
+  obu36:
+    config_path: examples/porto/n_obu36.yaml
+  obu37:
+    config_path: examples/porto/n_obu37.yaml
+  obu38:
+    config_path: examples/porto/n_obu38.yaml
+  obu39:
+    config_path: examples/porto/n_obu39.yaml
+  obu40:
+    config_path: examples/porto/n_obu40.yaml
+  obu41:
+    config_path: examples/porto/n_obu41.yaml
+  obu42:
+    config_path: examples/porto/n_obu42.yaml
+  obu43:
+    config_path: examples/porto/n_obu43.yaml
+  obu44:
+    config_path: examples/porto/n_obu44.yaml
+  obu45:
+    config_path: examples/porto/n_obu45.yaml
+  obu46:
+    config_path: examples/porto/n_obu46.yaml
+  obu47:
+    config_path: examples/porto/n_obu47.yaml
+  obu48:
+    config_path: examples/porto/n_obu48.yaml
+  obu49:
+    config_path: examples/porto/n_obu49.yaml
+  obu50:
+    config_path: examples/porto/n_obu50.yaml
+  obu51:
+    config_path: examples/porto/n_obu51.yaml
+  obu52:
+    config_path: examples/porto/n_obu52.yaml
+  obu53:
+    config_path: examples/porto/n_obu53.yaml
+  obu54:
+    config_path: examples/porto/n_obu54.yaml
+  obu55:
+    config_path: examples/porto/n_obu55.yaml
+  obu56:
+    config_path: examples/porto/n_obu56.yaml
+  obu57:
+    config_path: examples/porto/n_obu57.yaml
+  obu58:
+    config_path: examples/porto/n_obu58.yaml
+  obu59:
+    config_path: examples/porto/n_obu59.yaml
+  obu60:
+    config_path: examples/porto/n_obu60.yaml
+  obu61:
+    config_path: examples/porto/n_obu61.yaml
+  obu62:
+    config_path: examples/porto/n_obu62.yaml
+  obu63:
+    config_path: examples/porto/n_obu63.yaml
+  obu64:
+    config_path: examples/porto/n_obu64.yaml
+  obu65:
+    config_path: examples/porto/n_obu65.yaml
+  obu66:
+    config_path: examples/porto/n_obu66.yaml
+  obu67:
+    config_path: examples/porto/n_obu67.yaml
+  obu68:
+    config_path: examples/porto/n_obu68.yaml
+  obu69:
+    config_path: examples/porto/n_obu69.yaml
+  obu70:
+    config_path: examples/porto/n_obu70.yaml
   server1:
     config_path: examples/porto/n_server1.yaml
 
@@ -78,10 +198,10 @@ mobility:
 
 nakagami:
   enabled: true
-  m: 10.0              # Nakagami shape (1=Rayleigh, higher=more stable)
-  eta: 2.0            # Path-loss exponent: 2.7 for dense urban Porto
+  m: 3.0              # Nakagami shape (1=Rayleigh, higher=more stable)
+  eta: 2.7            # Path-loss exponent: 2.7 for dense urban Porto
   snr_0_db: 85.0      # Mean SNR at 1 m reference (dB); realistic for V2X DSRC TX power
   snr_thresh_db: 10.0 # Standard DSRC SNR threshold (dB); avoids cliff near hard cutoff
-  max_range_m: 1500.0 # Hard cut-off (m); covers RSU spacing gaps (~1–1.5 km between RSUs)
+  max_range_m: 800.0 # Hard cut-off (m); covers RSU spacing gaps (~1–1.5 km between RSUs)
   latency_ms_per_100m: 0.5 # 0.5 ms/100m ≈ 5x realistic V2X propagation; keeps routing preference without inflating RTTs
   update_ms: 20       # How often to recompute fading (ms)

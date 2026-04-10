@@ -1,0 +1,8 @@
+# RSU node config (rsu20) — grid position row4 col5
+node_type: Rsu
+hello_history: 10
+hello_periodicity: 5000
+external_tap_ip: 172.16.0.21
+server_ip: 172.16.0.1
+lat: 41.1706
+lon: -8.5970

@@ -1,8 +1,8 @@
-# RSU node config (rsu10) — SW / Lordelo corner
+# RSU node config (rsu10) — grid position row2 col5
 node_type: Rsu
 hello_history: 10
 hello_periodicity: 5000
 external_tap_ip: 172.16.0.11
 server_ip: 172.16.0.1
-lat: 41.143
-lon: -8.648
+lat: 41.1531
+lon: -8.5970
