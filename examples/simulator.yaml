@@ -1,68 +1,68 @@
 nodes:
   rsu1:
-    config_path: examples/n_rsu1.yaml
+    config_path: examples/porto/n_rsu1.yaml
   rsu2:
-    config_path: examples/n_rsu2.yaml
+    config_path: examples/porto/n_rsu2.yaml
   rsu3:
-    config_path: examples/n_rsu3.yaml
+    config_path: examples/porto/n_rsu3.yaml
   rsu4:
-    config_path: examples/n_rsu4.yaml
+    config_path: examples/porto/n_rsu4.yaml
   rsu5:
-    config_path: examples/n_rsu5.yaml
+    config_path: examples/porto/n_rsu5.yaml
   rsu6:
-    config_path: examples/n_rsu6.yaml
+    config_path: examples/porto/n_rsu6.yaml
   rsu7:
-    config_path: examples/n_rsu7.yaml
+    config_path: examples/porto/n_rsu7.yaml
   rsu8:
-    config_path: examples/n_rsu8.yaml
+    config_path: examples/porto/n_rsu8.yaml
   rsu9:
-    config_path: examples/n_rsu9.yaml
+    config_path: examples/porto/n_rsu9.yaml
   rsu10:
-    config_path: examples/n_rsu10.yaml
+    config_path: examples/porto/n_rsu10.yaml
   rsu11:
-    config_path: examples/n_rsu11.yaml
+    config_path: examples/porto/n_rsu11.yaml
   obu1:
-    config_path: examples/n_obu1.yaml
+    config_path: examples/porto/n_obu1.yaml
   obu2:
-    config_path: examples/n_obu2.yaml
+    config_path: examples/porto/n_obu2.yaml
   obu3:
-    config_path: examples/n_obu3.yaml
+    config_path: examples/porto/n_obu3.yaml
   obu4:
-    config_path: examples/n_obu4.yaml
+    config_path: examples/porto/n_obu4.yaml
   obu5:
-    config_path: examples/n_obu5.yaml
+    config_path: examples/porto/n_obu5.yaml
   obu6:
-    config_path: examples/n_obu6.yaml
+    config_path: examples/porto/n_obu6.yaml
   obu7:
-    config_path: examples/n_obu7.yaml
+    config_path: examples/porto/n_obu7.yaml
   obu8:
-    config_path: examples/n_obu8.yaml
+    config_path: examples/porto/n_obu8.yaml
   obu9:
-    config_path: examples/n_obu9.yaml
+    config_path: examples/porto/n_obu9.yaml
   obu10:
-    config_path: examples/n_obu10.yaml
+    config_path: examples/porto/n_obu10.yaml
   obu11:
-    config_path: examples/n_obu11.yaml
+    config_path: examples/porto/n_obu11.yaml
   obu12:
-    config_path: examples/n_obu12.yaml
+    config_path: examples/porto/n_obu12.yaml
   obu13:
-    config_path: examples/n_obu13.yaml
+    config_path: examples/porto/n_obu13.yaml
   obu14:
-    config_path: examples/n_obu14.yaml
+    config_path: examples/porto/n_obu14.yaml
   obu15:
-    config_path: examples/n_obu15.yaml
+    config_path: examples/porto/n_obu15.yaml
   obu16:
-    config_path: examples/n_obu16.yaml
+    config_path: examples/porto/n_obu16.yaml
   obu17:
-    config_path: examples/n_obu17.yaml
+    config_path: examples/porto/n_obu17.yaml
   obu18:
-    config_path: examples/n_obu18.yaml
+    config_path: examples/porto/n_obu18.yaml
   obu19:
-    config_path: examples/n_obu19.yaml
+    config_path: examples/porto/n_obu19.yaml
   obu20:
-    config_path: examples/n_obu20.yaml
+    config_path: examples/porto/n_obu20.yaml
   server1:
-    config_path: examples/n_server1.yaml
+    config_path: examples/porto/n_server1.yaml
 
 mobility:
   enabled: true
