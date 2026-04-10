@@ -305,11 +305,11 @@ fn rssi_guard_keeps_cached_rsu_when_table_empty_at_startup() {
 /// when the relay has more hops.
 ///
 /// OBU2 receives RSU1 heartbeats via two paths:
-///   - Direct from RSU1 (1 hop)  — RSSI = -85 dBm (weak / far)
-///   - Via OBU1 relay  (2 hops)  — RSSI = -55 dBm (strong / close)
+///   - Direct from RSU1 (1 hop)  — RSSI = -85 dBm → eff = -85 - 5×0 = -85 dBm
+///   - Via OBU1 relay  (2 hops)  — RSSI = -55 dBm → eff = -55 - 5×1 = -60 dBm
 ///
 /// Without RSSI the min-hops fallback picks RSU1 (1 hop).
-/// With RSSI the routing should switch to OBU1 (stronger first-hop signal).
+/// With RSSI the routing should switch to OBU1 (stronger effective signal).
 #[test]
 fn rssi_next_hop_prefers_stronger_signal_over_fewer_hops() {
     use std::collections::HashMap;
@@ -374,8 +374,17 @@ fn rssi_next_hop_prefers_stronger_signal_over_fewer_hops() {
     assert_eq!(route.hops, 2);
 }
 
-/// RSSI hysteresis: a difference ≤ 3 dB must not trigger a next-hop switch.
-/// A difference > 3 dB must trigger a switch.
+/// RSSI hysteresis with hop penalty: a candidate with a better raw RSSI but
+/// equal or worse effective RSSI (after the per-relay penalty) must not trigger
+/// a next-hop switch.  A switch occurs only when the effective RSSI improvement
+/// exceeds the 3 dB guard.
+///
+/// Setup (RSSI_HOP_PENALTY_DB = 5 dB/relay):
+///   OBU1 (cached):  -60 dBm, 2 hops → eff = -60 - 5×1 = -65 dBm
+///   RSU1 challenger (case 1): -63 dBm, 1 hop → eff = -63 - 5×0 = -63 dBm
+///     effective diff = -63 − (−65) = 2 dB  → below 3 dB threshold → keep OBU1
+///   RSU1 challenger (case 2): -58 dBm, 1 hop → eff = -58 dBm
+///     effective diff = -58 − (−65) = 7 dB  → above 3 dB threshold → switch
 #[test]
 fn rssi_next_hop_hysteresis_prevents_flapping() {
     use std::collections::HashMap;
@@ -412,25 +421,30 @@ fn rssi_next_hop_hysteresis_prevents_flapping() {
     // Cache OBU1 as current upstream (simulates prior selection).
     routing.test_set_cached_upstream(obu1, rsu1);
 
+    // OBU1: -60 dBm, relay_hops=1 → eff = -65 dBm
+    // RSU1: -63 dBm, relay_hops=0 → eff = -63 dBm  (diff = 2 dB — below guard)
     let rssi_table: crate::control::routing::RssiTable = Arc::new(RwLock::new({
         let mut m = HashMap::new();
         m.insert(obu1, -60.0_f32);
-        m.insert(rsu1, -59.0_f32); // 1 dB stronger — below threshold
+        m.insert(rsu1, -63.0_f32);
         m
     }));
     routing.set_rssi_table(rssi_table.clone());
 
-    // 1 dB difference: must keep OBU1 (hysteresis).
+    // Effective diff = 2 dB: must keep OBU1 (hysteresis).
     let route = routing.get_route_to(Some(rsu1)).expect("route");
-    assert_eq!(route.mac, obu1, "1 dB difference should not trigger switch");
+    assert_eq!(
+        route.mac, obu1,
+        "2 dB effective difference should not trigger switch"
+    );
 
-    // Strengthen RSU1 to -55 dBm (5 dB over OBU1's -60 dBm) → must switch.
-    rssi_table.write().unwrap().insert(rsu1, -55.0_f32);
+    // RSU1: -58 dBm → eff = -58 dBm  (diff = -58 − (−65) = 7 dB — above guard)
+    rssi_table.write().unwrap().insert(rsu1, -58.0_f32);
     let route = routing
         .get_route_to(Some(rsu1))
         .expect("route after rssi update");
     assert_eq!(
         route.mac, rsu1,
-        "5 dB difference should trigger switch to RSU1"
+        "7 dB effective difference should trigger switch to RSU1"
     );
 }

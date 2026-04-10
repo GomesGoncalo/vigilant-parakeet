@@ -13,10 +13,9 @@ implemented routing stack is heartbeat-driven and includes a revised route
 selection algorithm with a latency-aware composite scoring metric,
 RSSI-aware candidate ranking, a 30% hysteresis band to reduce flapping, and
 N‑best candidate caching for fast, stable failover. RSSI measurements are
-injected via a shared RSSI table and applied through a 3 dB switch margin so
-that the next-hop with the strongest first-hop signal is preferred; a
-reception-quality/hops fallback operates
-when RSSI is unavailable. The physical layer model
+injected via a shared RSSI table and combined with a per-relay hop penalty
+so that longer chains must present a proportionally stronger first-hop signal;
+a reception-quality/hops fallback operates when RSSI is unavailable. The physical layer model
 includes a Nakagami‑m small‑scale fading implementation that maps outage
 probability to per-link loss as a function of inter-node distance, enabling
 controlled evaluation of fading effects on higher-layer behaviour. Mobility is

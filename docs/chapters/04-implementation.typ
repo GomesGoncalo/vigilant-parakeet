@@ -140,25 +140,36 @@ A cached next-hop is retained unless the best candidate either strictly reduces
 hop count or achieves a latency score at least 30% lower, preventing oscillation
 in scenarios where RTT samples are noisy but mean link quality is stable.
 
-*Tier 2 — RSSI-based next-hop selection:* when no latency measurements are yet
-available but an RSSI table is attached, `get_route_to()` selects the next-hop
-with the highest measured first-hop signal strength. This is the dominant path
-in the early phase of a vehicle's journey, before the OBU has accumulated
-sufficient round-trip samples. The RSSI table is a shared
-`Arc<RwLock<HashMap<MacAddress, f32>>>` populated by the Nakagami-m fading task
-in the simulator; in the absence of an attached table the tier is skipped. A
-3 dB switch margin is applied: the cached next-hop is retained unless the
-incoming candidate's RSSI exceeds it by more than 3 dB, corresponding to
-approximately 40% closer distance in free-space path loss. This criterion is
-equivalent to the cellular-handover A3 event with a 3 dB offset. A cached
-next-hop whose RSSI measurement is absent (startup, before the fading task has
-populated the table) is kept unconditionally, preventing every arriving heartbeat
-from evicting it until measurements become available.
+*Tier 2 — Effective-RSSI next-hop selection:* when no latency measurements are
+yet available but an RSSI table is attached, `get_route_to()` selects the
+next-hop with the highest *effective* RSSI. Relay chains introduce processing
+overhead and queue pressure at every intermediate node, and each additional hop
+is a potential bottleneck under load. To account for this, raw signal strength is
+discounted by a per-relay penalty:
 
-The same RSSI table drives the ordering of failover candidates in
+$ "eff"_m = "RSSI"_m - Delta_h dot (h_m - 1) $
+
+where $"RSSI"_m$ is the measured first-hop signal from next-hop $m$ (dBm),
+$h_m$ is the total hop count for paths delivered via $m$ (so $h_m - 1$ is the
+number of relay nodes), and $Delta_h = 5 "dBm"$ is the per-relay penalty
+constant. A direct path ($h_m = 1$) carries no penalty; each relay hop
+subtracts 5 dBm from the effective score. This corresponds to requiring that
+each relay leg present a signal roughly 78% closer in free-space path loss
+relative to the unpenalised direct path.
+
+This is the dominant selection path in the early phase of a vehicle's journey,
+before the OBU has accumulated sufficient round-trip samples. The RSSI table is
+a shared `Arc<RwLock<HashMap<MacAddress, f32>>>` populated by the Nakagami-m
+fading task in the simulator. A 3 dB switch margin is applied to effective RSSI:
+the cached next-hop is retained unless the challenger's effective RSSI exceeds
+it by more than 3 dB, equivalent to the cellular-handover A3 event criterion. A
+cached next-hop whose RSSI measurement is absent (startup, before the fading
+task has populated the table) is kept unconditionally.
+
+The same effective-RSSI metric drives the ordering of failover candidates in
 `build_candidate_list()`: when RSSI data are present, the N-best list is sorted
-by RSSI descending so that the strongest-signal next-hop is promoted first on
-failover, rather than the one with the fewest hops.
+by effective RSSI descending so that the strongest relay-penalised next-hop is
+promoted first on failover.
 
 *Tier 3 — Hop-count minimisation:* in the absence of both latency measurements
 and RSSI data, `get_route_to()` falls back to selecting the next-hop that
