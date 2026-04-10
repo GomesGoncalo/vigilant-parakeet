@@ -281,3 +281,70 @@ fn mutual_loop_resolved_via_rsu_direct_when_all_entries_loop() {
         "should produce a forwarded reply via RSU direct"
     );
 }
+
+/// Regression: cached upstream must be refreshed on every new non-duplicate
+/// heartbeat, not only on first route discovery.
+///
+/// When the primary direct path disappears and only relay heartbeats arrive as
+/// new (non-duplicate) sequences, the old `old_route.is_none()` guard meant
+/// `select_and_cache_upstream` was never called — leaving the cached upstream
+/// pointing at the unreachable direct path indefinitely (orphan).
+///
+/// With hello_history=2 and the fix in place:
+/// - Phase 1: 2 direct heartbeats (pkt.from=rsu1) fill the window → cached=rsu1
+/// - Phase 2: 2 relay heartbeats (pkt.from=obu1, new seq IDs).
+///   After both arrive, rsu1 has fully rotated out of the history window.
+///   select_and_cache_upstream fires on each new heartbeat (new fix), and on
+///   the second relay heartbeat upstream_hops={obu1} only — so obu1 is chosen.
+#[test]
+fn cached_upstream_refreshed_when_direct_path_lost() {
+    use tokio::time::Duration;
+
+    // hello_history=2 so two relay heartbeats are enough to rotate out the
+    // direct-path entries.
+    let args = crate::test_helpers::mk_test_obu_args();
+    let boot = Instant::now();
+    let mut routing = Routing::new(&args, &boot).expect("routing built");
+
+    let rsu1: MacAddress = [0x11u8; 6].into();
+    let obu1: MacAddress = [0x22u8; 6].into();
+    let our_mac: MacAddress = [0x99u8; 6].into();
+
+    // Phase 1: two direct heartbeats (pkt.from = rsu1).
+    for seq in 1u32..=2 {
+        let hb = Heartbeat::new(Duration::from_millis(u64::from(seq) * 1000), seq, rsu1);
+        let msg = Message::new(
+            rsu1,
+            [0xFF; 6].into(),
+            PacketType::Control(Control::Heartbeat(hb)),
+        );
+        routing.handle_heartbeat(&msg, our_mac).expect("hb ok");
+    }
+    assert_eq!(
+        routing.get_cached_upstream(),
+        Some(rsu1),
+        "after direct-only heartbeats, upstream should be rsu1"
+    );
+
+    // Phase 2: two relay heartbeats (pkt.from = obu1, new seq IDs).
+    // These are new sequences so seen_seq=false.  With the fix, each one
+    // triggers select_and_cache_upstream; after the second one rsu1 has
+    // rotated out of the history window entirely → obu1 is the only option.
+    for seq in 3u32..=4 {
+        let hb = Heartbeat::new(Duration::from_millis(u64::from(seq) * 1000), seq, rsu1);
+        let msg = Message::new(
+            obu1,
+            [0xFF; 6].into(),
+            PacketType::Control(Control::Heartbeat(hb)),
+        );
+        routing
+            .handle_heartbeat(&msg, our_mac)
+            .expect("relay hb ok");
+    }
+
+    assert_eq!(
+        routing.get_cached_upstream(),
+        Some(obu1),
+        "after relay-only heartbeats, upstream must switch to obu1 (direct path lost)"
+    );
+}

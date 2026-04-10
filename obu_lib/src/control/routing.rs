@@ -566,7 +566,12 @@ impl Routing {
         }
 
         let new_route = self.get_route_to(Some(message.source()));
-        let should_cache = old_route.is_none() && new_route.is_some();
+        // Re-evaluate the cached upstream on every new non-duplicate heartbeat.
+        // Restricting this to old_route.is_none() (first discovery) means that
+        // when the primary path disappears and only relay heartbeats arrive as new
+        // sequences, the cache is never refreshed and the OBU becomes orphaned.
+        // The guards inside select_and_cache_upstream prevent unnecessary switching.
+        let should_cache = new_route.is_some();
         Self::log_route_change(
             old_route,
             new_route,
