@@ -1,0 +1,17 @@
+[package]
+name = "native_viz"
+version = "0.1.0"
+edition = "2021"
+description = "Native desktop visualisation for the vigilant-parakeet simulator"
+
+[[bin]]
+name = "native_viz"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.34", default-features = true }
+egui = "0.34"
+walkers = "0.53"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

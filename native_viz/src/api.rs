@@ -1,0 +1,78 @@
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::mpsc::SyncSender;
+use std::time::Duration;
+
+/// Geographic position of one node, as returned by `GET /positions`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct NodePosition {
+    pub lat: f64,
+    pub lon: f64,
+    pub speed: f64,
+    pub bearing: f64,
+}
+
+/// Routing / type info for one node, as returned by `GET /nodes`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct NodeInfo {
+    pub node_type: String,
+}
+
+/// Everything the UI needs for one rendered frame.
+#[derive(Debug, Clone, Default)]
+pub struct Snapshot {
+    pub positions: HashMap<String, NodePosition>,
+    pub node_info: HashMap<String, NodeInfo>,
+    /// Timestamp (monotonic) of the last successful positions fetch.
+    pub last_positions_at: Option<std::time::Instant>,
+}
+
+/// Background polling loop.  Runs forever on its own OS thread.
+///
+/// * Positions are refreshed every 200 ms for smooth vehicle movement.
+/// * Node info (type, upstream) is refreshed every 2 s (slower, less volatile).
+pub fn poll_loop(base_url: String, tx: SyncSender<Snapshot>) {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("failed to build HTTP client");
+
+    let positions_url = format!("{base_url}/positions");
+    let nodes_url = format!("{base_url}/nodes");
+
+    let mut snapshot = Snapshot::default();
+    let positions_interval = Duration::from_millis(200);
+    let node_info_interval = Duration::from_secs(2);
+
+    let mut next_node_info = std::time::Instant::now();
+
+    loop {
+        let tick_start = std::time::Instant::now();
+
+        // Fetch positions on every tick.
+        if let Ok(resp) = client.get(&positions_url).send() {
+            if let Ok(positions) = resp.json::<HashMap<String, NodePosition>>() {
+                snapshot.positions = positions;
+                snapshot.last_positions_at = Some(std::time::Instant::now());
+            }
+        }
+
+        // Fetch node info on a slower cadence.
+        if tick_start >= next_node_info {
+            if let Ok(resp) = client.get(&nodes_url).send() {
+                if let Ok(info) = resp.json::<HashMap<String, NodeInfo>>() {
+                    snapshot.node_info = info;
+                }
+            }
+            next_node_info = tick_start + node_info_interval;
+        }
+
+        // Best-effort send; if the UI is busy the oldest snapshot is dropped.
+        let _ = tx.try_send(snapshot.clone());
+
+        let elapsed = tick_start.elapsed();
+        if elapsed < positions_interval {
+            std::thread::sleep(positions_interval - elapsed);
+        }
+    }
+}
