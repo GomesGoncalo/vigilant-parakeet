@@ -113,6 +113,27 @@ pub enum DhGroup {
     MlKem768,
 }
 
+impl DhGroup {
+    /// Returns the wire-format byte identifier for this DH group.
+    pub fn wire_id(self) -> u8 {
+        match self {
+            Self::X25519 => 0x01,
+            Self::MlKem768 => 0x02,
+        }
+    }
+
+    /// Maps a wire-format byte back to a [`DhGroup`].
+    ///
+    /// Returns `None` for unrecognised IDs.
+    pub fn from_wire_id(id: u8) -> Option<Self> {
+        match id {
+            0x01 => Some(Self::X25519),
+            0x02 => Some(Self::MlKem768),
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for DhGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -145,6 +166,27 @@ pub enum SigningAlgorithm {
     /// ML-DSA-65 (NIST FIPS 204) — quantum-resistant digital signature.
     /// Verifying key: 1952 bytes; signature: 3309 bytes.
     MlDsa65,
+}
+
+impl SigningAlgorithm {
+    /// Returns the wire-format byte identifier for this signing algorithm.
+    pub fn wire_id(self) -> u8 {
+        match self {
+            Self::Ed25519 => 0x01,
+            Self::MlDsa65 => 0x02,
+        }
+    }
+
+    /// Maps a wire-format byte back to a [`SigningAlgorithm`].
+    ///
+    /// Returns `None` for unrecognised IDs — callers should drop the message.
+    pub fn from_wire_id(id: u8) -> Option<Self> {
+        match id {
+            0x01 => Some(Self::Ed25519),
+            0x02 => Some(Self::MlDsa65),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for SigningAlgorithm {
@@ -379,18 +421,6 @@ pub fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
         .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
         .collect();
     bytes.and_then(|b| b.try_into().ok())
-}
-
-/// Map a wire-format signature algorithm ID to a [`SigningAlgorithm`].
-///
-/// Returns `None` for unrecognised IDs — callers should drop the message.
-pub fn sig_algo_from_id(id: u8) -> Option<SigningAlgorithm> {
-    use crate::messages::control::key_exchange::{SIG_ALGO_ED25519, SIG_ALGO_ML_DSA_65};
-    match id {
-        SIG_ALGO_ED25519 => Some(SigningAlgorithm::Ed25519),
-        SIG_ALGO_ML_DSA_65 => Some(SigningAlgorithm::MlDsa65),
-        _ => None,
-    }
 }
 
 /// Verify a DH key exchange signature.

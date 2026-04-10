@@ -1,6 +1,7 @@
 use crate::registry::{self, RegistrationMessage};
 use anyhow::{bail, Result};
 use mac_address::MacAddress;
+use node_lib::crypto::SigningAlgorithm;
 
 /// Message type byte for upstream data forwarding (RSU -> Server).
 pub const UPSTREAM_TYPE: u8 = 0x02;
@@ -305,8 +306,8 @@ pub struct SessionTerminatedForward {
     pub timestamp_secs: Option<u64>,
     /// 8-byte server-generated random nonce.
     pub nonce: Option<[u8; 8]>,
-    /// Signature algorithm ID (optional; same constants as KeyExchange).
-    pub sig_algo_id: Option<u8>,
+    /// Signature algorithm (optional; same algorithms as KeyExchange).
+    pub sig_algo: Option<SigningAlgorithm>,
     /// Raw signature over `[0x04][OBU_MAC 6B][TIMESTAMP_SECS 8B][NONCE 8B]`.
     pub signature: Option<Vec<u8>>,
 }
@@ -317,7 +318,7 @@ impl SessionTerminatedForward {
             obu_mac,
             timestamp_secs: None,
             nonce: None,
-            sig_algo_id: None,
+            sig_algo: None,
             signature: None,
         }
     }
@@ -326,14 +327,14 @@ impl SessionTerminatedForward {
         obu_mac: MacAddress,
         timestamp_secs: u64,
         nonce: [u8; 8],
-        sig_algo_id: u8,
+        sig_algo: SigningAlgorithm,
         signature: Vec<u8>,
     ) -> Self {
         Self {
             obu_mac,
             timestamp_secs: Some(timestamp_secs),
             nonce: Some(nonce),
-            sig_algo_id: Some(sig_algo_id),
+            sig_algo: Some(sig_algo),
             signature: Some(signature),
         }
     }
@@ -343,15 +344,15 @@ impl SessionTerminatedForward {
         buf.extend_from_slice(&registry::MAGIC);
         buf.push(SESSION_TERMINATED_TYPE);
         buf.extend_from_slice(&self.obu_mac.bytes());
-        if let (Some(ts), Some(nonce), Some(algo_id), Some(sig)) = (
+        if let (Some(ts), Some(nonce), Some(algo), Some(sig)) = (
             self.timestamp_secs,
             self.nonce,
-            self.sig_algo_id,
+            self.sig_algo,
             self.signature.as_deref(),
         ) {
             buf.extend_from_slice(&ts.to_be_bytes());
             buf.extend_from_slice(&nonce);
-            buf.push(algo_id);
+            buf.push(algo.wire_id());
             let sig_len = sig.len() as u16;
             buf.extend_from_slice(&sig_len.to_be_bytes());
             buf.extend_from_slice(sig);
@@ -378,7 +379,7 @@ impl SessionTerminatedForward {
             }
             let timestamp_secs = u64::from_be_bytes(data[9..17].try_into().ok()?);
             let nonce: [u8; 8] = data[17..25].try_into().ok()?;
-            let sig_algo_id = data[25];
+            let sig_algo = SigningAlgorithm::from_wire_id(data[25])?;
             let sig_len = u16::from_be_bytes([data[26], data[27]]) as usize;
             if data.len() < 28 + sig_len {
                 return None;
@@ -388,7 +389,7 @@ impl SessionTerminatedForward {
                 obu_mac,
                 timestamp_secs: Some(timestamp_secs),
                 nonce: Some(nonce),
-                sig_algo_id: Some(sig_algo_id),
+                sig_algo: Some(sig_algo),
                 signature: Some(signature),
             });
         }
@@ -397,7 +398,7 @@ impl SessionTerminatedForward {
             obu_mac,
             timestamp_secs: None,
             nonce: None,
-            sig_algo_id: None,
+            sig_algo: None,
             signature: None,
         })
     }

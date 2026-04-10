@@ -2,17 +2,7 @@ use std::borrow::Cow;
 
 use mac_address::MacAddress;
 
-// ── Algorithm identifiers ─────────────────────────────────────────────
-
-/// Key-exchange algorithm: X25519 ECDH.
-pub const KE_ALGO_X25519: u8 = 0x01;
-/// Key-exchange algorithm: ML-KEM-768 (NIST FIPS 203).
-pub const KE_ALGO_ML_KEM_768: u8 = 0x02;
-
-/// Signing algorithm: Ed25519.
-pub const SIG_ALGO_ED25519: u8 = 0x01;
-/// Signing algorithm: ML-DSA-65 (NIST FIPS 204).
-pub const SIG_ALGO_ML_DSA_65: u8 = 0x02;
+use crate::crypto::{DhGroup, SigningAlgorithm};
 
 // ── Wire format sizes ─────────────────────────────────────────────────
 //
@@ -22,12 +12,6 @@ pub const SIG_ALGO_ML_DSA_65: u8 = 0x02;
 // Signed extension (appended after base):
 //   sig_algo_id (1) | signing_pubkey_len (2 BE) | signing_pubkey (var)
 //   | signature_len (2 BE) | signature (var)
-//
-// X25519 key_material = 32 bytes DH public key
-// ML-KEM-768 Init key_material = 1184 bytes encapsulation key
-// ML-KEM-768 Reply key_material = 1088 bytes ciphertext
-// Ed25519 signing_pubkey = 32 bytes, signature = 64 bytes
-// ML-DSA-65 signing_pubkey = 1952 bytes, signature = 3309 bytes
 
 /// Minimum bytes needed to read the base header before key_material.
 /// algo_id(1) + key_id(4) + key_material_len(2) = 7 bytes.
@@ -61,22 +45,29 @@ pub const ED25519_SIG_LEN: usize = 64;
 /// For ML-KEM-768: `key_material` = 1184-byte encapsulation key.
 #[derive(Debug, Clone)]
 pub struct KeyExchangeInit<'a> {
+    /// Wire-format algorithm byte (derived from DhGroup).
     algo_id: u8,
     key_id: Cow<'a, [u8]>,
     key_material: Cow<'a, [u8]>,
     sender: Cow<'a, [u8]>,
+    /// Wire-format sig algorithm byte (derived from SigningAlgorithm), if signed.
     sig_algo_id: Option<u8>,
     signing_pubkey: Option<Cow<'a, [u8]>>,
     signature: Option<Cow<'a, [u8]>>,
 }
 
 impl<'a> KeyExchangeInit<'a> {
-    /// Create an unsigned X25519 message.
-    pub fn new(key_id: u32, public_key: [u8; 32], sender: MacAddress) -> Self {
+    /// Create an unsigned key exchange initiation.
+    pub fn new_unsigned(
+        dh_group: DhGroup,
+        key_id: u32,
+        key_material: Vec<u8>,
+        sender: MacAddress,
+    ) -> Self {
         Self {
-            algo_id: KE_ALGO_X25519,
+            algo_id: dh_group.wire_id(),
             key_id: Cow::Owned(key_id.to_be_bytes().to_vec()),
-            key_material: Cow::Owned(public_key.to_vec()),
+            key_material: Cow::Owned(key_material),
             sender: Cow::Owned(sender.bytes().to_vec()),
             sig_algo_id: None,
             signing_pubkey: None,
@@ -84,86 +75,27 @@ impl<'a> KeyExchangeInit<'a> {
         }
     }
 
-    /// Create a signed X25519 message (Ed25519 signature).
+    /// Create a signed key exchange initiation.
     pub fn new_signed(
+        dh_group: DhGroup,
         key_id: u32,
-        public_key: [u8; 32],
+        key_material: Vec<u8>,
         sender: MacAddress,
-        signing_pubkey: [u8; 32],
-        signature: [u8; 64],
-    ) -> Self {
-        Self {
-            algo_id: KE_ALGO_X25519,
-            key_id: Cow::Owned(key_id.to_be_bytes().to_vec()),
-            key_material: Cow::Owned(public_key.to_vec()),
-            sender: Cow::Owned(sender.bytes().to_vec()),
-            sig_algo_id: Some(SIG_ALGO_ED25519),
-            signing_pubkey: Some(Cow::Owned(signing_pubkey.to_vec())),
-            signature: Some(Cow::Owned(signature.to_vec())),
-        }
-    }
-
-    /// Create an unsigned ML-KEM-768 message.
-    /// `encap_key` is the 1184-byte encapsulation (public) key.
-    pub fn new_ml_kem_768(
-        key_id: u32,
-        encap_key: &[u8; crate::crypto::ML_KEM_768_EK_LEN],
-        sender: MacAddress,
-    ) -> Self {
-        Self {
-            algo_id: KE_ALGO_ML_KEM_768,
-            key_id: Cow::Owned(key_id.to_be_bytes().to_vec()),
-            key_material: Cow::Owned(encap_key.to_vec()),
-            sender: Cow::Owned(sender.bytes().to_vec()),
-            sig_algo_id: None,
-            signing_pubkey: None,
-            signature: None,
-        }
-    }
-
-    /// Create a signed ML-KEM-768 message with variable-length signing data.
-    /// `sig_algo_id` should be `SIG_ALGO_ED25519` or `SIG_ALGO_ML_DSA_65`.
-    pub fn new_ml_kem_768_signed(
-        key_id: u32,
-        encap_key: &[u8; crate::crypto::ML_KEM_768_EK_LEN],
-        sender: MacAddress,
-        sig_algo: u8,
+        sig_algo: SigningAlgorithm,
         signing_pubkey: Vec<u8>,
         signature: Vec<u8>,
     ) -> Self {
         Self {
-            algo_id: KE_ALGO_ML_KEM_768,
+            algo_id: dh_group.wire_id(),
             key_id: Cow::Owned(key_id.to_be_bytes().to_vec()),
-            key_material: Cow::Owned(encap_key.to_vec()),
+            key_material: Cow::Owned(key_material),
             sender: Cow::Owned(sender.bytes().to_vec()),
-            sig_algo_id: Some(sig_algo),
+            sig_algo_id: Some(sig_algo.wire_id()),
             signing_pubkey: Some(Cow::Owned(signing_pubkey)),
             signature: Some(Cow::Owned(signature)),
         }
     }
 
-    /// Create a message from raw parts (for forwarding without reconstructing).
-    pub fn new_raw(
-        algo_id: u8,
-        key_id: u32,
-        key_material: Vec<u8>,
-        sender: MacAddress,
-        sig_algo_id: Option<u8>,
-        signing_pubkey: Option<Vec<u8>>,
-        signature: Option<Vec<u8>>,
-    ) -> Self {
-        Self {
-            algo_id,
-            key_id: Cow::Owned(key_id.to_be_bytes().to_vec()),
-            key_material: Cow::Owned(key_material),
-            sender: Cow::Owned(sender.bytes().to_vec()),
-            sig_algo_id,
-            signing_pubkey: signing_pubkey.map(Cow::Owned),
-            signature: signature.map(Cow::Owned),
-        }
-    }
-
-    /// Clone into an owned (static lifetime) message for forwarding.
     pub fn clone_into_owned(&self) -> KeyExchangeInit<'static> {
         KeyExchangeInit {
             algo_id: self.algo_id,
@@ -176,8 +108,9 @@ impl<'a> KeyExchangeInit<'a> {
         }
     }
 
-    pub fn algo_id(&self) -> u8 {
-        self.algo_id
+    /// Returns the DH group for this message, or `None` for unrecognised wire IDs.
+    pub fn dh_group(&self) -> Option<DhGroup> {
+        DhGroup::from_wire_id(self.algo_id)
     }
 
     pub fn key_id(&self) -> u32 {
@@ -190,12 +123,11 @@ impl<'a> KeyExchangeInit<'a> {
         )
     }
 
-    /// Return the key material bytes (DH public key for X25519, encap key for ML-KEM-768).
     pub fn key_material(&self) -> &[u8] {
         &self.key_material
     }
 
-    /// Convenience: return the 32-byte X25519 public key. Panics if not X25519.
+    /// Convenience: return the 32-byte X25519 public key. Panics if not X25519 / wrong size.
     pub fn public_key(&self) -> [u8; 32] {
         self.key_material
             .get(0..32)
@@ -214,16 +146,15 @@ impl<'a> KeyExchangeInit<'a> {
         )
     }
 
-    pub fn sig_algo_id(&self) -> Option<u8> {
-        self.sig_algo_id
+    /// Returns the signing algorithm, or `None` if unsigned or unrecognised wire ID.
+    pub fn signing_algorithm(&self) -> Option<SigningAlgorithm> {
+        self.sig_algo_id.and_then(SigningAlgorithm::from_wire_id)
     }
 
-    /// Return the signing public key bytes, if present.
     pub fn signing_pubkey(&self) -> Option<&[u8]> {
         self.signing_pubkey.as_deref()
     }
 
-    /// Return the signature bytes, if present.
     pub fn signature(&self) -> Option<&[u8]> {
         self.signature.as_deref()
     }
@@ -232,7 +163,8 @@ impl<'a> KeyExchangeInit<'a> {
         self.sig_algo_id.is_some() && self.signing_pubkey.is_some() && self.signature.is_some()
     }
 
-    /// Return the base payload bytes that were (or should be) signed.
+    /// Return the base payload bytes to be signed (or verified against).
+    ///
     /// Covers: algo_id | key_id | key_material_len | key_material | sender.
     pub fn base_payload(&self) -> Vec<u8> {
         let km_len = self.key_material.len() as u16;
@@ -243,6 +175,19 @@ impl<'a> KeyExchangeInit<'a> {
         buf.extend_from_slice(&self.key_material);
         buf.extend_from_slice(&self.sender);
         buf
+    }
+
+    /// Wire size in bytes without allocating.
+    pub fn wire_size(&self) -> usize {
+        // algo_id(1) + key_id(4) + km_len(2) + key_material + sender(6)
+        let base = 1 + self.key_id.len() + 2 + self.key_material.len() + self.sender.len();
+        match (&self.sig_algo_id, &self.signing_pubkey, &self.signature) {
+            (Some(_), Some(spk), Some(sig)) => {
+                // sig_algo_id(1) + spk_len(2) + spk + sig_len(2) + sig
+                base + 1 + 2 + spk.len() + 2 + sig.len()
+            }
+            _ => base,
+        }
     }
 }
 
@@ -282,22 +227,21 @@ impl<'a> TryFrom<&'a [u8]> for KeyExchangeInit<'a> {
                 ));
             }
             let sig_algo = ext[0];
+            let signing_algo = SigningAlgorithm::from_wire_id(sig_algo).ok_or_else(|| {
+                crate::error::NodeError::InvalidMessage(format!(
+                    "KeyExchangeInit unknown sig_algo_id {sig_algo}"
+                ))
+            })?;
             let spk_len = u16::from_be_bytes([ext[1], ext[2]]) as usize;
-            // Reject key/sig sizes that don't match the declared algorithm.
-            let (expected_spk_len, expected_sig_len) = match sig_algo {
-                SIG_ALGO_ED25519 => (
+            let (expected_spk_len, expected_sig_len) = match signing_algo {
+                SigningAlgorithm::Ed25519 => (
                     crate::crypto::ED25519_VK_LEN,
                     crate::crypto::ED25519_SIG_LEN,
                 ),
-                SIG_ALGO_ML_DSA_65 => (
+                SigningAlgorithm::MlDsa65 => (
                     crate::crypto::ML_DSA_65_VK_LEN,
                     crate::crypto::ML_DSA_65_SIG_LEN,
                 ),
-                _ => {
-                    return Err(crate::error::NodeError::InvalidMessage(format!(
-                        "KeyExchangeInit unknown sig_algo_id {sig_algo}"
-                    )));
-                }
             };
             if spk_len != expected_spk_len {
                 return Err(crate::error::NodeError::InvalidMessage(format!(
@@ -351,21 +295,6 @@ impl<'a> TryFrom<&'a [u8]> for KeyExchangeInit<'a> {
     }
 }
 
-impl<'a> KeyExchangeInit<'a> {
-    /// Wire size in bytes without allocating.
-    pub fn wire_size(&self) -> usize {
-        // algo_id(1) + key_id(4) + km_len(2) + key_material + sender(6)
-        let base = 1 + self.key_id.len() + 2 + self.key_material.len() + self.sender.len();
-        match (&self.sig_algo_id, &self.signing_pubkey, &self.signature) {
-            (Some(_), Some(spk), Some(sig)) => {
-                // sig_algo_id(1) + spk_len(2) + spk + sig_len(2) + sig
-                base + 1 + 2 + spk.len() + 2 + sig.len()
-            }
-            _ => base,
-        }
-    }
-}
-
 impl<'a> From<&KeyExchangeInit<'a>> for Vec<u8> {
     fn from(value: &KeyExchangeInit<'a>) -> Self {
         let km_len = value.key_material.len() as u16;
@@ -410,12 +339,17 @@ pub struct KeyExchangeReply<'a> {
 }
 
 impl<'a> KeyExchangeReply<'a> {
-    /// Create an unsigned X25519 reply.
-    pub fn new(key_id: u32, public_key: [u8; 32], sender: MacAddress) -> Self {
+    /// Create an unsigned key exchange reply.
+    pub fn new_unsigned(
+        dh_group: DhGroup,
+        key_id: u32,
+        key_material: Vec<u8>,
+        sender: MacAddress,
+    ) -> Self {
         Self {
-            algo_id: KE_ALGO_X25519,
+            algo_id: dh_group.wire_id(),
             key_id: Cow::Owned(key_id.to_be_bytes().to_vec()),
-            key_material: Cow::Owned(public_key.to_vec()),
+            key_material: Cow::Owned(key_material),
             sender: Cow::Owned(sender.bytes().to_vec()),
             sig_algo_id: None,
             signing_pubkey: None,
@@ -423,85 +357,27 @@ impl<'a> KeyExchangeReply<'a> {
         }
     }
 
-    /// Create a signed X25519 reply (Ed25519 signature).
+    /// Create a signed key exchange reply.
     pub fn new_signed(
+        dh_group: DhGroup,
         key_id: u32,
-        public_key: [u8; 32],
+        key_material: Vec<u8>,
         sender: MacAddress,
-        signing_pubkey: [u8; 32],
-        signature: [u8; 64],
-    ) -> Self {
-        Self {
-            algo_id: KE_ALGO_X25519,
-            key_id: Cow::Owned(key_id.to_be_bytes().to_vec()),
-            key_material: Cow::Owned(public_key.to_vec()),
-            sender: Cow::Owned(sender.bytes().to_vec()),
-            sig_algo_id: Some(SIG_ALGO_ED25519),
-            signing_pubkey: Some(Cow::Owned(signing_pubkey.to_vec())),
-            signature: Some(Cow::Owned(signature.to_vec())),
-        }
-    }
-
-    /// Create an unsigned ML-KEM-768 reply.
-    /// `ciphertext` is the 1088-byte KEM ciphertext.
-    pub fn new_ml_kem_768(
-        key_id: u32,
-        ciphertext: &[u8; crate::crypto::ML_KEM_768_CT_LEN],
-        sender: MacAddress,
-    ) -> Self {
-        Self {
-            algo_id: KE_ALGO_ML_KEM_768,
-            key_id: Cow::Owned(key_id.to_be_bytes().to_vec()),
-            key_material: Cow::Owned(ciphertext.to_vec()),
-            sender: Cow::Owned(sender.bytes().to_vec()),
-            sig_algo_id: None,
-            signing_pubkey: None,
-            signature: None,
-        }
-    }
-
-    /// Create a signed ML-KEM-768 reply with variable-length signing data.
-    pub fn new_ml_kem_768_signed(
-        key_id: u32,
-        ciphertext: &[u8; crate::crypto::ML_KEM_768_CT_LEN],
-        sender: MacAddress,
-        sig_algo: u8,
+        sig_algo: SigningAlgorithm,
         signing_pubkey: Vec<u8>,
         signature: Vec<u8>,
     ) -> Self {
         Self {
-            algo_id: KE_ALGO_ML_KEM_768,
+            algo_id: dh_group.wire_id(),
             key_id: Cow::Owned(key_id.to_be_bytes().to_vec()),
-            key_material: Cow::Owned(ciphertext.to_vec()),
+            key_material: Cow::Owned(key_material),
             sender: Cow::Owned(sender.bytes().to_vec()),
-            sig_algo_id: Some(sig_algo),
+            sig_algo_id: Some(sig_algo.wire_id()),
             signing_pubkey: Some(Cow::Owned(signing_pubkey)),
             signature: Some(Cow::Owned(signature)),
         }
     }
 
-    /// Create a reply from raw parts (for forwarding without reconstructing).
-    pub fn new_raw(
-        algo_id: u8,
-        key_id: u32,
-        key_material: Vec<u8>,
-        sender: MacAddress,
-        sig_algo_id: Option<u8>,
-        signing_pubkey: Option<Vec<u8>>,
-        signature: Option<Vec<u8>>,
-    ) -> Self {
-        Self {
-            algo_id,
-            key_id: Cow::Owned(key_id.to_be_bytes().to_vec()),
-            key_material: Cow::Owned(key_material),
-            sender: Cow::Owned(sender.bytes().to_vec()),
-            sig_algo_id,
-            signing_pubkey: signing_pubkey.map(Cow::Owned),
-            signature: signature.map(Cow::Owned),
-        }
-    }
-
-    /// Clone into an owned (static lifetime) message for forwarding.
     pub fn clone_into_owned(&self) -> KeyExchangeReply<'static> {
         KeyExchangeReply {
             algo_id: self.algo_id,
@@ -514,8 +390,9 @@ impl<'a> KeyExchangeReply<'a> {
         }
     }
 
-    pub fn algo_id(&self) -> u8 {
-        self.algo_id
+    /// Returns the DH group for this message, or `None` for unrecognised wire IDs.
+    pub fn dh_group(&self) -> Option<DhGroup> {
+        DhGroup::from_wire_id(self.algo_id)
     }
 
     pub fn key_id(&self) -> u32 {
@@ -528,12 +405,11 @@ impl<'a> KeyExchangeReply<'a> {
         )
     }
 
-    /// Return the key material bytes (DH public key for X25519, ciphertext for ML-KEM-768).
     pub fn key_material(&self) -> &[u8] {
         &self.key_material
     }
 
-    /// Convenience: return the 32-byte X25519 public key. Panics if not X25519.
+    /// Convenience: return the 32-byte X25519 public key. Panics if not X25519 / wrong size.
     pub fn public_key(&self) -> [u8; 32] {
         self.key_material
             .get(0..32)
@@ -552,8 +428,9 @@ impl<'a> KeyExchangeReply<'a> {
         )
     }
 
-    pub fn sig_algo_id(&self) -> Option<u8> {
-        self.sig_algo_id
+    /// Returns the signing algorithm, or `None` if unsigned or unrecognised wire ID.
+    pub fn signing_algorithm(&self) -> Option<SigningAlgorithm> {
+        self.sig_algo_id.and_then(SigningAlgorithm::from_wire_id)
     }
 
     pub fn signing_pubkey(&self) -> Option<&[u8]> {
@@ -568,7 +445,7 @@ impl<'a> KeyExchangeReply<'a> {
         self.sig_algo_id.is_some() && self.signing_pubkey.is_some() && self.signature.is_some()
     }
 
-    /// Return the base payload bytes that were (or should be) signed.
+    /// Return the base payload bytes to be signed (or verified against).
     pub fn base_payload(&self) -> Vec<u8> {
         let km_len = self.key_material.len() as u16;
         let mut buf = Vec::with_capacity(KE_HEADER_LEN + self.key_material.len() + KE_SENDER_LEN);
@@ -578,6 +455,15 @@ impl<'a> KeyExchangeReply<'a> {
         buf.extend_from_slice(&self.key_material);
         buf.extend_from_slice(&self.sender);
         buf
+    }
+
+    /// Wire size in bytes without allocating.
+    pub fn wire_size(&self) -> usize {
+        let base = 1 + self.key_id.len() + 2 + self.key_material.len() + self.sender.len();
+        match (&self.sig_algo_id, &self.signing_pubkey, &self.signature) {
+            (Some(_), Some(spk), Some(sig)) => base + 1 + 2 + spk.len() + 2 + sig.len(),
+            _ => base,
+        }
     }
 }
 
@@ -616,21 +502,21 @@ impl<'a> TryFrom<&'a [u8]> for KeyExchangeReply<'a> {
                 ));
             }
             let sig_algo = ext[0];
+            let signing_algo = SigningAlgorithm::from_wire_id(sig_algo).ok_or_else(|| {
+                crate::error::NodeError::InvalidMessage(format!(
+                    "KeyExchangeReply unknown sig_algo_id {sig_algo}"
+                ))
+            })?;
             let spk_len = u16::from_be_bytes([ext[1], ext[2]]) as usize;
-            let (expected_spk_len, expected_sig_len) = match sig_algo {
-                SIG_ALGO_ED25519 => (
+            let (expected_spk_len, expected_sig_len) = match signing_algo {
+                SigningAlgorithm::Ed25519 => (
                     crate::crypto::ED25519_VK_LEN,
                     crate::crypto::ED25519_SIG_LEN,
                 ),
-                SIG_ALGO_ML_DSA_65 => (
+                SigningAlgorithm::MlDsa65 => (
                     crate::crypto::ML_DSA_65_VK_LEN,
                     crate::crypto::ML_DSA_65_SIG_LEN,
                 ),
-                _ => {
-                    return Err(crate::error::NodeError::InvalidMessage(format!(
-                        "KeyExchangeReply unknown sig_algo_id {sig_algo}"
-                    )));
-                }
             };
             if spk_len != expected_spk_len {
                 return Err(crate::error::NodeError::InvalidMessage(format!(
@@ -684,21 +570,6 @@ impl<'a> TryFrom<&'a [u8]> for KeyExchangeReply<'a> {
     }
 }
 
-impl<'a> KeyExchangeReply<'a> {
-    /// Wire size in bytes without allocating.
-    pub fn wire_size(&self) -> usize {
-        // algo_id(1) + key_id(4) + km_len(2) + key_material + sender(6)
-        let base = 1 + self.key_id.len() + 2 + self.key_material.len() + self.sender.len();
-        match (&self.sig_algo_id, &self.signing_pubkey, &self.signature) {
-            (Some(_), Some(spk), Some(sig)) => {
-                // sig_algo_id(1) + spk_len(2) + spk + sig_len(2) + sig
-                base + 1 + 2 + spk.len() + 2 + sig.len()
-            }
-            _ => base,
-        }
-    }
-}
-
 impl<'a> From<&KeyExchangeReply<'a>> for Vec<u8> {
     fn from(value: &KeyExchangeReply<'a>) -> Self {
         let km_len = value.key_material.len() as u16;
@@ -743,12 +614,13 @@ mod tests {
         let public_key = [7u8; 32];
         let sender: MacAddress = [1, 2, 3, 4, 5, 6].into();
 
-        let init = KeyExchangeInit::new(key_id, public_key, sender);
+        let init =
+            KeyExchangeInit::new_unsigned(DhGroup::X25519, key_id, public_key.to_vec(), sender);
         assert_eq!(init.key_id(), key_id);
         assert_eq!(init.public_key(), public_key);
         assert_eq!(init.sender(), sender);
         assert!(!init.is_signed());
-        assert_eq!(init.algo_id(), KE_ALGO_X25519);
+        assert_eq!(init.dh_group(), Some(DhGroup::X25519));
 
         let bytes: Vec<u8> = (&init).into();
         assert_eq!(bytes.len(), x25519_unsigned_len());
@@ -766,7 +638,8 @@ mod tests {
         let public_key = [0xAB; 32];
         let sender: MacAddress = [10, 20, 30, 40, 50, 60].into();
 
-        let reply = KeyExchangeReply::new(key_id, public_key, sender);
+        let reply =
+            KeyExchangeReply::new_unsigned(DhGroup::X25519, key_id, public_key.to_vec(), sender);
         assert_eq!(reply.key_id(), key_id);
         assert_eq!(reply.public_key(), public_key);
         assert_eq!(reply.sender(), sender);
@@ -802,12 +675,19 @@ mod tests {
         let signing_pubkey = [0x22u8; 32];
         let signature = [0x33u8; 64];
 
-        let init =
-            KeyExchangeInit::new_signed(key_id, public_key, sender, signing_pubkey, signature);
+        let init = KeyExchangeInit::new_signed(
+            DhGroup::X25519,
+            key_id,
+            public_key.to_vec(),
+            sender,
+            SigningAlgorithm::Ed25519,
+            signing_pubkey.to_vec(),
+            signature.to_vec(),
+        );
         assert!(init.is_signed());
         assert_eq!(init.signing_pubkey(), Some(signing_pubkey.as_ref()));
         assert_eq!(init.signature(), Some(signature.as_ref()));
-        assert_eq!(init.sig_algo_id(), Some(SIG_ALGO_ED25519));
+        assert_eq!(init.signing_algorithm(), Some(SigningAlgorithm::Ed25519));
 
         let bytes: Vec<u8> = (&init).into();
         assert_eq!(bytes.len(), x25519_signed_len());
@@ -829,8 +709,15 @@ mod tests {
         let signing_pubkey = [0x66u8; 32];
         let signature = [0x77u8; 64];
 
-        let reply =
-            KeyExchangeReply::new_signed(key_id, public_key, sender, signing_pubkey, signature);
+        let reply = KeyExchangeReply::new_signed(
+            DhGroup::X25519,
+            key_id,
+            public_key.to_vec(),
+            sender,
+            SigningAlgorithm::Ed25519,
+            signing_pubkey.to_vec(),
+            signature.to_vec(),
+        );
         assert!(reply.is_signed());
 
         let bytes: Vec<u8> = (&reply).into();
@@ -850,11 +737,12 @@ mod tests {
         let key_id = 1u32;
         let public_key = [0xAAu8; 32];
         let sender: MacAddress = [1, 2, 3, 4, 5, 6].into();
-        let init = KeyExchangeInit::new(key_id, public_key, sender);
+        let init =
+            KeyExchangeInit::new_unsigned(DhGroup::X25519, key_id, public_key.to_vec(), sender);
         let base = init.base_payload();
         // algo_id(1) + key_id(4) + km_len(2) + key(32) + sender(6)
         assert_eq!(base.len(), 1 + 4 + 2 + 32 + 6);
-        assert_eq!(base[0], KE_ALGO_X25519);
+        assert_eq!(base[0], DhGroup::X25519.wire_id());
         assert_eq!(&base[1..5], &1u32.to_be_bytes());
         assert_eq!(&base[7..39], &[0xAAu8; 32]);
         assert_eq!(&base[39..45], &[1, 2, 3, 4, 5, 6]);
@@ -866,8 +754,9 @@ mod tests {
         let encap_key = [0xBBu8; crate::crypto::ML_KEM_768_EK_LEN];
         let sender: MacAddress = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66].into();
 
-        let init = KeyExchangeInit::new_ml_kem_768(key_id, &encap_key, sender);
-        assert_eq!(init.algo_id(), KE_ALGO_ML_KEM_768);
+        let init =
+            KeyExchangeInit::new_unsigned(DhGroup::MlKem768, key_id, encap_key.to_vec(), sender);
+        assert_eq!(init.dh_group(), Some(DhGroup::MlKem768));
         assert_eq!(init.key_id(), key_id);
         assert_eq!(init.key_material(), encap_key.as_ref());
         assert!(!init.is_signed());
@@ -877,7 +766,7 @@ mod tests {
         assert_eq!(bytes.len(), 1 + 4 + 2 + 1184 + 6);
 
         let parsed = KeyExchangeInit::try_from(&bytes[..]).expect("parse ml-kem init");
-        assert_eq!(parsed.algo_id(), KE_ALGO_ML_KEM_768);
+        assert_eq!(parsed.dh_group(), Some(DhGroup::MlKem768));
         assert_eq!(parsed.key_id(), key_id);
         assert_eq!(parsed.key_material(), encap_key.as_ref());
         assert_eq!(parsed.sender(), sender);
@@ -889,8 +778,9 @@ mod tests {
         let ciphertext = [0xCCu8; crate::crypto::ML_KEM_768_CT_LEN];
         let sender: MacAddress = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF].into();
 
-        let reply = KeyExchangeReply::new_ml_kem_768(key_id, &ciphertext, sender);
-        assert_eq!(reply.algo_id(), KE_ALGO_ML_KEM_768);
+        let reply =
+            KeyExchangeReply::new_unsigned(DhGroup::MlKem768, key_id, ciphertext.to_vec(), sender);
+        assert_eq!(reply.dh_group(), Some(DhGroup::MlKem768));
         assert_eq!(reply.key_material(), ciphertext.as_ref());
 
         let bytes: Vec<u8> = (&reply).into();
@@ -904,7 +794,12 @@ mod tests {
 
     #[test]
     fn clone_into_owned_preserves_data() {
-        let init = KeyExchangeInit::new(42, [1u8; 32], [1, 2, 3, 4, 5, 6].into());
+        let init = KeyExchangeInit::new_unsigned(
+            DhGroup::X25519,
+            42,
+            [1u8; 32].to_vec(),
+            [1, 2, 3, 4, 5, 6].into(),
+        );
         let bytes: Vec<u8> = (&init).into();
         let parsed = KeyExchangeInit::try_from(&bytes[..]).expect("parse");
         let owned = parsed.clone_into_owned();

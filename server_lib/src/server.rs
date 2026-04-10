@@ -5,9 +5,7 @@ use crate::registry::RegistrationMessage;
 use anyhow::Result;
 use common::tun::Tun;
 use mac_address::MacAddress;
-use node_lib::crypto::{
-    sig_algo_from_id, CryptoConfig, DhKeypair, SigningAlgorithm, SigningKeypair,
-};
+use node_lib::crypto::{CryptoConfig, DhKeypair, SigningAlgorithm, SigningKeypair};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -737,7 +735,7 @@ impl Server {
         );
         let allowlist = dh_signing_allowlist.read().await;
         // Parse the KeyExchangeInit payload
-        let ke_init = match node_lib::messages::control::key_exchange::KeyExchangeInit::try_from(
+        let ke_init = match node_lib::messages::auth::key_exchange::KeyExchangeInit::try_from(
             ke_fwd.payload.as_slice(),
         ) {
             Ok(init) => init,
@@ -754,22 +752,11 @@ impl Server {
         // Verify the OBU's signature if signatures are required.
         if enable_dh_signatures {
             match (
-                ke_init.sig_algo_id(),
+                ke_init.signing_algorithm(),
                 ke_init.signing_pubkey(),
                 ke_init.signature(),
             ) {
-                (Some(sig_algo), Some(spk), Some(sig)) => {
-                    let algo = match sig_algo_from_id(sig_algo) {
-                        Some(a) => a,
-                        None => {
-                            tracing::warn!(
-                                obu = %ke_fwd.obu_mac,
-                                sig_algo_id = sig_algo,
-                                "KeyExchangeInit uses unknown signature algorithm, dropping"
-                            );
-                            return;
-                        }
-                    };
+                (Some(algo), Some(spk), Some(sig)) => {
                     let base = ke_init.base_payload();
                     if let Err(e) = node_lib::crypto::verify_dh_signature(algo, &base, spk, sig) {
                         tracing::warn!(
@@ -842,23 +829,17 @@ impl Server {
         drop(allowlist);
 
         let key_id = ke_init.key_id();
-        let algo_id = ke_init.algo_id();
+        let dh_group = ke_init.dh_group();
 
         // Reject key exchanges that use an algorithm the server isn't configured for.
-        // An attacker could otherwise downgrade the algorithm by rewriting algo_id
-        // in a forwarded KeyExchangeInit.
         {
-            use node_lib::messages::control::key_exchange::{KE_ALGO_ML_KEM_768, KE_ALGO_X25519};
-            let expected_algo_id = match crypto_config.dh_group {
-                node_lib::crypto::DhGroup::X25519 => KE_ALGO_X25519,
-                node_lib::crypto::DhGroup::MlKem768 => KE_ALGO_ML_KEM_768,
-            };
-            if algo_id != expected_algo_id {
+            let expected_group = crypto_config.dh_group;
+            if dh_group != Some(expected_group) {
                 tracing::warn!(
                     obu = %ke_fwd.obu_mac,
-                    algo_id = algo_id,
-                    expected = expected_algo_id,
-                    "KeyExchangeInit algo_id does not match server crypto config, dropping"
+                    dh_group = ?dh_group,
+                    expected = %expected_group,
+                    "KeyExchangeInit dh_group does not match server crypto config, dropping"
                 );
                 return;
             }
@@ -881,13 +862,11 @@ impl Server {
             }
         }
 
-        use node_lib::messages::control::key_exchange::{
-            KE_ALGO_ML_KEM_768, KE_ALGO_X25519, SIG_ALGO_ED25519, SIG_ALGO_ML_DSA_65,
-        };
+        use node_lib::crypto::DhGroup;
 
         // Perform the key exchange based on the algorithm in the init message.
-        let (our_reply_material, shared_secret_bytes) = match algo_id {
-            KE_ALGO_X25519 => {
+        let (our_reply_material, shared_secret_bytes) = match dh_group {
+            Some(DhGroup::X25519) => {
                 let peer_pub_bytes: [u8; 32] = match ke_init.key_material().try_into() {
                     Ok(b) => b,
                     Err(_) => {
@@ -901,7 +880,7 @@ impl Server {
                 let ss = our_keypair.diffie_hellman(&peer_public).as_bytes().to_vec();
                 (our_public, ss)
             }
-            KE_ALGO_ML_KEM_768 => {
+            Some(DhGroup::MlKem768) => {
                 let ek_bytes: &[u8; node_lib::crypto::ML_KEM_768_EK_LEN] =
                     match ke_init.key_material().try_into() {
                         Ok(b) => b,
@@ -926,11 +905,10 @@ impl Server {
                     }
                 }
             }
-            _ => {
+            None => {
                 tracing::warn!(
                     obu = %ke_fwd.obu_mac,
-                    algo_id = algo_id,
-                    "Unknown key exchange algorithm, dropping"
+                    "Unknown key exchange algorithm in KeyExchangeInit, dropping"
                 );
                 return;
             }
@@ -968,7 +946,7 @@ impl Server {
             obu = %ke_fwd.obu_mac,
             rsu = %ke_fwd.rsu_mac,
             key_id = key_id,
-            algo_id = algo_id,
+            dh_group = ?dh_group,
             cipher = %crypto_config.cipher,
             kdf = %crypto_config.kdf,
             key_len = key_len,
@@ -979,40 +957,31 @@ impl Server {
         // Set sender = obu_mac so relay OBUs know who the final recipient is.
         // Sign the reply if signatures are enabled.
         let ke_reply = if let Some(kp) = signing_keypair {
-            let sig_algo_id = match kp.signing_algorithm() {
-                SigningAlgorithm::Ed25519 => SIG_ALGO_ED25519,
-                SigningAlgorithm::MlDsa65 => SIG_ALGO_ML_DSA_65,
-            };
-            let unsigned = node_lib::messages::control::key_exchange::KeyExchangeReply::new_raw(
-                algo_id,
+            let sig_algo = kp.signing_algorithm();
+            let unsigned = node_lib::messages::auth::key_exchange::KeyExchangeReply::new_unsigned(
+                crypto_config.dh_group,
                 key_id,
                 our_reply_material.clone(),
                 ke_fwd.obu_mac,
-                None,
-                None,
-                None,
             );
             let base = unsigned.base_payload();
             let sig = kp.sign(&base);
             let spk = kp.verifying_key_bytes();
-            node_lib::messages::control::key_exchange::KeyExchangeReply::new_raw(
-                algo_id,
+            node_lib::messages::auth::key_exchange::KeyExchangeReply::new_signed(
+                crypto_config.dh_group,
                 key_id,
                 our_reply_material,
                 ke_fwd.obu_mac,
-                Some(sig_algo_id),
-                Some(spk),
-                Some(sig),
+                sig_algo,
+                spk,
+                sig,
             )
         } else {
-            node_lib::messages::control::key_exchange::KeyExchangeReply::new_raw(
-                algo_id,
+            node_lib::messages::auth::key_exchange::KeyExchangeReply::new_unsigned(
+                crypto_config.dh_group,
                 key_id,
                 our_reply_material,
                 ke_fwd.obu_mac,
-                None,
-                None,
-                None,
             )
         };
         let reply_bytes: Vec<u8> = (&ke_reply).into();
@@ -1113,12 +1082,7 @@ impl Server {
 
         // Notify the RSU so the OBU can react promptly.
         if let Some(rsu_addr) = rsu_addr {
-            // Sign the revocation if a signing keypair is available.
-            // A fresh random nonce is generated for each revocation and included in
-            // the signed payload: [CONTROL_TYPE=0x04][TARGET_OBU_MAC 6B][NONCE 16B].
-            // The nonce is opaque random bytes — it reveals nothing about the session
-            // and prevents replay: the OBU tracks seen nonces and drops duplicates.
-            use node_lib::messages::control::key_exchange::{SIG_ALGO_ED25519, SIG_ALGO_ML_DSA_65};
+            use node_lib::messages::auth::session_terminated::SessionTerminated;
             use rand_core::{OsRng, RngCore};
             use std::time::{SystemTime, UNIX_EPOCH};
             let fwd = if let Some(ref kp) = self.signing_keypair {
@@ -1128,16 +1092,11 @@ impl Server {
                     .as_secs();
                 let mut nonce = [0u8; 8];
                 OsRng.fill_bytes(&mut nonce);
-                let mut payload = vec![0x04u8]; // SessionTerminated control type byte
-                payload.extend_from_slice(&obu_mac.bytes());
-                payload.extend_from_slice(&timestamp_secs.to_be_bytes());
-                payload.extend_from_slice(&nonce);
+                let sig_algo = kp.signing_algorithm();
+                let payload =
+                    SessionTerminated::build_signed_payload(obu_mac, timestamp_secs, nonce);
                 let sig = kp.sign(&payload);
-                let algo_id = match kp.signing_algorithm() {
-                    SigningAlgorithm::Ed25519 => SIG_ALGO_ED25519,
-                    SigningAlgorithm::MlDsa65 => SIG_ALGO_ML_DSA_65,
-                };
-                SessionTerminatedForward::new_signed(obu_mac, timestamp_secs, nonce, algo_id, sig)
+                SessionTerminatedForward::new_signed(obu_mac, timestamp_secs, nonce, sig_algo, sig)
             } else {
                 SessionTerminatedForward::new(obu_mac)
             };

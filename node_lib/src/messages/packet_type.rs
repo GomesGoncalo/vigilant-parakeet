@@ -1,10 +1,11 @@
-use super::{control::Control, data::Data};
+use super::{auth::Auth, control::Control, data::Data};
 use crate::error::NodeError;
 
 #[derive(Debug)]
 pub enum PacketType<'a> {
     Control(Control<'a>),
     Data(Data<'a>),
+    Auth(Auth<'a>),
 }
 
 impl<'a> PacketType<'a> {
@@ -13,6 +14,7 @@ impl<'a> PacketType<'a> {
         1 + match self {
             PacketType::Control(c) => 1 + c.wire_size(),
             PacketType::Data(d) => 1 + d.wire_size(),
+            PacketType::Auth(a) => 1 + a.wire_size(),
         }
     }
 }
@@ -29,6 +31,7 @@ impl<'a> TryFrom<&'a [u8]> for PacketType<'a> {
         match value.first() {
             Some(0u8) => Ok(Self::Control(next.try_into()?)),
             Some(1u8) => Ok(Self::Data(next.try_into()?)),
+            Some(2u8) => Ok(Self::Auth(next.try_into()?)),
             _ => Err(NodeError::ParseError(
                 "Invalid packet type identifier".to_string(),
             )),
@@ -49,6 +52,11 @@ impl<'a> From<&PacketType<'a>> for Vec<u8> {
                 buf.push(1u8);
                 let data_bytes: Vec<u8> = d.into();
                 buf.extend_from_slice(&data_bytes);
+            }
+            PacketType::Auth(a) => {
+                buf.push(2u8);
+                let auth_bytes: Vec<u8> = a.into();
+                buf.extend_from_slice(&auth_bytes);
             }
         }
         buf
@@ -71,6 +79,12 @@ impl<'a> From<&PacketType<'a>> for Vec<Vec<u8>> {
                 result.extend(more);
                 result
             }
+            PacketType::Auth(a) => {
+                let mut result = vec![vec![2u8]];
+                let auth_bytes: Vec<u8> = a.into();
+                result.push(auth_bytes);
+                result
+            }
         }
     }
 }
@@ -81,7 +95,7 @@ mod tests {
 
     #[test]
     fn packet_type_invalid_first_byte_is_error() {
-        let pkt = [2u8];
+        let pkt = [3u8];
         let res = PacketType::try_from(&pkt[..]);
         assert!(res.is_err());
     }
