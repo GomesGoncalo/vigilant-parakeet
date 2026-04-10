@@ -36,9 +36,7 @@ pub fn setup_routes(
     let sim_nodes_full = simulator.get_nodes_with_interfaces();
     let channels = simulator.get_channels();
     let metrics = simulator.get_metrics();
-    #[cfg(feature = "mobility")]
     let rssi_tables = simulator.get_rssi_tables();
-    #[cfg(feature = "mobility")]
     let nakagami_config = simulator.get_nakagami_config().cloned();
 
     // Endpoint: GET /nodes - returns list of node names
@@ -57,12 +55,35 @@ pub fn setup_routes(
             .and(warp::path("stats"))
             .and(warp::path::end())
             .map(move || {
-                warp::reply::json(
-                    &sim_nodes
-                        .iter()
-                        .map(|(node, (device, tun, _node))| (node, (device.stats(), tun.stats())))
-                        .collect::<HashMap<_, _>>(),
-                )
+                use serde_json::json;
+                let map: HashMap<String, serde_json::Value> = sim_nodes
+                    .iter()
+                    .map(|(node, (device, tun, _node))| {
+                        let dev = {
+                            #[cfg(feature = "stats")]
+                            {
+                                serde_json::to_value(device.stats())
+                                    .unwrap_or(serde_json::Value::Null)
+                            }
+                            #[cfg(not(feature = "stats"))]
+                            {
+                                serde_json::Value::Null
+                            }
+                        };
+                        let tunv = {
+                            #[cfg(feature = "stats")]
+                            {
+                                serde_json::to_value(tun.stats()).unwrap_or(serde_json::Value::Null)
+                            }
+                            #[cfg(not(feature = "stats"))]
+                            {
+                                serde_json::Value::Null
+                            }
+                        };
+                        (node.clone(), json!({"device": dev, "tun": tunv}))
+                    })
+                    .collect();
+                warp::reply::json(&map)
             })
     };
 
@@ -73,10 +94,29 @@ pub fn setup_routes(
             .and(warp::path!("node" / String))
             .and(warp::path::end())
             .map(move |node: String| {
-                let Some(reply) = sim_nodes
-                    .get(&node)
-                    .map(|(device, tun, _node)| (device.stats(), tun.stats()))
-                else {
+                let Some(reply) = sim_nodes.get(&node).map(|(device, tun, _node)| {
+                    let dev = {
+                        #[cfg(feature = "stats")]
+                        {
+                            serde_json::to_value(device.stats()).unwrap_or(serde_json::Value::Null)
+                        }
+                        #[cfg(not(feature = "stats"))]
+                        {
+                            serde_json::Value::Null
+                        }
+                    };
+                    let tunv = {
+                        #[cfg(feature = "stats")]
+                        {
+                            serde_json::to_value(tun.stats()).unwrap_or(serde_json::Value::Null)
+                        }
+                        #[cfg(not(feature = "stats"))]
+                        {
+                            serde_json::Value::Null
+                        }
+                    };
+                    (dev, tunv)
+                }) else {
                     let json = warp::reply::json(&ErrorMessage {
                         code: 404,
                         message: "node not found".to_string(),
@@ -128,8 +168,8 @@ pub fn setup_routes(
     // Endpoint: GET /node_info - returns node type and routing topology (upstream/downstream)
     let node_info_endpoint = {
         let sim_nodes_full = sim_nodes_full.clone();
-        #[cfg(feature = "mobility")]
         let rssi_tables = rssi_tables.clone();
+        let nakagami_cfg = nakagami_config.clone();
         warp::get()
             .and(warp::path("node_info"))
             .and(warp::path::end())
@@ -175,19 +215,41 @@ pub fn setup_routes(
                     let obu = node.as_any().downcast_ref::<Obu>();
                     let has_session = obu.map(|o| o.has_dh_session()).unwrap_or(false);
                     let upstream_route = obu.and_then(|o| o.cached_upstream_route()).map(|r| {
-                        #[cfg(feature = "mobility")]
                         let rssi_dbm = rssi_tables
                             .get(name)
                             .and_then(|tbl| tbl.read().ok())
                             .and_then(|guard| guard.get(&r.mac).copied());
-                        #[cfg(not(feature = "mobility"))]
-                        let rssi_dbm: Option<f32> = None;
+                        // Prefer reported latency when available (measured via heartbeat replies).
+                        // Otherwise, estimate latency from RSSI → distance using the Nakagami
+                        // configured latency_ms_per_100m when available so the UI shows a
+                        // heuristic latency value instead of "NA".
+                        let latency_us = if let Some(d) = r.latency {
+                            Some(d.as_micros() as u64)
+                        } else if let (Some(rssi), Some(cfg)) =
+                            (rssi_dbm, nakagami_cfg.as_ref().as_ref())
+                        {
+                            // Improved heuristic: derive distance from SNR path-loss model
+                            // using the Nakagami config. Assume a receiver noise floor (dBm)
+                            // to convert RSSI→SNR. The noise floor is conservative; make it
+                            // configurable later if needed.
+                            const NOISE_FLOOR_DB: f64 = -90.0;
+                            let snr_db = (rssi as f64) - NOISE_FLOOR_DB;
+                            // SNR_mean_db(d) = snr_0_db - 10 * eta * log10(d)
+                            // => d = 10^((snr_0_db - snr_db) / (10 * eta))
+                            let distance =
+                                10.0_f64.powf((cfg.snr_0_db - snr_db) / (10.0 * cfg.eta));
+                            // Estimate latency from distance using latency_ms_per_100m
+                            let latency_ms = (distance / 100.0) * cfg.latency_ms_per_100m;
+                            Some((latency_ms * 1000.0) as u64)
+                        } else {
+                            None
+                        };
                         UpstreamInfo {
                             hops: r.hops,
                             mac: format!("{}", r.mac),
                             node_name: mac_map.get(&r.mac).cloned(),
                             rssi_dbm,
-                            latency_us: r.latency.map(|d| d.as_micros() as u64),
+                            latency_us,
                         }
                     });
 
@@ -291,7 +353,6 @@ pub fn setup_routes(
         });
 
     // Endpoint: GET /fading — returns fading config (max_range_m, etc.) for visualisation.
-    #[cfg(feature = "mobility")]
     let fading_endpoint = {
         warp::get()
             .and(warp::path("fading"))
@@ -324,48 +385,42 @@ pub fn setup_routes(
         .or(memory_endpoint);
 
     // Combine all endpoints
-    #[cfg(not(feature = "mobility"))]
-    return base_routes.with(cors);
+    let positions = simulator.get_positions();
+    let override_queue = simulator.get_override_queue();
 
-    #[cfg(feature = "mobility")]
-    {
-        let positions = simulator.get_positions();
-        let override_queue = simulator.get_override_queue();
+    // GET /positions — return all current node positions as JSON
+    let positions_get_endpoint = {
+        let positions = positions.clone();
+        warp::get()
+            .and(warp::path("positions"))
+            .and(warp::path::end())
+            .then(move || {
+                let positions = positions.clone();
+                async move {
+                    let map = positions.read().await;
+                    warp::reply::json(&*map)
+                }
+            })
+    };
 
-        // GET /positions — return all current node positions as JSON
-        let positions_get_endpoint = {
-            let positions = positions.clone();
-            warp::get()
-                .and(warp::path("positions"))
-                .and(warp::path::end())
-                .then(move || {
-                    let positions = positions.clone();
-                    async move {
-                        let map = positions.read().await;
-                        warp::reply::json(&*map)
-                    }
-                })
-        };
+    // POST /node/<name>/position — override a node's position
+    // Body: { "lat": f64, "lon": f64 }
+    let position_post_endpoint = {
+        warp::post()
+            .and(warp::path!("node" / String / "position"))
+            .and(warp::path::end())
+            .and(warp::body::json())
+            .and_then(move |name: String, body: PositionOverride| {
+                let override_queue = override_queue.clone();
+                async move { position_override_fn(name, body, override_queue).await }
+            })
+    };
 
-        // POST /node/<name>/position — override a node's position
-        // Body: { "lat": f64, "lon": f64 }
-        let position_post_endpoint = {
-            warp::post()
-                .and(warp::path!("node" / String / "position"))
-                .and(warp::path::end())
-                .and(warp::body::json())
-                .and_then(move |name: String, body: PositionOverride| {
-                    let override_queue = override_queue.clone();
-                    async move { position_override_fn(name, body, override_queue).await }
-                })
-        };
-
-        base_routes
-            .or(fading_endpoint)
-            .or(positions_get_endpoint)
-            .or(position_post_endpoint)
-            .with(cors)
-    }
+    base_routes
+        .or(fading_endpoint)
+        .or(positions_get_endpoint)
+        .or(position_post_endpoint)
+        .with(cors)
 }
 
 /// Handler for POST /channel/<src>/<dst> - update channel parameters
@@ -418,7 +473,6 @@ async fn channel_post_fn(
 }
 
 /// Body for `POST /node/<name>/position`.
-#[cfg(feature = "mobility")]
 #[derive(serde::Deserialize)]
 struct PositionOverride {
     lat: f64,
@@ -430,7 +484,6 @@ struct PositionOverride {
 /// Enqueues a position override that the mobility tick loop will apply on its
 /// next iteration.  For OBUs this triggers a route replan from the nearest OSM
 /// node; for RSUs/Servers it simply updates the fixed position.
-#[cfg(feature = "mobility")]
 async fn position_override_fn(
     name: String,
     body: PositionOverride,

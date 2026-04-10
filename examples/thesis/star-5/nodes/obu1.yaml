@@ -1,0 +1,9 @@
+node_type: Obu
+hello_history: 10
+cached_candidates: 3
+ip: 10.0.1.1
+enable_encryption: true
+enable_dh_signatures: false
+dh_group: ml-kem-768
+dh_reply_timeout_ms: 3000
+dh_rekey_interval_ms: 300000

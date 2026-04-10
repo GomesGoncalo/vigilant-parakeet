@@ -6,7 +6,7 @@ license = "MIT"
 
 [dependencies]
 tokio-tun = "*"
-tokio = {version = "*", features = ["full"]}
+tokio = { version = "*", features = ["full"] }
 anyhow = "*"
 uninit = "*"
 tracing = "*"
@@ -17,15 +17,16 @@ futures = "*"
 netns-rs = "*"
 config = "*"
 rand = "*"
+once_cell = "*"
 mac_address = "*"
 tokio-timerfd = "*"
 node_lib = { path = "../node_lib/" }
 itertools = "*"
-warp = {version = "*", features = ["server"], optional = true}
-serde = { version = "*", features = ["derive"]}
-serde_json = { version = "*", optional = true }
-ratatui = { version = "*", optional = true }
-crossterm = { version = "*", optional = true }
+warp = { version = "*", features = ["server"] }
+serde = { version = "*", features = ["derive"] }
+serde_json = { version = "*" }
+ratatui = { version = "*" }
+crossterm = { version = "*" }
 common = { path = "../common/" }
 obu_lib = { path = "../obu_lib/" }
 rsu_lib = { path = "../rsu_lib/" }
@@ -33,17 +34,26 @@ server_lib = { path = "../server_lib/" }
 human_format = "*"
 unicode-segmentation = "*"
 unicode-width = "*"
-reqwest = { version = "*", features = ["json", "form"], optional = true }
-petgraph = { version = "*", optional = true }
-sysinfo = { version = "0.38.4", optional = true }
-jemallocator = { version = "0.5.4", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
+reqwest = { version = "*", features = ["json", "form"] }
+petgraph = { version = "*" }
+sysinfo = { version = "0.38.4" }
+jemallocator = { version = "0.5.4", features = [
+  "profiling",
+  "unprefixed_malloc_on_supported_platforms",
+] }
 jemalloc-ctl = { version = "0.5" }
 
 [features]
-webview = [ "dep:warp", "dep:serde_json", "node_lib/stats" ]
-tui = [ "dep:ratatui", "dep:crossterm", "dep:sysinfo" ]
-test_helpers = [ "common/test_helpers", "node_lib/test_helpers", "obu_lib/test_helpers", "rsu_lib/test_helpers" ]
-mobility = [ "dep:reqwest", "dep:petgraph", "dep:serde_json" ]
+default = ["stats"]
+stats = [
+  "common/stats",
+]
+test_helpers = [
+  "common/test_helpers",
+  "node_lib/test_helpers",
+  "obu_lib/test_helpers",
+  "rsu_lib/test_helpers",
+]
 
 [dev-dependencies]
 serde_json = "*"

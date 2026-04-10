@@ -1,8 +1,22 @@
 [workspace]
-members = [ "common", "node_lib", "rsu_lib", "obu_lib", "server_lib", "simulator", "node", "keygen", "visualization", "scripts_tools", "native_viz" ]
+members = [
+  "common",
+  "node_lib",
+  "rsu_lib",
+  "obu_lib",
+  "server_lib",
+  "simulator",
+  "node",
+  "keygen",
+  "scripts_tools",
+  "native_viz",
+]
 resolver = "2"
 
 [profile.release]
-codegen-units = 1
-lto = "fat"
+# codegen-units = 1
+# lto = "fat"
 panic = "abort"
+lto = "thin"          # Much lighter on RAM than "fat"
+# lto = false         # Even lighter
+codegen-units = 16    # Increasing this reduces memory pressure per unit

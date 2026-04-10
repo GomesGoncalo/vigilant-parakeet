@@ -11,4 +11,8 @@ pub struct NodePosition {
     pub speed: f64,
     /// Bearing in degrees clockwise from north.
     pub bearing: f64,
+    /// Optional destination coordinates (lat, lon) for moving nodes.
+    /// Present for OBUs that have an active route; `None` for fixed nodes.
+    pub dest_lat: Option<f64>,
+    pub dest_lon: Option<f64>,
 }

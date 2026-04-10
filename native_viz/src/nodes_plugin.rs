@@ -15,6 +15,8 @@ const LABEL_BG: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 160);
 /// walkers [`Plugin`] that draws every node in the current [`Snapshot`].
 pub struct NodesPlugin {
     snapshot: Snapshot,
+    prev_positions: std::collections::HashMap<String, crate::api::NodePosition>,
+    prev_time: Option<std::time::Instant>,
     show_rsu_range: bool,
     highlighted_node: Option<String>,
     rsu_range_m: f32,
@@ -35,13 +37,15 @@ impl NodesPlugin {
             show_rsu_range,
             highlighted_node,
             rsu_range_m,
+            prev_positions: snapshot.positions.clone(),
+            prev_time: snapshot.last_positions_at,
         }
     }
 }
 
 impl Plugin for NodesPlugin {
     fn run(
-        self: Box<Self>,
+        mut self: Box<Self>,
         ui: &mut egui::Ui,
         _response: &egui::Response,
         projector: &Projector,
@@ -123,6 +127,18 @@ impl Plugin for NodesPlugin {
         }
 
         // --- Pass 2: node symbols ---
+        let now = self
+            .snapshot
+            .last_positions_at
+            .unwrap_or_else(std::time::Instant::now);
+        let prev_time = self.prev_time.unwrap_or(now);
+        let dt = (now - prev_time).as_secs_f32().clamp(0.0, 0.5);
+        let interp = if dt > 0.0 && dt < 0.5 {
+            (dt / 0.2).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
         for (name, pos) in &self.snapshot.positions {
             let node_type = self
                 .snapshot
@@ -135,7 +151,23 @@ impl Plugin for NodesPlugin {
                 continue;
             }
 
-            let screen = to_screen(pos.lat, pos.lon);
+            let mut lat = pos.lat;
+            let mut lon = pos.lon;
+            let mut bearing = pos.bearing;
+            let mut speed = pos.speed;
+
+            if node_type == "Obu" {
+                if let Some(prev) = self.prev_positions.get(name) {
+                    // Linear interpolation for smoother animation
+                    let interp = interp as f64;
+                    lat = prev.lat + (pos.lat - prev.lat) * interp;
+                    lon = prev.lon + (pos.lon - prev.lon) * interp;
+                    bearing = prev.bearing + (pos.bearing - prev.bearing) * interp;
+                    speed = prev.speed + (pos.speed - prev.speed) * interp;
+                }
+            }
+
+            let screen = to_screen(lat, lon);
 
             match node_type {
                 "Rsu" => {
@@ -147,8 +179,8 @@ impl Plugin for NodesPlugin {
                     painter.circle_stroke(screen, obu_r, Stroke::new(1.0, Color32::WHITE));
 
                     // Bearing arrow when the vehicle is moving.
-                    if pos.speed > 0.5 {
-                        let angle = pos.bearing.to_radians() as f32;
+                    if speed > 0.5 {
+                        let angle = bearing.to_radians() as f32;
                         let tip = pos2(
                             screen.x + angle.sin() * (obu_r + 6.0),
                             screen.y - angle.cos() * (obu_r + 6.0),
@@ -179,6 +211,20 @@ impl Plugin for NodesPlugin {
                 draw_label(painter, screen, name, obu_r);
             }
         }
+
+        // If a node is highlighted and it has a trip destination, draw a green cross at the destination
+        if let Some(ref highlighted) = self.highlighted_node {
+            if let Some(pos) = self.snapshot.positions.get(highlighted) {
+                if let (Some(dlat), Some(dlon)) = (pos.dest_lat, pos.dest_lon) {
+                    let dest_screen = to_screen(dlat, dlon);
+                    draw_cross(painter, dest_screen, 10.0, Color32::from_rgb(0, 200, 0));
+                }
+            }
+        }
+
+        // Update previous positions and time for next frame
+        self.prev_positions = self.snapshot.positions.clone();
+        self.prev_time = self.snapshot.last_positions_at;
     }
 }
 
@@ -224,6 +270,25 @@ fn draw_triangle(painter: &egui::Painter, centre: Pos2, half_size: f32, color: C
         color,
         Stroke::NONE,
     ));
+}
+
+/// Draw a green cross marker centered at `centre`.
+fn draw_cross(painter: &egui::Painter, centre: Pos2, half_size: f32, color: Color32) {
+    let stroke = Stroke::new(3.0, color);
+    painter.line_segment(
+        [
+            pos2(centre.x - half_size, centre.y - half_size),
+            pos2(centre.x + half_size, centre.y + half_size),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            pos2(centre.x - half_size, centre.y + half_size),
+            pos2(centre.x + half_size, centre.y - half_size),
+        ],
+        stroke,
+    );
 }
 
 /// Node name label with a dark semi-transparent background for readability.

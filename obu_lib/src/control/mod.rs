@@ -165,6 +165,12 @@ impl Obu {
         self.crypto.get_dh_session_info()
     }
 
+    /// Return `(key_id, handshake_duration_ms, age_ms, dh_group, signing_algo)` for
+    /// the current server session, if established.
+    pub fn get_session_timing(&self) -> Option<(u32, u64, u64, &'static str, &'static str)> {
+        self.crypto.get_session_timing()
+    }
+
     /// Immediately trigger a DH re-key exchange, bypassing the normal interval.
     pub fn trigger_rekey(&self) {
         self.crypto.trigger_rekey();

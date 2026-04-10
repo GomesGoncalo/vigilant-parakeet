@@ -263,25 +263,21 @@ The simulator is the central orchestration layer. Its responsibilities are:
   userspace. Channel parameters can be updated at runtime without restarting
   any node.
 
-+ *Observability*: exposes an HTTP metrics API (feature: `webview`, port 3030)
-  and a terminal TUI dashboard (feature: `tui`).
++ *Observability*: exposes an HTTP metrics API (port 3030) and a terminal
+  TUI dashboard. The simulator enables observability (metrics, web API and TUI)
+  by default to support interactive experiment runs and the native visualization tool.
 
 The simulator architecture is described in full in @implementation.
 
-=== `visualization` — Browser Dashboard
+=== `visualization` — Native Dashboard
 
-A Yew/WASM application compiled to WebAssembly and served from a static HTTP
-server. It polls the simulator's `/node_info` endpoint on a configurable
-interval and renders:
+The native visualization (native_viz) is provided as a separate native application that consumes the simulator HTTP API. It polls the `/node_info` endpoint on a configurable interval and renders:
 
-- A live topology graph showing nodes and active links, with per-link
-  channel parameters.
+- A live topology graph showing nodes and active links, with per-link channel parameters.
 - Per-node traffic counters updated in real time.
-- Upstream routing state for each OBU, showing the currently selected relay
-  path toward each RSU.
+- Upstream routing state for each OBU, showing the currently selected relay path toward each RSU.
 
-The visualisation is purely read-only and stateless: all state lives in the
-simulator; the browser is a rendering frontend with no persistent storage.
+The visualization is read-only and stateless: all authoritative state lives in the simulator; the dashboard is a rendering frontend with no persistent storage. The native implementation is optimised for large node counts: icon bitmaps are cached and reused; marker layers are grouped by node type; directional routing arrows are rendered using a lightweight canvas overlay rather than heavyweight SVG per-edge geometry. Performance-sensitive paths use a native polling path that updates map layers directly and minimises main-thread work, improving responsiveness on lower-power clients.
 
 === `scripts_tools` — Experiment Analysis CLI
 
@@ -397,7 +393,7 @@ The simulator manages node lifecycle as follows:
 
 === TUI Dashboard
 
-The terminal TUI (feature: `tui`, built on `ratatui`) provides seven tabs
+The terminal TUI (built on `ratatui`) provides seven tabs
 accessible via number keys:
 
 / *Metrics*: per-node counters (packets sent/received, loops detected, crypto
@@ -524,17 +520,15 @@ nanosecond precision without wall-clock waits.
 `warp` crates in the Rust ecosystem provide the building blocks for all major
 subsystems without requiring any unsafe code in the node libraries.
 
-=== Feature-Gated Instrumentation
+=== Instrumentation and default features
 
-The `stats` feature compiles in atomic counters (`loop_detected_count`,
-`encrypted_frames_sent`, etc.) at zero cost when disabled. The `webview` and
-`tui` features are similarly additive. This design pattern — compile-time
-feature flags rather than runtime configuration — ensures that production
-builds carry no instrumentation overhead, while experiment builds have full
-observability.
-
-The `test_helpers` feature unlocks in-process hub and TUN shim implementations
-used by the integration test suite. It is never compiled into production builds.
+To simplify experiment workflows, the simulator ships with observability enabled
+by default: the HTTP API, terminal TUI, and the lightweight `stats` counters
+are included in normal simulator builds. Library crates (for example
+`node_lib` and `common`) keep their `stats` code behind an optional feature so
+that downstream consumers can opt in or keep node builds minimal. The
+`test_helpers` feature still unlocks in-process hub and TUN shim implementations
+used by the integration test suite and remains opt-in for CI and local tests.
 
 === Test Infrastructure Without Root
 

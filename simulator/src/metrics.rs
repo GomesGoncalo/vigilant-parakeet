@@ -81,7 +81,6 @@ impl ChannelStats {
 
 /// Aggregate latency percentiles and throughput computed from per-channel history
 /// without cloning the VecDeque buffers.
-#[cfg(feature = "tui")]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AggregatedChannelStats {
     /// 95th-percentile latency in microseconds.
@@ -250,7 +249,6 @@ impl SimulatorMetrics {
     }
 
     /// Visit per-channel stats without cloning the map.
-    #[cfg(feature = "tui")]
     ///
     /// Holds the lock only for the duration of `visitor`. Callers that only
     /// need to read scalar fields or iterate the VecDeque in-place should
@@ -266,7 +264,6 @@ impl SimulatorMetrics {
 
     /// Compute p95/p99 latency, jitter, and 10-second byte throughput from the
     /// per-channel history in a single lock acquisition — no VecDeque clone.
-    #[cfg(feature = "tui")]
     pub fn compute_aggregated_channel_stats(&self) -> AggregatedChannelStats {
         let now = Instant::now();
         let cutoff = now - Duration::from_secs(10);

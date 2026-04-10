@@ -39,14 +39,15 @@ cargo build --workspace --release
 
 Build specific components:
 ```bash
-# Simulator with webview feature (takes ~1 minute 40 seconds)
-cargo build -p simulator --release --features webview
+# Simulator (webview, TUI, and stats enabled by default) (takes ~1 minute 40 seconds)
+cargo build -p simulator --release
 
 # Single node binary only
 cargo build --bin node --release
 
-# With stats/metrics feature enabled
-cargo build --features stats
+# Simulator: stats enabled by default; to enable metrics in library crates use the `stats` feature
+# Example: run node_lib metric tests with the feature enabled
+# cargo build --features stats
 ```
 
 **NEVER CANCEL**: All builds may take 90+ seconds. Wait for completion.
@@ -179,8 +180,10 @@ Run individual node:
 
 2. **Feature build validation**:
    ```bash
+   # Node library metric tests (enable `stats` on node_lib)
    cargo test -p node_lib --features stats
-   cargo build -p simulator --release --features webview
+   # Simulator builds include web API, TUI and stats by default
+   cargo build -p simulator --release
    ```
 
 3. **Coverage validation**:
@@ -207,9 +210,10 @@ Run individual node:
 
 **Stats/metrics development**:
 ```bash
-# Always test with stats feature enabled
+# Metrics / stats guidance
+# The simulator enables metrics by default. To exercise library-level counters
+# in node_lib, run the tests with the `stats` feature enabled:
 cargo test -p node_lib --features stats
-cargo build --features stats
 ```
 
 **Debugging with logs**:
@@ -229,17 +233,12 @@ RUST_LOG=trace cargo test -p node_lib -- <test_name> -- --nocapture
 
 For visualization development:
 ```bash
-# Install wasm tools (optional)
-rustup target add wasm32-unknown-unknown
-cargo install wasm-pack trunk
+See native_viz/README.md for visualization build instructions.
 ```
 
 Test visualization:
 ```bash
-cd visualization
-cargo test  # Host tests
-wasm-pack test --headless --firefox  # WASM tests
-trunk build --release  # Build frontend
+# See native_viz/README.md for visualization test/build steps
 ```
 
 ## Commit Message Guidelines
