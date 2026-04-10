@@ -710,6 +710,15 @@ impl Simulator {
         self.override_queue.clone()
     }
 
+    /// Return a snapshot of the per-OBU RSSI tables (node name → mac → rssi_dbm).
+    ///
+    /// Each inner table is an `Arc<RwLock<…>>` shared with the OBU; calling
+    /// `read()` gives a current view without cloning the whole map.
+    #[cfg(feature = "mobility")]
+    pub fn get_rssi_tables(&self) -> HashMap<String, obu_lib::RssiTable> {
+        self.rssi_tables.clone()
+    }
+
     /// Return a clone of the created nodes with full interface information
     /// (name -> (dev, interfaces, node)).
     #[allow(dead_code)]

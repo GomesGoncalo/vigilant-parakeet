@@ -4,19 +4,30 @@ use walkers::{lon_lat, MapMemory, Plugin, Position, Projector};
 
 const OBU_COLOR: Color32 = Color32::from_rgb(30, 100, 220);
 const RSU_COLOR: Color32 = Color32::from_rgb(220, 120, 30);
-const SERVER_COLOR: Color32 = Color32::from_rgb(140, 140, 140);
-const UPSTREAM_LINE: Color32 = Color32::from_rgba_premultiplied(80, 180, 80, 180);
+//const SERVER_COLOR: Color32 = Color32::from_rgb(140, 140, 140);
+/// Longest upstream line (screen pixels) that maps to full red (fallback when RSSI unavailable).
+const UPSTREAM_MAX_PX: f32 = 400.0;
+/// RSU coverage radius in metres at the −95 dBm routing-guard cutoff.
+///   d = 10^((95 − 40) / 20) ≈ 562 m
+///
+/// Used both for the range-circle radius and the colour gradient denominator.
+/// RSSI is converted back to metres before mapping to [0, 1] so the gradient
+/// is linear in distance (matching what the map looks like spatially) rather
+/// than linear in dBm (which compresses the near/green end of the scale).
+const RSU_RANGE_M: f32 = 562.0;
 const LABEL_BG: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 160);
 
 /// walkers [`Plugin`] that draws every node in the current [`Snapshot`].
 pub struct NodesPlugin {
     snapshot: Snapshot,
+    show_rsu_range: bool,
 }
 
 impl NodesPlugin {
-    pub fn new(snapshot: &Snapshot) -> Self {
+    pub fn new(snapshot: &Snapshot, show_rsu_range: bool) -> Self {
         Self {
             snapshot: snapshot.clone(),
+            show_rsu_range,
         }
     }
 }
@@ -41,6 +52,24 @@ impl Plugin for NodesPlugin {
             projector.project(lon_lat(lon, lat) as Position).to_pos2()
         };
 
+        // --- Pass 0: RSU coverage range circles (radial gradient, deepest layer) ---
+        if self.show_rsu_range {
+            let range_px = RSU_RANGE_M * px_per_m;
+            for (name, pos) in &self.snapshot.positions {
+                let is_rsu = self
+                    .snapshot
+                    .node_info
+                    .get(name)
+                    .map(|n| n.node_type == "Rsu")
+                    .unwrap_or(false);
+                if !is_rsu {
+                    continue;
+                }
+                let center = to_screen(pos.lat, pos.lon);
+                draw_rsu_range_circle(painter, center, range_px);
+            }
+        }
+
         // --- Pass 1: upstream routing lines (rendered below node symbols) ---
         for (name, info) in &self.snapshot.node_info {
             let Some(ref up) = info.upstream else {
@@ -57,7 +86,26 @@ impl Plugin for NodesPlugin {
             };
             let a = to_screen(obu_pos.lat, obu_pos.lon);
             let b = to_screen(rsu_pos.lat, rsu_pos.lon);
-            painter.line_segment([a, b], Stroke::new(1.0, UPSTREAM_LINE));
+            // t = 0.0 → green (strong signal / short link)
+            // t = 1.0 → red  (weak signal / long link)
+            //
+            // RSSI is in dBm (already log-scale).  Mapping dBm linearly to t
+            // compresses the near/green end; instead we invert the path-loss
+            // formula to get metres, then map that linearly to [0, 1].  This
+            // way the colour matches what you see against the RSU range circle.
+            let t = if let Some(rssi) = up.rssi_dbm {
+                let dist_m = 10.0_f32.powf((rssi + 40.0) / -20.0);
+                (dist_m / RSU_RANGE_M).clamp(0.0, 1.0)
+            } else {
+                ((a - b).length() / UPSTREAM_MAX_PX).clamp(0.0, 1.0)
+            };
+            let line_color = Color32::from_rgba_premultiplied(
+                (t * 200.0) as u8,
+                ((1.0 - t) * 180.0) as u8,
+                0,
+                180,
+            );
+            painter.line_segment([a, b], Stroke::new(5.0, line_color));
         }
 
         // --- Pass 2: node symbols ---
@@ -75,18 +123,7 @@ impl Plugin for NodesPlugin {
                 "Rsu" => {
                     draw_triangle(painter, screen, rsu_half, RSU_COLOR);
                 }
-                "Server" => {
-                    let half = rsu_half * 0.9;
-                    let rect = egui::Rect::from_center_size(screen, egui::Vec2::splat(half * 2.0));
-                    painter.rect_filled(rect, 2.0, SERVER_COLOR);
-                    painter.rect_stroke(
-                        rect,
-                        2.0,
-                        Stroke::new(1.5, Color32::WHITE),
-                        egui::StrokeKind::Inside,
-                    );
-                }
-                _ => {
+                "Obu" => {
                     // OBU — filled circle with a thin white border.
                     painter.circle_filled(screen, obu_r, OBU_COLOR);
                     painter.circle_stroke(screen, obu_r, Stroke::new(1.0, Color32::WHITE));
@@ -98,9 +135,10 @@ impl Plugin for NodesPlugin {
                             screen.x + angle.sin() * (obu_r + 6.0),
                             screen.y - angle.cos() * (obu_r + 6.0),
                         );
-                        painter.line_segment([screen, tip], Stroke::new(1.5, Color32::WHITE));
+                        painter.line_segment([screen, tip], Stroke::new(4.0, Color32::WHITE));
                     }
                 }
+                _ => {}
             }
 
             // Labels only when zoomed in enough.
@@ -109,6 +147,38 @@ impl Plugin for NodesPlugin {
             }
         }
     }
+}
+
+/// Radial-gradient circle representing RSU coverage.
+///
+/// The mesh is a fan of triangles from the centre (opaque RSU orange) to the
+/// outer ring (fully transparent), giving a smooth radial fade.
+fn draw_rsu_range_circle(painter: &egui::Painter, center: Pos2, radius_px: f32) {
+    const SEGMENTS: u32 = 64;
+    // RSU orange, semi-opaque at the centre → transparent at the edge.
+    let center_color = Color32::from_rgba_premultiplied(180, 90, 15, 55);
+    let edge_color = Color32::TRANSPARENT;
+
+    let mut mesh = egui::Mesh::default();
+    // Vertex 0: centre
+    mesh.colored_vertex(center, center_color);
+    // Vertices 1..=SEGMENTS: outer ring
+    for i in 0..SEGMENTS {
+        let angle = i as f32 * std::f32::consts::TAU / SEGMENTS as f32;
+        mesh.colored_vertex(
+            pos2(
+                center.x + radius_px * angle.cos(),
+                center.y + radius_px * angle.sin(),
+            ),
+            edge_color,
+        );
+    }
+    // Fan triangles: centre + two consecutive outer vertices
+    for i in 0..SEGMENTS {
+        mesh.indices
+            .extend_from_slice(&[0, 1 + i, 1 + (i + 1) % SEGMENTS]);
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// Upward-pointing equilateral triangle centred at `centre`.

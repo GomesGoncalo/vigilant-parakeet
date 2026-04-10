@@ -19,6 +19,10 @@ pub struct UpstreamInfo {
     pub hops: u32,
     pub mac: String,
     pub node_name: Option<String>,
+    /// RSSI observed by this OBU towards its upstream node, in dBm.
+    /// Present only when the simulator runs with the `mobility` feature
+    /// (fading model active).  Typical range: −40 (strong) to −100 (weak).
+    pub rssi_dbm: Option<f32>,
 }
 
 /// Routing / type info for one node, as returned by `GET /node_info`.

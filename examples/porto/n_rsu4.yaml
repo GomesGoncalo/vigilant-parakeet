@@ -5,4 +5,4 @@ hello_periodicity: 5000
 external_tap_ip: 172.16.0.5
 server_ip: 172.16.0.1
 lat: 41.1444
-lon: -8.6110
+lon: -8.629

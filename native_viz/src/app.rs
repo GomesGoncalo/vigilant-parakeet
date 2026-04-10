@@ -12,6 +12,8 @@ pub struct VizApp {
     fitted: bool,
     /// Tile layer opacity (0.0 = hidden, 1.0 = fully visible).
     tile_opacity: f32,
+    /// Whether to draw the RSU coverage range circles.
+    show_rsu_range: bool,
 }
 
 impl VizApp {
@@ -29,6 +31,7 @@ impl VizApp {
             rx,
             fitted: false,
             tile_opacity: 1.0,
+            show_rsu_range: false,
         }
     }
 }
@@ -56,7 +59,7 @@ impl eframe::App for VizApp {
             .resizable(false)
             .exact_size(200.0)
             .show_inside(ui, |ui| {
-                draw_sidebar(ui, &self.snapshot, &mut self.tile_opacity);
+                draw_sidebar(ui, &self.snapshot, &mut self.tile_opacity, &mut self.show_rsu_range);
             });
 
         egui::CentralPanel::default()
@@ -68,7 +71,7 @@ impl eframe::App for VizApp {
                 let my_pos = lon_lat(-8.625, 41.157);
                 let map = Map::new(None, &mut self.map_memory, my_pos)
                     .with_layer(&mut self.tiles, self.tile_opacity)
-                    .with_plugin(NodesPlugin::new(&self.snapshot));
+                    .with_plugin(NodesPlugin::new(&self.snapshot, self.show_rsu_range));
 
                 map.show(ui, |_, _, _, _| ());
             });
@@ -83,7 +86,7 @@ fn centroid(positions: &std::collections::HashMap<String, crate::api::NodePositi
     (sum_lat / n, sum_lon / n)
 }
 
-fn draw_sidebar(ui: &mut egui::Ui, snap: &Snapshot, tile_opacity: &mut f32) {
+fn draw_sidebar(ui: &mut egui::Ui, snap: &Snapshot, tile_opacity: &mut f32, show_rsu_range: &mut bool) {
     ui.add_space(8.0);
     ui.heading("vigilant-parakeet");
     ui.separator();
@@ -146,6 +149,18 @@ fn draw_sidebar(ui: &mut egui::Ui, snap: &Snapshot, tile_opacity: &mut f32) {
             *tile_opacity = if *tile_opacity > 0.1 { 0.0 } else { 1.0 };
         }
     });
+
+    ui.separator();
+
+    // RSU range toggle
+    let range_label = if *show_rsu_range {
+        "Hide RSU range"
+    } else {
+        "Show RSU range"
+    };
+    if ui.button(range_label).clicked() {
+        *show_rsu_range = !*show_rsu_range;
+    }
 
     ui.separator();
 

@@ -35,6 +35,8 @@ pub fn setup_routes(
     let sim_nodes = simulator.get_nodes();
     let channels = simulator.get_channels();
     let metrics = simulator.get_metrics();
+    #[cfg(feature = "mobility")]
+    let rssi_tables = simulator.get_rssi_tables();
 
     // Endpoint: GET /nodes - returns list of node names
     let nodes_endpoint = {
@@ -123,6 +125,8 @@ pub fn setup_routes(
     // Endpoint: GET /node_info - returns node type and routing topology (upstream/downstream)
     let node_info_endpoint = {
         let sim_nodes = sim_nodes.clone();
+        #[cfg(feature = "mobility")]
+        let rssi_tables = rssi_tables.clone();
         warp::get()
             .and(warp::path("node_info"))
             .and(warp::path::end())
@@ -138,6 +142,7 @@ pub fn setup_routes(
                     hops: u32,
                     mac: String,
                     node_name: Option<String>,
+                    rssi_dbm: Option<f32>,
                 }
 
                 #[derive(serde::Serialize)]
@@ -164,10 +169,21 @@ pub fn setup_routes(
                         .as_any()
                         .downcast_ref::<Obu>()
                         .and_then(|obu| obu.cached_upstream_route())
-                        .map(|r| UpstreamInfo {
-                            hops: r.hops,
-                            mac: format!("{}", r.mac),
-                            node_name: mac_map.get(&r.mac).cloned(),
+                        .map(|r| {
+                            // Look up RSSI for the upstream MAC from this OBU's table.
+                            #[cfg(feature = "mobility")]
+                            let rssi_dbm = rssi_tables
+                                .get(name)
+                                .and_then(|tbl| tbl.read().ok())
+                                .and_then(|guard| guard.get(&r.mac).copied());
+                            #[cfg(not(feature = "mobility"))]
+                            let rssi_dbm: Option<f32> = None;
+                            UpstreamInfo {
+                                hops: r.hops,
+                                mac: format!("{}", r.mac),
+                                node_name: mac_map.get(&r.mac).cloned(),
+                                rssi_dbm,
+                            }
                         });
 
                     if let Some(ref u) = upstream_route {
