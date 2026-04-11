@@ -1150,7 +1150,13 @@ impl Routing {
                     // gone — the -100 dBm fallback would fail the -95 dBm liveness
                     // check and cause every arriving heartbeat to evict the cached RSU.
                     match tbl.get(&cached_source) {
-                        None => true, // no measurement yet — keep cached RSU stable
+                        None => {
+                            // Two cases:
+                            // 1. Table is empty → startup, no measurements yet → keep.
+                            // 2. Table has entries but not this RSU → fading task removed
+                            //    it because it went out of range → allow switching.
+                            tbl.is_empty()
+                        }
                         Some(&rssi_cached) => {
                             // -95 dBm is near the edge of usable range (~3 km free-space
                             // at 5.9 GHz with 23 dBm TX).  Below that the cached RSU is
