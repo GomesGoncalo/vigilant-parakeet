@@ -417,7 +417,6 @@ impl Simulator {
         }
     }
 
-
     /// Parse optional mobility config and per-node geo configs, then init the
     /// MobilityManager if `mobility.enabled` is set.
     #[cfg(feature = "mobility")]
@@ -591,8 +590,7 @@ impl Simulator {
                                 continue;
                             };
 
-                            let d =
-                                crate::fading::haversine_m(fp.lat, fp.lon, tp.lat, tp.lon);
+                            let d = crate::fading::haversine_m(fp.lat, fp.lon, tp.lat, tp.lon);
 
                             if d < cfg.max_range_m {
                                 // In range: create channel on first encounter, then update params.
@@ -627,8 +625,7 @@ impl Simulator {
                                 // Free-space model at 5.9 GHz (ITS-G5):
                                 //   RSSI ≈ -40 - 20·log₁₀(d_m)
                                 // → -80 dBm at 100 m, -100 dBm at 1000 m.
-                                let rssi_dbm =
-                                    (-40.0_f64 - 20.0 * d.max(1.0).log10()) as f32;
+                                let rssi_dbm = (-40.0_f64 - 20.0 * d.max(1.0).log10()) as f32;
 
                                 if let (Some(to_mac), Some(tbl)) =
                                     (name_to_mac.get(to), rssi_tables.get(from))
@@ -646,10 +643,8 @@ impl Simulator {
                                 }
                             } else {
                                 // Out of range: tear down channel and clear stale RSSI.
-                                let removed = channels
-                                    .get_mut(from)
-                                    .and_then(|m| m.remove(to))
-                                    .is_some();
+                                let removed =
+                                    channels.get_mut(from).and_then(|m| m.remove(to)).is_some();
                                 if removed {
                                     tracing::debug!(
                                         from = %from, to = %to, dist_m = d,
@@ -678,6 +673,23 @@ impl Simulator {
             });
         }
 
+        // Spawn a periodic task to evict channel-stats entries for channels that
+        // have seen no traffic in the last 120 seconds.  Without this, the
+        // `channel_stats` HashMap grows without bound as OBUs move around and
+        // create stats entries for every (from, to) pair they ever communicate
+        // through — in the Porto stress scenario this can reach hundreds of MB
+        // over a long run.
+        {
+            let metrics_for_cleanup = self.metrics.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    metrics_for_cleanup.cleanup_stale_channels(120);
+                }
+            });
+        }
+
         // Build one TUN-reader future per unique node.
         //
         // Cloud/topology channels provide the TUN handle for cloud nodes.
@@ -689,8 +701,7 @@ impl Simulator {
 
         for (inner_key, ch) in self.channels.values().flat_map(|m| m.iter()) {
             if seen_nodes.insert(inner_key.clone()) {
-                future_set
-                    .push(Self::generate_channel_reads(inner_key.clone(), ch.clone()));
+                future_set.push(Self::generate_channel_reads(inner_key.clone(), ch.clone()));
             }
         }
 
@@ -733,7 +744,8 @@ impl Simulator {
                                 self.metrics.record_packet_sent_for_channel(from, to, size);
                                 let params = ch.params();
                                 self.metrics.record_packet_delayed(params.latency);
-                                self.metrics.record_latency_for_channel(from, to, params.latency);
+                                self.metrics
+                                    .record_latency_for_channel(from, to, params.latency);
                             }
                             Err(crate::channel::ChannelError::Dropped) => {
                                 self.metrics.record_packet_dropped_for_channel(from, to);
@@ -761,7 +773,8 @@ impl Simulator {
                                 self.metrics.record_packet_sent_for_channel(from, to, size);
                                 let params = ch.params();
                                 self.metrics.record_packet_delayed(params.latency);
-                                self.metrics.record_latency_for_channel(from, to, params.latency);
+                                self.metrics
+                                    .record_latency_for_channel(from, to, params.latency);
                             }
                             Err(crate::channel::ChannelError::Dropped) => {
                                 self.metrics.record_packet_dropped_for_channel(from, to);

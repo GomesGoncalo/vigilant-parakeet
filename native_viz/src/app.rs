@@ -59,7 +59,12 @@ impl eframe::App for VizApp {
             .resizable(false)
             .exact_size(200.0)
             .show_inside(ui, |ui| {
-                draw_sidebar(ui, &self.snapshot, &mut self.tile_opacity, &mut self.show_rsu_range);
+                draw_sidebar(
+                    ui,
+                    &self.snapshot,
+                    &mut self.tile_opacity,
+                    &mut self.show_rsu_range,
+                );
             });
 
         egui::CentralPanel::default()
@@ -86,7 +91,12 @@ fn centroid(positions: &std::collections::HashMap<String, crate::api::NodePositi
     (sum_lat / n, sum_lon / n)
 }
 
-fn draw_sidebar(ui: &mut egui::Ui, snap: &Snapshot, tile_opacity: &mut f32, show_rsu_range: &mut bool) {
+fn draw_sidebar(
+    ui: &mut egui::Ui,
+    snap: &Snapshot,
+    tile_opacity: &mut f32,
+    show_rsu_range: &mut bool,
+) {
     ui.add_space(8.0);
     ui.heading("vigilant-parakeet");
     ui.separator();

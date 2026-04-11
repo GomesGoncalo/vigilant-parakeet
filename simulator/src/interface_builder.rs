@@ -152,9 +152,7 @@ impl InterfaceBuilder {
                     &TAP_TXQUEUELEN.to_string(),
                 ])
                 .status()
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to set txqueuelen on {}: {}", self.name, e)
-                })?;
+                .map_err(|e| anyhow::anyhow!("Failed to set txqueuelen on {}: {}", self.name, e))?;
             if !status.success() {
                 tracing::warn!(
                     iface = %self.name,
