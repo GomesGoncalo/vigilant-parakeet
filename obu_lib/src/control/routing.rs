@@ -61,6 +61,17 @@ enum ForwardAction {
     ForwardCached,
 }
 
+/// Maximum number of observations kept per sender MAC in a `SequenceEntry`'s
+/// downstream map.
+///
+/// In a dense mesh a single heartbeat reply from one OBU can arrive at a relay
+/// OBU multiple times — once per independent relay path.  Without a cap, the
+/// `Vec<Target>` for each sender grows without bound, causing the memory spike
+/// observed in the Porto stress scenario (48 RSUs × 70 OBUs).  Keeping the
+/// last `MAX_DOWNSTREAM_OBS` observations per sender is sufficient for accurate
+/// latency statistics while capping memory to a predictable constant.
+const MAX_DOWNSTREAM_OBS: usize = 8;
+
 /// One heartbeat sequence's routing state.
 ///
 /// Records when we received a particular sequence, which neighbor forwarded
@@ -95,6 +106,10 @@ impl SequenceEntry {
     ///   measured round-trip `latency`.
     /// - One for `forwarder` (the immediate peer that delivered the reply),
     ///   with no latency measurement (adjacency-only).
+    ///
+    /// Each per-sender `Vec<Target>` is capped at `MAX_DOWNSTREAM_OBS` entries
+    /// (sliding window — oldest evicted first) to bound memory in dense mesh
+    /// scenarios where the same reply can arrive via multiple relay paths.
     fn record_observation(
         &mut self,
         sender: MacAddress,
@@ -102,12 +117,21 @@ impl SequenceEntry {
         forwarder: MacAddress,
         latency: Duration,
     ) {
-        self.downstream.entry(sender).or_default().push(Target {
+        let sv = self.downstream.entry(sender).or_default();
+        if sv.len() >= MAX_DOWNSTREAM_OBS {
+            sv.remove(0);
+        }
+        sv.push(Target {
             hops: sender_hops,
             mac: forwarder,
             latency: Some(latency),
         });
-        self.downstream.entry(forwarder).or_default().push(Target {
+
+        let fv = self.downstream.entry(forwarder).or_default();
+        if fv.len() >= MAX_DOWNSTREAM_OBS {
+            fv.remove(0);
+        }
+        fv.push(Target {
             hops: 1,
             mac: forwarder,
             latency: None,

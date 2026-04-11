@@ -209,7 +209,6 @@ impl SimulatorMetrics {
     /// Remove channel entries that have seen no traffic in the last `stale_secs` seconds.
     /// Call this periodically to prevent unbounded HashMap growth as OBUs connect to
     /// different RSUs over time.
-    #[allow(dead_code)]
     pub fn cleanup_stale_channels(&self, stale_secs: u64) {
         if let Ok(mut stats) = self.channel_stats.lock() {
             let cutoff = Instant::now() - Duration::from_secs(stale_secs);
