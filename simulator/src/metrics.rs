@@ -52,8 +52,8 @@ impl Default for ChannelStats {
             bytes_sent: 0,
             total_latency_us: 0,
             packets_delayed: 0,
-            latency_samples: VecDeque::with_capacity(1000),
-            throughput_window: VecDeque::with_capacity(2000),
+            latency_samples: VecDeque::new(),
+            throughput_window: VecDeque::new(),
             last_seen: Instant::now(),
         }
     }
@@ -209,7 +209,6 @@ impl SimulatorMetrics {
     /// Remove channel entries that have seen no traffic in the last `stale_secs` seconds.
     /// Call this periodically to prevent unbounded HashMap growth as OBUs connect to
     /// different RSUs over time.
-    #[allow(dead_code)]
     pub fn cleanup_stale_channels(&self, stale_secs: u64) {
         if let Ok(mut stats) = self.channel_stats.lock() {
             let cutoff = Instant::now() - Duration::from_secs(stale_secs);

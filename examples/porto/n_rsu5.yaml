@@ -1,8 +1,8 @@
-# RSU node config (rsu5) — Bonfim / east Porto
+# RSU node config (rsu5) — grid position row1 col5
 node_type: Rsu
 hello_history: 10
 hello_periodicity: 5000
 external_tap_ip: 172.16.0.6
 server_ip: 172.16.0.1
-lat: 41.148
-lon: -8.598
+lat: 41.1444
+lon: -8.621

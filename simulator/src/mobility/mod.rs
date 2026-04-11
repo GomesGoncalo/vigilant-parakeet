@@ -63,7 +63,7 @@ fn default_tick_ms() -> u64 {
     100
 }
 fn default_min_trip_distance_m() -> f64 {
-    804.0
+    1500.0
 }
 fn default_desired_speed_ms() -> f64 {
     13.9
@@ -360,7 +360,8 @@ fn find_leader(my_name: &str, my_progress: f64, occupants: &[(String, f64, f64)]
 
 /// Sample a destination node that is at least `min_distance_m` away by road.
 ///
-/// Makes up to 50 attempts; falls back to the farthest sampled node.
+/// Makes up to 50 attempts; falls back to the farthest reachable node found.
+/// Skips candidates with no road path (distance = infinity).
 fn sample_far_destination(
     graph: &RoadGraph,
     start: NodeIndex,
@@ -376,6 +377,9 @@ fn sample_far_destination(
             continue;
         }
         let d = graph.distance_m(start, candidate);
+        if d.is_infinite() {
+            continue; // unreachable node — skip
+        }
         if d >= min_distance_m {
             return candidate;
         }

@@ -61,6 +61,17 @@ enum ForwardAction {
     ForwardCached,
 }
 
+/// Maximum number of observations kept per sender MAC in a `SequenceEntry`'s
+/// downstream map.
+///
+/// In a dense mesh a single heartbeat reply from one OBU can arrive at a relay
+/// OBU multiple times — once per independent relay path.  Without a cap, the
+/// `Vec<Target>` for each sender grows without bound, causing the memory spike
+/// observed in the Porto stress scenario (48 RSUs × 70 OBUs).  Keeping the
+/// last `MAX_DOWNSTREAM_OBS` observations per sender is sufficient for accurate
+/// latency statistics while capping memory to a predictable constant.
+const MAX_DOWNSTREAM_OBS: usize = 8;
+
 /// One heartbeat sequence's routing state.
 ///
 /// Records when we received a particular sequence, which neighbor forwarded
@@ -95,6 +106,10 @@ impl SequenceEntry {
     ///   measured round-trip `latency`.
     /// - One for `forwarder` (the immediate peer that delivered the reply),
     ///   with no latency measurement (adjacency-only).
+    ///
+    /// Each per-sender `Vec<Target>` is capped at `MAX_DOWNSTREAM_OBS` entries
+    /// (sliding window — oldest evicted first) to bound memory in dense mesh
+    /// scenarios where the same reply can arrive via multiple relay paths.
     fn record_observation(
         &mut self,
         sender: MacAddress,
@@ -102,12 +117,21 @@ impl SequenceEntry {
         forwarder: MacAddress,
         latency: Duration,
     ) {
-        self.downstream.entry(sender).or_default().push(Target {
+        let sv = self.downstream.entry(sender).or_default();
+        if sv.len() >= MAX_DOWNSTREAM_OBS {
+            sv.remove(0);
+        }
+        sv.push(Target {
             hops: sender_hops,
             mac: forwarder,
             latency: Some(latency),
         });
-        self.downstream.entry(forwarder).or_default().push(Target {
+
+        let fv = self.downstream.entry(forwarder).or_default();
+        if fv.len() >= MAX_DOWNSTREAM_OBS {
+            fv.remove(0);
+        }
+        fv.push(Target {
             hops: 1,
             mac: forwarder,
             latency: None,
@@ -822,6 +846,16 @@ impl Routing {
     /// - New next-hop has ≥3 dB stronger RSSI (RSSI path)
     ///
     /// Returns None if no route exists.
+    /// Sequence entries older than this are considered stale and excluded from
+    /// route selection.  Prevents OBUs from routing through relay neighbours
+    /// that have moved out of RSU range: without this guard, a relay OBU that
+    /// stopped forwarding RSU heartbeats would remain as a cached next-hop
+    /// indefinitely, creating a dead-end chain in the routing graph.
+    ///
+    /// 60 s ≈ 12 × 5 s heartbeat intervals — plenty of margin while still
+    /// recovering within one or two RSU hello_history windows.
+    const ROUTE_STALE_THRESHOLD: Duration = Duration::from_secs(60);
+
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
         let Some(target_mac) = mac else {
             // Use the RSU source MAC (cached_source) to compute the upstream route.
@@ -833,7 +867,13 @@ impl Routing {
             // Using cached_source (RSU MAC) reaches the RSU-keyed branch and
             // returns the correct Route{mac=relay_obu, hops=N} for data forwarding.
             if let Some(source_mac) = self.cache.get_cached_source() {
-                return self.get_route_to(Some(source_mac));
+                let route = self.get_route_to(Some(source_mac));
+                if route.is_none() {
+                    // All sequences for the cached RSU are stale (relay moved away).
+                    // Clear the cache so the OBU re-selects on the next heartbeat.
+                    self.cache.clear();
+                }
+                return route;
             }
             return None;
         };
@@ -890,14 +930,25 @@ impl Routing {
 
         // Build a mac → min-hops map for all relay paths toward target_mac.
         // Used as fallback when a candidate has no latency measurements yet.
+        // Only consider sequences received recently; stale entries indicate
+        // the relay has moved out of RSU range and is no longer valid.
+        let now_dur = Instant::now().duration_since(self.boot);
         let mut upstream_hops: HashMap<MacAddress, u32> = HashMap::with_capacity(4);
         if let Some(seqs) = self.routes.get(&target_mac) {
             for e in seqs.values() {
+                if now_dur.saturating_sub(e.received_at) > Self::ROUTE_STALE_THRESHOLD {
+                    continue;
+                }
                 let slot = upstream_hops.entry(e.next_upstream).or_insert(e.hops);
                 if e.hops < *slot {
                     *slot = e.hops;
                 }
             }
+        }
+
+        // All known sequences for this RSU are stale — no valid relay exists.
+        if upstream_hops.is_empty() {
+            return None;
         }
 
         let latency_stats = self.collect_downstream_stats(target_mac);
@@ -1126,7 +1177,13 @@ impl Routing {
                     // gone — the -100 dBm fallback would fail the -95 dBm liveness
                     // check and cause every arriving heartbeat to evict the cached RSU.
                     match tbl.get(&cached_source) {
-                        None => true, // no measurement yet — keep cached RSU stable
+                        None => {
+                            // Two cases:
+                            // 1. Table is empty → startup, no measurements yet → keep.
+                            // 2. Table has entries but not this RSU → fading task removed
+                            //    it because it went out of range → allow switching.
+                            tbl.is_empty()
+                        }
                         Some(&rssi_cached) => {
                             // -95 dBm is near the edge of usable range (~3 km free-space
                             // at 5.9 GHz with 23 dBm TX).  Below that the cached RSU is

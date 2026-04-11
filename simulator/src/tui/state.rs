@@ -282,7 +282,10 @@ impl TuiState {
         // hold the lock only for the duration of the computation).
         // Cleanup stale channels every ~60s (240 ticks).
         self.tick_count += 1;
-        if self.tick_count % (TUI_UPDATES_PER_SECOND * 60) as u64 == 0 {
+        if self
+            .tick_count
+            .is_multiple_of((TUI_UPDATES_PER_SECOND * 60) as u64)
+        {
             self.metrics.cleanup_stale_channels(60);
         }
 

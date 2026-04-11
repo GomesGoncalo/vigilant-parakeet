@@ -11,29 +11,36 @@
 All VANET inter-node communication uses fixed-format binary messages in
 `node_lib::messages`:
 
-/ `Heartbeat`: Emitted periodically by RSUs. Carries the RSU's uptime at
-  emission time (`duration`), a monotonically increasing sequence number
-  (`id`), a hop counter incremented by each relay, and the RSU MAC address
-  (`source`).
+/ `Heartbeat` / `HeartbeatReply`: Routing control messages carried under
+  the `Control` packet type. `Heartbeat` is emitted periodically by RSUs;
+  `HeartbeatReply` is returned by OBUs and relay nodes.
 
-/ `HeartbeatReply`: Sent by an OBU (or relay) in response to a received
-  `Heartbeat`. Copies `duration`, `id`, `hops`, and `source` from the
-  original Heartbeat, and appends the replying node's MAC as `sender`. The
-  RSU receiving the reply computes round-trip latency as
-  `now_uptime − duration`.
+/ `KeyExchangeInit` / `KeyExchangeReply` / `SessionTerminated`: Authentication
+  messages carried under the `Auth` packet type. `KeyExchangeInit` and
+  `KeyExchangeReply` form the DH/KEM handshake; `SessionTerminated` is the
+  server-issued session revocation notice. Size depends on the configured
+  algorithm: 45 bytes unsigned for X25519, 1197 bytes for ML-KEM-768 Init,
+  or 1101 bytes for ML-KEM-768 Reply. An optional signed extension appends
+  the signing public key and signature, adding 101 bytes for Ed25519 or up to
+  5266 bytes for ML-DSA-65 (see @security for full wire format detail).
 
 / `Data::{Upstream, Downstream}`: Payload wrappers carrying a (potentially
   encrypted) byte buffer with source and destination MAC addresses.
 
-/ `KeyExchangeInit` / `KeyExchangeReply`: Variable-length DH/KEM handshake
-  messages. Size depends on the configured algorithm: 45 bytes unsigned for
-  X25519, 1197 bytes for ML-KEM-768 Init, or 1101 bytes for ML-KEM-768 Reply.
-  An optional signed extension appends the signing public key and signature,
-  adding 101 bytes for Ed25519 or up to 5266 bytes for ML-DSA-65
-  (see @security for full wire format detail).
-
 / `Message`: Outer container with a 1-byte type discriminant followed by
-  the serialised inner message.
+  the serialised inner message. The discriminant encodes the top-level packet
+  family: `0x00` = `Control` (heartbeat messages), `0x01` = `Data`, `0x02` =
+  `Auth` (key exchange and session revocation).
+
+The `Control` and `Auth` families are kept distinct by the `PacketType` enum
+in `node_lib::messages::packet_type`. Routing control messages (`Heartbeat`,
+`HeartbeatReply`) and authentication messages (`KeyExchangeInit`,
+`KeyExchangeReply`, `SessionTerminated`) are dispatched on separate arms,
+preventing accidental handling of authentication frames by the routing path
+and vice versa. Algorithm wire-ID constants (`0x01` / `0x02` for DH group
+and signing algorithm) are private to the `node_lib::messages::auth` module;
+callers interact with the typed `DhGroup` and `SigningAlgorithm` enums
+exclusively.
 
 All types implement `TryFrom<&[u8]>` for zero-copy deserialisation and
 `Into<Vec<u8>>` for serialisation.

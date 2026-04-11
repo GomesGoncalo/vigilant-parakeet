@@ -8,6 +8,13 @@ use common::tun::Tun;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
+/// Kernel transmit queue depth for simulator TAP devices.
+///
+/// Linux default is 1000 packets.  With a 9000 B VANET MTU and 119 nodes that
+/// is ~1 GB of kernel sk_buff memory; shrinking to 16 drops it to ~17 MB.
+/// Cloud/virtual interfaces (1500 B MTU) benefit proportionally.
+const TAP_TXQUEUELEN: u32 = 16;
+
 /// Builder for creating network interfaces with optional configuration
 ///
 /// # Example
@@ -132,6 +139,26 @@ impl InterfaceBuilder {
                         status.code()
                     );
                 }
+            }
+
+            // Shrink the kernel transmit queue so sk_buff memory stays proportional
+            // to the number of live channels rather than pre-allocated to worst case.
+            let status = std::process::Command::new("ip")
+                .args([
+                    "link",
+                    "set",
+                    &self.name,
+                    "txqueuelen",
+                    &TAP_TXQUEUELEN.to_string(),
+                ])
+                .status()
+                .map_err(|e| anyhow::anyhow!("Failed to set txqueuelen on {}: {}", self.name, e))?;
+            if !status.success() {
+                tracing::warn!(
+                    iface = %self.name,
+                    txqueuelen = TAP_TXQUEUELEN,
+                    "ip link set txqueuelen failed (non-fatal)"
+                );
             }
 
             Ok(Arc::new(Tun::new_real(real_tun)))

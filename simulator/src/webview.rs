@@ -33,8 +33,13 @@ pub fn setup_routes(
     simulator: &Simulator,
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     let sim_nodes = simulator.get_nodes();
+    let sim_nodes_full = simulator.get_nodes_with_interfaces();
     let channels = simulator.get_channels();
     let metrics = simulator.get_metrics();
+    #[cfg(feature = "mobility")]
+    let rssi_tables = simulator.get_rssi_tables();
+    #[cfg(feature = "mobility")]
+    let nakagami_config = simulator.get_nakagami_config().cloned();
 
     // Endpoint: GET /nodes - returns list of node names
     let nodes_endpoint = {
@@ -122,15 +127,17 @@ pub fn setup_routes(
 
     // Endpoint: GET /node_info - returns node type and routing topology (upstream/downstream)
     let node_info_endpoint = {
-        let sim_nodes = sim_nodes.clone();
+        let sim_nodes_full = sim_nodes_full.clone();
+        #[cfg(feature = "mobility")]
+        let rssi_tables = rssi_tables.clone();
         warp::get()
             .and(warp::path("node_info"))
             .and(warp::path::end())
             .map(move || {
                 // Build a mapping of MAC -> node name
-                let mac_map: HashMap<mac_address::MacAddress, String> = sim_nodes
+                let mac_map: HashMap<mac_address::MacAddress, String> = sim_nodes_full
                     .iter()
-                    .map(|(name, (dev, _tun, _node))| (dev.mac_address(), name.clone()))
+                    .map(|(name, (dev, _, _))| (dev.mac_address(), name.clone()))
                     .collect();
 
                 #[derive(serde::Serialize, Clone)]
@@ -138,37 +145,51 @@ pub fn setup_routes(
                     hops: u32,
                     mac: String,
                     node_name: Option<String>,
+                    rssi_dbm: Option<f32>,
+                    latency_us: Option<u64>,
                 }
 
                 #[derive(serde::Serialize)]
                 struct NodeInfo {
                     node_type: String,
+                    mac: String,
+                    cloud_ip: Option<String>,
+                    virtual_ip: Option<String>,
+                    has_session: bool,
                     upstream: Option<UpstreamInfo>,
                     downstream: Option<Vec<UpstreamInfo>>,
                 }
 
-                let mut out: HashMap<String, NodeInfo> = HashMap::new();
-                // first pass: compute upstream info per node and stash in a temp map so we can invert for downstream
-                let mut upstream_map: HashMap<String, UpstreamInfo> = HashMap::new();
-                for (name, (_dev, _tun, node)) in sim_nodes.iter() {
-                    // try downcast to obu to get a cached route
+                use crate::simulator::SimNode;
+                use obu_lib::Obu;
 
-                    use crate::simulator::SimNode;
-                    use obu_lib::Obu;
+                let mut out: HashMap<String, NodeInfo> = HashMap::new();
+                let mut upstream_map: HashMap<String, UpstreamInfo> = HashMap::new();
+
+                for (name, (dev, interfaces, node)) in sim_nodes_full.iter() {
                     let node_type = match node {
-                        SimNode::Obu(_) => "Obu".to_string(),
-                        SimNode::Rsu(_) => "Rsu".to_string(),
-                        SimNode::Server(_) => "Server".to_string(),
+                        SimNode::Obu(_) => "Obu",
+                        SimNode::Rsu(_) => "Rsu",
+                        SimNode::Server(_) => "Server",
                     };
-                    let upstream_route = node
-                        .as_any()
-                        .downcast_ref::<Obu>()
-                        .and_then(|obu| obu.cached_upstream_route())
-                        .map(|r| UpstreamInfo {
+                    let obu = node.as_any().downcast_ref::<Obu>();
+                    let has_session = obu.map(|o| o.has_dh_session()).unwrap_or(false);
+                    let upstream_route = obu.and_then(|o| o.cached_upstream_route()).map(|r| {
+                        #[cfg(feature = "mobility")]
+                        let rssi_dbm = rssi_tables
+                            .get(name)
+                            .and_then(|tbl| tbl.read().ok())
+                            .and_then(|guard| guard.get(&r.mac).copied());
+                        #[cfg(not(feature = "mobility"))]
+                        let rssi_dbm: Option<f32> = None;
+                        UpstreamInfo {
                             hops: r.hops,
                             mac: format!("{}", r.mac),
                             node_name: mac_map.get(&r.mac).cloned(),
-                        });
+                            rssi_dbm,
+                            latency_us: r.latency.map(|d| d.as_micros() as u64),
+                        }
+                    });
 
                     if let Some(ref u) = upstream_route {
                         upstream_map.insert(name.clone(), u.clone());
@@ -177,19 +198,22 @@ pub fn setup_routes(
                     out.insert(
                         name.clone(),
                         NodeInfo {
-                            node_type,
+                            node_type: node_type.to_string(),
+                            mac: format!("{}", dev.mac_address()),
+                            cloud_ip: interfaces.cloud_ip.map(|ip| ip.to_string()),
+                            virtual_ip: interfaces.virtual_ip.map(|ip| ip.to_string()),
+                            has_session,
                             upstream: upstream_route,
                             downstream: None,
                         },
                     );
                 }
 
-                // second pass: invert upstream_map to produce downstream vectors per node name
+                // Invert upstream_map to produce downstream vectors per RSU/relay name.
                 let mut downstream_map: HashMap<String, Vec<UpstreamInfo>> = HashMap::new();
                 for (child_name, upinfo) in upstream_map.iter() {
                     if let Some(parent_name) = &upinfo.node_name {
                         let mut di = upinfo.clone();
-                        // set the node_name field to the child's name so downstream entry points to that child
                         di.node_name = Some(child_name.clone());
                         downstream_map
                             .entry(parent_name.clone())
@@ -197,9 +221,7 @@ pub fn setup_routes(
                             .push(di);
                     }
                 }
-
-                // attach downstreams to out
-                for (node_name, nd) in downstream_map.into_iter() {
+                for (node_name, nd) in downstream_map {
                     if let Some(entry) = out.get_mut(&node_name) {
                         entry.downstream = Some(nd);
                     }
@@ -237,13 +259,69 @@ pub fn setup_routes(
         .allow_methods(vec!["GET", "POST", "OPTIONS"])
         .allow_headers(vec!["content-type"]);
 
+    // Endpoint: GET /memory — jemalloc allocator stats for live memory diagnostics.
+    // Refresh the epoch first so stats reflect the current state.
+    let memory_endpoint = warp::get()
+        .and(warp::path("memory"))
+        .and(warp::path::end())
+        .map(|| {
+            // Advance the jemalloc epoch so stats are up-to-date.
+            let _ = jemalloc_ctl::epoch::mib().and_then(|m| m.advance());
+
+            let allocated = jemalloc_ctl::stats::allocated::read().unwrap_or(0);
+            let active = jemalloc_ctl::stats::active::read().unwrap_or(0);
+            let resident = jemalloc_ctl::stats::resident::read().unwrap_or(0);
+            let retained = jemalloc_ctl::stats::retained::read().unwrap_or(0);
+            let mapped = jemalloc_ctl::stats::mapped::read().unwrap_or(0);
+
+            warp::reply::json(&serde_json::json!({
+                // Bytes of live allocations (your data structures).
+                "allocated_mb":  allocated  as f64 / 1_048_576.0,
+                // Bytes in active (live) pages — rounds up to page boundary.
+                "active_mb":     active     as f64 / 1_048_576.0,
+                // Bytes mapped into the process from the OS.
+                "mapped_mb":     mapped     as f64 / 1_048_576.0,
+                // Bytes in resident physical pages.
+                "resident_mb":   resident   as f64 / 1_048_576.0,
+                // Bytes retained by jemalloc but not yet returned to OS.
+                "retained_mb":   retained   as f64 / 1_048_576.0,
+                // Overhead = active − allocated (internal fragmentation).
+                "frag_mb":       (active.saturating_sub(allocated)) as f64 / 1_048_576.0,
+            }))
+        });
+
+    // Endpoint: GET /fading — returns fading config (max_range_m, etc.) for visualisation.
+    #[cfg(feature = "mobility")]
+    let fading_endpoint = {
+        warp::get()
+            .and(warp::path("fading"))
+            .and(warp::path::end())
+            .map(move || {
+                if let Some(ref cfg) = nakagami_config {
+                    warp::reply::json(&serde_json::json!({
+                        "enabled": true,
+                        "max_range_m": cfg.max_range_m,
+                        "m": cfg.m,
+                        "eta": cfg.eta,
+                        "snr_0_db": cfg.snr_0_db,
+                        "snr_thresh_db": cfg.snr_thresh_db,
+                        "latency_ms_per_100m": cfg.latency_ms_per_100m,
+                        "update_ms": cfg.update_ms,
+                    }))
+                } else {
+                    warp::reply::json(&serde_json::json!({ "enabled": false }))
+                }
+            })
+    };
+
     let base_routes = nodes_endpoint
         .or(node_stats_endpoint)
         .or(stats_endpoint)
         .or(channels_get_endpoint)
         .or(node_info_endpoint)
         .or(channel_post_endpoint)
-        .or(metrics_endpoint);
+        .or(metrics_endpoint)
+        .or(memory_endpoint);
 
     // Combine all endpoints
     #[cfg(not(feature = "mobility"))]
@@ -283,6 +361,7 @@ pub fn setup_routes(
         };
 
         base_routes
+            .or(fading_endpoint)
             .or(positions_get_endpoint)
             .or(position_post_endpoint)
             .with(cors)
