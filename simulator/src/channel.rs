@@ -92,6 +92,7 @@ impl Channel {
     /// Update only the loss field without changing latency or jitter.
     /// Used by the Nakagami-m fading task to update loss continuously.
     #[cfg(feature = "mobility")]
+    #[allow(dead_code)]
     pub fn set_loss(&self, loss: f64) {
         let mut inner = self
             .parameters
