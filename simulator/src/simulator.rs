@@ -570,8 +570,7 @@ impl Simulator {
                 let mut to_create: Vec<(String, String)> = Vec::with_capacity(64);
                 let mut to_remove: Vec<(String, String)> = Vec::with_capacity(64);
                 // (from, to, loss, latency_ms, rssi_dbm)
-                let mut to_update: Vec<(String, String, f64, u64, f32)> =
-                    Vec::with_capacity(2048);
+                let mut to_update: Vec<(String, String, f64, u64, f32)> = Vec::with_capacity(2048);
 
                 loop {
                     ticker.tick().await;
@@ -601,20 +600,17 @@ impl Simulator {
                                     continue; // position unknown — don't tear down
                                 };
 
-                                let d = crate::fading::haversine_m(
-                                    fp.lat, fp.lon, tp.lat, tp.lon,
-                                );
+                                let d = crate::fading::haversine_m(fp.lat, fp.lon, tp.lat, tp.lon);
 
                                 if d < cfg.max_range_m {
                                     let loss = crate::fading::nakagami_loss(d, &cfg);
-                                    let latency_ms = ((d / 100.0) * cfg.latency_ms_per_100m)
-                                        .round() as u64;
+                                    let latency_ms =
+                                        ((d / 100.0) * cfg.latency_ms_per_100m).round() as u64;
                                     // RSSI: free-space path loss at 5.9 GHz (ITS-G5).
                                     // Reference level at 1 m ≈ −20 dBm:
                                     //   TX 23 dBm + ant gain 3 dBi×2 − FSPL(1 m, 5.9 GHz) 47.8 dB ≈ −19 dBm
                                     // At 100 m → −60 dBm (comfortable); at 800 m → −78 dBm (usable edge).
-                                    let rssi_dbm =
-                                        (-20.0_f64 - 20.0 * d.max(1.0).log10()) as f32;
+                                    let rssi_dbm = (-20.0_f64 - 20.0 * d.max(1.0).log10()) as f32;
 
                                     if channels.get(from).and_then(|m| m.get(to)).is_none() {
                                         to_create.push((from.clone(), to.clone()));
@@ -626,11 +622,7 @@ impl Simulator {
                                         latency_ms,
                                         rssi_dbm,
                                     ));
-                                } else if channels
-                                    .get(from)
-                                    .and_then(|m| m.get(to))
-                                    .is_some()
-                                {
+                                } else if channels.get(from).and_then(|m| m.get(to)).is_some() {
                                     to_remove.push((from.clone(), to.clone()));
                                 }
                             }
@@ -646,7 +638,10 @@ impl Simulator {
                             tracing::debug!(from = %from, to = %to, "Creating VANET channel");
                             let ch =
                                 Channel::new(default_params, *to_mac, to_tun.clone(), from, to);
-                            channels.entry(from.clone()).or_default().insert(to.clone(), ch);
+                            channels
+                                .entry(from.clone())
+                                .or_default()
+                                .insert(to.clone(), ch);
                         }
                         for (from, to) in &to_remove {
                             tracing::debug!(from = %from, to = %to, "Removing VANET channel");
@@ -860,6 +855,12 @@ impl Simulator {
     #[cfg(feature = "mobility")]
     pub fn get_rssi_tables(&self) -> HashMap<String, obu_lib::RssiTable> {
         self.rssi_tables.clone()
+    }
+
+    /// Return the Nakagami fading config, if fading is enabled.
+    #[cfg(all(feature = "mobility", feature = "webview"))]
+    pub fn get_nakagami_config(&self) -> Option<&NakagamiConfig> {
+        self.nakagami_config.as_ref()
     }
 
     /// Return a clone of the created nodes with full interface information

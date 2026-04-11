@@ -846,6 +846,16 @@ impl Routing {
     /// - New next-hop has ≥3 dB stronger RSSI (RSSI path)
     ///
     /// Returns None if no route exists.
+    /// Sequence entries older than this are considered stale and excluded from
+    /// route selection.  Prevents OBUs from routing through relay neighbours
+    /// that have moved out of RSU range: without this guard, a relay OBU that
+    /// stopped forwarding RSU heartbeats would remain as a cached next-hop
+    /// indefinitely, creating a dead-end chain in the routing graph.
+    ///
+    /// 60 s ≈ 12 × 5 s heartbeat intervals — plenty of margin while still
+    /// recovering within one or two RSU hello_history windows.
+    const ROUTE_STALE_THRESHOLD: Duration = Duration::from_secs(60);
+
     pub fn get_route_to(&self, mac: Option<MacAddress>) -> Option<Route> {
         let Some(target_mac) = mac else {
             // Use the RSU source MAC (cached_source) to compute the upstream route.
@@ -857,7 +867,13 @@ impl Routing {
             // Using cached_source (RSU MAC) reaches the RSU-keyed branch and
             // returns the correct Route{mac=relay_obu, hops=N} for data forwarding.
             if let Some(source_mac) = self.cache.get_cached_source() {
-                return self.get_route_to(Some(source_mac));
+                let route = self.get_route_to(Some(source_mac));
+                if route.is_none() {
+                    // All sequences for the cached RSU are stale (relay moved away).
+                    // Clear the cache so the OBU re-selects on the next heartbeat.
+                    self.cache.clear();
+                }
+                return route;
             }
             return None;
         };
@@ -914,14 +930,25 @@ impl Routing {
 
         // Build a mac → min-hops map for all relay paths toward target_mac.
         // Used as fallback when a candidate has no latency measurements yet.
+        // Only consider sequences received recently; stale entries indicate
+        // the relay has moved out of RSU range and is no longer valid.
+        let now_dur = Instant::now().duration_since(self.boot);
         let mut upstream_hops: HashMap<MacAddress, u32> = HashMap::with_capacity(4);
         if let Some(seqs) = self.routes.get(&target_mac) {
             for e in seqs.values() {
+                if now_dur.saturating_sub(e.received_at) > Self::ROUTE_STALE_THRESHOLD {
+                    continue;
+                }
                 let slot = upstream_hops.entry(e.next_upstream).or_insert(e.hops);
                 if e.hops < *slot {
                     *slot = e.hops;
                 }
             }
+        }
+
+        // All known sequences for this RSU are stale — no valid relay exists.
+        if upstream_hops.is_empty() {
+            return None;
         }
 
         let latency_stats = self.collect_downstream_stats(target_mac);

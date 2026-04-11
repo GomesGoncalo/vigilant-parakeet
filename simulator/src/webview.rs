@@ -38,6 +38,8 @@ pub fn setup_routes(
     let metrics = simulator.get_metrics();
     #[cfg(feature = "mobility")]
     let rssi_tables = simulator.get_rssi_tables();
+    #[cfg(feature = "mobility")]
+    let nakagami_config = simulator.get_nakagami_config().cloned();
 
     // Endpoint: GET /nodes - returns list of node names
     let nodes_endpoint = {
@@ -172,24 +174,22 @@ pub fn setup_routes(
                     };
                     let obu = node.as_any().downcast_ref::<Obu>();
                     let has_session = obu.map(|o| o.has_dh_session()).unwrap_or(false);
-                    let upstream_route = obu
-                        .and_then(|o| o.cached_upstream_route())
-                        .map(|r| {
-                            #[cfg(feature = "mobility")]
-                            let rssi_dbm = rssi_tables
-                                .get(name)
-                                .and_then(|tbl| tbl.read().ok())
-                                .and_then(|guard| guard.get(&r.mac).copied());
-                            #[cfg(not(feature = "mobility"))]
-                            let rssi_dbm: Option<f32> = None;
-                            UpstreamInfo {
-                                hops: r.hops,
-                                mac: format!("{}", r.mac),
-                                node_name: mac_map.get(&r.mac).cloned(),
-                                rssi_dbm,
-                                latency_us: r.latency.map(|d| d.as_micros() as u64),
-                            }
-                        });
+                    let upstream_route = obu.and_then(|o| o.cached_upstream_route()).map(|r| {
+                        #[cfg(feature = "mobility")]
+                        let rssi_dbm = rssi_tables
+                            .get(name)
+                            .and_then(|tbl| tbl.read().ok())
+                            .and_then(|guard| guard.get(&r.mac).copied());
+                        #[cfg(not(feature = "mobility"))]
+                        let rssi_dbm: Option<f32> = None;
+                        UpstreamInfo {
+                            hops: r.hops,
+                            mac: format!("{}", r.mac),
+                            node_name: mac_map.get(&r.mac).cloned(),
+                            rssi_dbm,
+                            latency_us: r.latency.map(|d| d.as_micros() as u64),
+                        }
+                    });
 
                     if let Some(ref u) = upstream_route {
                         upstream_map.insert(name.clone(), u.clone());
@@ -259,13 +259,69 @@ pub fn setup_routes(
         .allow_methods(vec!["GET", "POST", "OPTIONS"])
         .allow_headers(vec!["content-type"]);
 
+    // Endpoint: GET /memory — jemalloc allocator stats for live memory diagnostics.
+    // Refresh the epoch first so stats reflect the current state.
+    let memory_endpoint = warp::get()
+        .and(warp::path("memory"))
+        .and(warp::path::end())
+        .map(|| {
+            // Advance the jemalloc epoch so stats are up-to-date.
+            let _ = jemalloc_ctl::epoch::mib().and_then(|m| m.advance());
+
+            let allocated = jemalloc_ctl::stats::allocated::read().unwrap_or(0);
+            let active = jemalloc_ctl::stats::active::read().unwrap_or(0);
+            let resident = jemalloc_ctl::stats::resident::read().unwrap_or(0);
+            let retained = jemalloc_ctl::stats::retained::read().unwrap_or(0);
+            let mapped = jemalloc_ctl::stats::mapped::read().unwrap_or(0);
+
+            warp::reply::json(&serde_json::json!({
+                // Bytes of live allocations (your data structures).
+                "allocated_mb":  allocated  as f64 / 1_048_576.0,
+                // Bytes in active (live) pages — rounds up to page boundary.
+                "active_mb":     active     as f64 / 1_048_576.0,
+                // Bytes mapped into the process from the OS.
+                "mapped_mb":     mapped     as f64 / 1_048_576.0,
+                // Bytes in resident physical pages.
+                "resident_mb":   resident   as f64 / 1_048_576.0,
+                // Bytes retained by jemalloc but not yet returned to OS.
+                "retained_mb":   retained   as f64 / 1_048_576.0,
+                // Overhead = active − allocated (internal fragmentation).
+                "frag_mb":       (active.saturating_sub(allocated)) as f64 / 1_048_576.0,
+            }))
+        });
+
+    // Endpoint: GET /fading — returns fading config (max_range_m, etc.) for visualisation.
+    #[cfg(feature = "mobility")]
+    let fading_endpoint = {
+        warp::get()
+            .and(warp::path("fading"))
+            .and(warp::path::end())
+            .map(move || {
+                if let Some(ref cfg) = nakagami_config {
+                    warp::reply::json(&serde_json::json!({
+                        "enabled": true,
+                        "max_range_m": cfg.max_range_m,
+                        "m": cfg.m,
+                        "eta": cfg.eta,
+                        "snr_0_db": cfg.snr_0_db,
+                        "snr_thresh_db": cfg.snr_thresh_db,
+                        "latency_ms_per_100m": cfg.latency_ms_per_100m,
+                        "update_ms": cfg.update_ms,
+                    }))
+                } else {
+                    warp::reply::json(&serde_json::json!({ "enabled": false }))
+                }
+            })
+    };
+
     let base_routes = nodes_endpoint
         .or(node_stats_endpoint)
         .or(stats_endpoint)
         .or(channels_get_endpoint)
         .or(node_info_endpoint)
         .or(channel_post_endpoint)
-        .or(metrics_endpoint);
+        .or(metrics_endpoint)
+        .or(memory_endpoint);
 
     // Combine all endpoints
     #[cfg(not(feature = "mobility"))]
@@ -305,6 +361,7 @@ pub fn setup_routes(
         };
 
         base_routes
+            .or(fading_endpoint)
             .or(positions_get_endpoint)
             .or(position_post_endpoint)
             .with(cors)

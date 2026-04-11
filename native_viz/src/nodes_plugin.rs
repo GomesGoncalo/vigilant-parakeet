@@ -7,16 +7,9 @@ const RSU_COLOR: Color32 = Color32::from_rgb(220, 120, 30);
 //const SERVER_COLOR: Color32 = Color32::from_rgb(140, 140, 140);
 /// Longest upstream line (screen pixels) that maps to full red (fallback when RSSI unavailable).
 const UPSTREAM_MAX_PX: f32 = 400.0;
-/// RSU coverage radius in metres — matches the simulator's `max_range_m` (800 m).
-///
-/// Used both for the range-circle radius and the colour gradient denominator.
-/// RSSI is converted back to metres before mapping to [0, 1] so the gradient
-/// is linear in distance (matching what the map looks like spatially) rather
-/// than linear in dBm (which compresses the near/green end of the scale).
-///
-/// With the ITS-G5 formula RSSI ≈ −20 − 20·log₁₀(d_m):
-///   800 m → −78 dBm (usable edge of channel range).
-const RSU_RANGE_M: f32 = 800.0;
+/// Fallback RSU coverage radius (metres) used when the simulator has not yet
+/// reported `max_range_m` via the `/fading` endpoint.
+const RSU_RANGE_M_DEFAULT: f32 = 500.0;
 const LABEL_BG: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 160);
 
 /// walkers [`Plugin`] that draws every node in the current [`Snapshot`].
@@ -24,14 +17,24 @@ pub struct NodesPlugin {
     snapshot: Snapshot,
     show_rsu_range: bool,
     highlighted_node: Option<String>,
+    rsu_range_m: f32,
 }
 
 impl NodesPlugin {
-    pub fn new(snapshot: &Snapshot, show_rsu_range: bool, highlighted_node: Option<String>) -> Self {
+    pub fn new(
+        snapshot: &Snapshot,
+        show_rsu_range: bool,
+        highlighted_node: Option<String>,
+    ) -> Self {
+        let rsu_range_m = snapshot
+            .max_range_m
+            .map(|v| v as f32)
+            .unwrap_or(RSU_RANGE_M_DEFAULT);
         Self {
             snapshot: snapshot.clone(),
             show_rsu_range,
             highlighted_node,
+            rsu_range_m,
         }
     }
 }
@@ -58,7 +61,7 @@ impl Plugin for NodesPlugin {
 
         // --- Pass 0: RSU coverage range circles (radial gradient, deepest layer) ---
         if self.show_rsu_range {
-            let range_px = RSU_RANGE_M * px_per_m;
+            let range_px = self.rsu_range_m * px_per_m;
             for (name, pos) in &self.snapshot.positions {
                 let is_rsu = self
                     .snapshot
@@ -106,7 +109,7 @@ impl Plugin for NodesPlugin {
                 // Apply gamma > 1 so the green end stretches further:
                 // linear t would show green only for d < ~80 m; gamma=0.5 (sqrt)
                 // makes the gradient perceptually even across the whole range.
-                (dist_m / RSU_RANGE_M).clamp(0.0, 1.0).powf(0.5)
+                (dist_m / self.rsu_range_m).clamp(0.0, 1.0).powf(0.5)
             } else {
                 ((a - b).length() / UPSTREAM_MAX_PX).clamp(0.0, 1.0)
             };
@@ -163,11 +166,7 @@ impl Plugin for NodesPlugin {
                 } else {
                     obu_r + 6.0
                 };
-                painter.circle_stroke(
-                    screen,
-                    ring_r,
-                    egui::Stroke::new(3.0, egui::Color32::WHITE),
-                );
+                painter.circle_stroke(screen, ring_r, egui::Stroke::new(3.0, egui::Color32::WHITE));
                 painter.circle_stroke(
                     screen,
                     ring_r + 3.5,

@@ -1,4 +1,4 @@
-use crate::api::{Snapshot, UpstreamInfo};
+use crate::api::Snapshot;
 use crate::nodes_plugin::NodesPlugin;
 use std::sync::mpsc::Receiver;
 use walkers::{lon_lat, sources::OpenStreetMap, HttpTiles, Map, MapMemory};
