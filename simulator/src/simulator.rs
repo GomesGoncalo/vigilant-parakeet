@@ -565,107 +565,137 @@ impl Simulator {
                 let node_names: Vec<String> = vanet_node_info.keys().cloned().collect();
                 let mut ticker = tokio::time::interval(interval);
 
+                // Pre-allocated work lists — reused every tick to avoid heap churn.
+                // (from, to)
+                let mut to_create: Vec<(String, String)> = Vec::with_capacity(64);
+                let mut to_remove: Vec<(String, String)> = Vec::with_capacity(64);
+                // (from, to, loss, latency_ms, rssi_dbm)
+                let mut to_update: Vec<(String, String, f64, u64, f32)> =
+                    Vec::with_capacity(2048);
+
                 loop {
                     ticker.tick().await;
 
-                    // Snapshot positions under a read lock so we don't hold it
-                    // while mutating the channel map below.
-                    let pos_snapshot = {
-                        let pos = positions.read().await;
-                        pos.clone()
-                    };
+                    // Snapshot positions (briefly holds read lock, then releases).
+                    let pos_snapshot = { positions.read().await.clone() };
 
-                    let mut channels = vanet_channels.write().await;
+                    // ── Phase 1: compute changes under a READ lock ─────────────────────
+                    //
+                    // A read lock does NOT block the main packet loop (other readers are
+                    // allowed concurrently).  Structural changes are only applied in Phase
+                    // 2 under a brief write lock, keeping write-lock hold time minimal.
+                    to_create.clear();
+                    to_remove.clear();
+                    to_update.clear();
 
-                    for from in &node_names {
-                        for to in &node_names {
-                            if from == to {
-                                continue;
+                    {
+                        let channels = vanet_channels.read().await;
+                        for from in &node_names {
+                            for to in &node_names {
+                                if from == to {
+                                    continue;
+                                }
+                                let (Some(fp), Some(tp)) =
+                                    (pos_snapshot.get(from), pos_snapshot.get(to))
+                                else {
+                                    continue; // position unknown — don't tear down
+                                };
+
+                                let d = crate::fading::haversine_m(
+                                    fp.lat, fp.lon, tp.lat, tp.lon,
+                                );
+
+                                if d < cfg.max_range_m {
+                                    let loss = crate::fading::nakagami_loss(d, &cfg);
+                                    let latency_ms = ((d / 100.0) * cfg.latency_ms_per_100m)
+                                        .round() as u64;
+                                    // RSSI: free-space path loss at 5.9 GHz
+                                    let rssi_dbm =
+                                        (-40.0_f64 - 20.0 * d.max(1.0).log10()) as f32;
+
+                                    if channels.get(from).and_then(|m| m.get(to)).is_none() {
+                                        to_create.push((from.clone(), to.clone()));
+                                    }
+                                    to_update.push((
+                                        from.clone(),
+                                        to.clone(),
+                                        loss,
+                                        latency_ms,
+                                        rssi_dbm,
+                                    ));
+                                } else if channels
+                                    .get(from)
+                                    .and_then(|m| m.get(to))
+                                    .is_some()
+                                {
+                                    to_remove.push((from.clone(), to.clone()));
+                                }
                             }
+                        }
+                    } // read lock released
 
-                            let (Some(fp), Some(tp)) =
-                                (pos_snapshot.get(from), pos_snapshot.get(to))
-                            else {
-                                // Position not yet known — don't tear down existing channel.
-                                continue;
-                            };
+                    // ── Phase 2: structural changes under a brief WRITE lock ───────────
+                    if !to_create.is_empty() || !to_remove.is_empty() {
+                        let mut channels = vanet_channels.write().await;
+                        for (from, to) in &to_create {
+                            let (to_mac, to_tun) =
+                                vanet_node_info.get(to).expect("node in info map");
+                            tracing::debug!(from = %from, to = %to, "Creating VANET channel");
+                            let ch =
+                                Channel::new(default_params, *to_mac, to_tun.clone(), from, to);
+                            channels.entry(from.clone()).or_default().insert(to.clone(), ch);
+                        }
+                        for (from, to) in &to_remove {
+                            tracing::debug!(from = %from, to = %to, "Removing VANET channel");
+                            if let Some(m) = channels.get_mut(from) {
+                                m.remove(to);
+                            }
+                        }
+                    } // write lock released
 
-                            let d = crate::fading::haversine_m(fp.lat, fp.lon, tp.lat, tp.lon);
+                    // ── Phase 3: fading param updates under a READ lock ────────────────
+                    //
+                    // set_fading_params uses the channel's own internal std::sync::RwLock,
+                    // so we only need the outer read lock to locate each channel.
+                    {
+                        let channels = vanet_channels.read().await;
+                        for (from, to, loss, latency_ms, _) in &to_update {
+                            if let Some(ch) = channels.get(from).and_then(|m| m.get(to)) {
+                                ch.set_fading_params(*loss, *latency_ms);
+                            }
+                        }
+                    } // read lock released
 
-                            if d < cfg.max_range_m {
-                                // In range: create channel on first encounter, then update params.
-                                let ch = channels
-                                    .entry(from.clone())
-                                    .or_default()
-                                    .entry(to.clone())
-                                    .or_insert_with(|| {
-                                        let (to_mac, to_tun) =
-                                            vanet_node_info.get(to).expect("node in info map");
-                                        tracing::debug!(
-                                            from = %from, to = %to, dist_m = d,
-                                            "Creating VANET channel"
-                                        );
-                                        Channel::new(
-                                            default_params,
-                                            *to_mac,
-                                            to_tun.clone(),
-                                            from,
-                                            to,
-                                        )
-                                    });
-
-                                let loss = crate::fading::nakagami_loss(d, &cfg);
-                                // Scale latency by distance so routing prefers closer RSUs.
-                                let latency_ms =
-                                    ((d / 100.0) * cfg.latency_ms_per_100m).round() as u64;
-                                ch.set_fading_params(loss, latency_ms);
-
-                                // Update per-OBU RSSI table so the routing layer can pick
-                                // the nearest RSU using signal strength.
-                                // Free-space model at 5.9 GHz (ITS-G5):
-                                //   RSSI ≈ -40 - 20·log₁₀(d_m)
-                                // → -80 dBm at 100 m, -100 dBm at 1000 m.
-                                let rssi_dbm = (-40.0_f64 - 20.0 * d.max(1.0).log10()) as f32;
-
-                                if let (Some(to_mac), Some(tbl)) =
-                                    (name_to_mac.get(to), rssi_tables.get(from))
-                                {
-                                    if let Ok(mut w) = tbl.write() {
-                                        w.insert(*to_mac, rssi_dbm);
-                                    }
-                                }
-                                if let (Some(from_mac), Some(tbl)) =
-                                    (name_to_mac.get(from), rssi_tables.get(to))
-                                {
-                                    if let Ok(mut w) = tbl.write() {
-                                        w.insert(*from_mac, rssi_dbm);
-                                    }
-                                }
-                            } else {
-                                // Out of range: tear down channel and clear stale RSSI.
-                                let removed =
-                                    channels.get_mut(from).and_then(|m| m.remove(to)).is_some();
-                                if removed {
-                                    tracing::debug!(
-                                        from = %from, to = %to, dist_m = d,
-                                        "Removed out-of-range VANET channel"
-                                    );
-                                }
-
-                                if let (Some(to_mac), Some(tbl)) =
-                                    (name_to_mac.get(to), rssi_tables.get(from))
-                                {
-                                    if let Ok(mut w) = tbl.write() {
-                                        w.remove(to_mac);
-                                    }
-                                }
-                                if let (Some(from_mac), Some(tbl)) =
-                                    (name_to_mac.get(from), rssi_tables.get(to))
-                                {
-                                    if let Ok(mut w) = tbl.write() {
-                                        w.remove(from_mac);
-                                    }
-                                }
+                    // ── Phase 4: RSSI table updates (no tokio lock needed) ─────────────
+                    for (from, to, _, _, rssi_dbm) in &to_update {
+                        if let (Some(to_mac), Some(tbl)) =
+                            (name_to_mac.get(to), rssi_tables.get(from))
+                        {
+                            if let Ok(mut w) = tbl.write() {
+                                w.insert(*to_mac, *rssi_dbm);
+                            }
+                        }
+                        if let (Some(from_mac), Some(tbl)) =
+                            (name_to_mac.get(from), rssi_tables.get(to))
+                        {
+                            if let Ok(mut w) = tbl.write() {
+                                w.insert(*from_mac, *rssi_dbm);
+                            }
+                        }
+                    }
+                    for (from, to) in &to_remove {
+                        if let (Some(to_mac), Some(tbl)) =
+                            (name_to_mac.get(to), rssi_tables.get(from))
+                        {
+                            if let Ok(mut w) = tbl.write() {
+                                w.remove(to_mac);
+                            }
+                        }
+                        if let (Some(from_mac), Some(tbl)) =
+                            (name_to_mac.get(from), rssi_tables.get(to))
+                        {
+                            if let Ok(mut w) = tbl.write() {
+                                w.remove(from_mac);
                             }
                         }
                     }
@@ -755,31 +785,23 @@ impl Simulator {
                     }
                 }
 
-                // Fan-out through dynamic VANET channels (snapshot Arc refs, then release lock).
+                // Fan-out through dynamic VANET channels (hold read lock, no Vec allocation).
                 #[cfg(feature = "mobility")]
                 {
-                    let vanet_conns: Vec<Arc<Channel>> = {
-                        let vanet_map = self.vanet_channels.read().await;
-                        vanet_map
-                            .get(&node)
-                            .map(|m| m.values().cloned().collect())
-                            .unwrap_or_default()
-                    };
-                    for ch in &vanet_conns {
-                        let from = ch.from();
-                        let to = ch.to();
-                        match ch.send(buf, size).await {
-                            Ok(_) => {
-                                self.metrics.record_packet_sent_for_channel(from, to, size);
-                                let params = ch.params();
-                                self.metrics.record_packet_delayed(params.latency);
-                                self.metrics
-                                    .record_latency_for_channel(from, to, params.latency);
+                    let vanet_map = self.vanet_channels.read().await;
+                    if let Some(connections) = vanet_map.get(&node) {
+                        for ch in connections.values() {
+                            match ch.send(buf, size).await {
+                                Ok(_) => {
+                                    self.metrics.record_packet_sent();
+                                    let params = ch.params();
+                                    self.metrics.record_packet_delayed(params.latency);
+                                }
+                                Err(crate::channel::ChannelError::Dropped) => {
+                                    self.metrics.record_packet_dropped();
+                                }
+                                Err(crate::channel::ChannelError::Filtered) => {}
                             }
-                            Err(crate::channel::ChannelError::Dropped) => {
-                                self.metrics.record_packet_dropped_for_channel(from, to);
-                            }
-                            Err(crate::channel::ChannelError::Filtered) => {}
                         }
                     }
                 }
