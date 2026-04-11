@@ -14,7 +14,6 @@ pub struct NodePosition {
 
 /// Upstream routing entry carried inside [`NodeInfo`].
 #[derive(Debug, Clone, Deserialize, Default)]
-#[allow(dead_code)]
 pub struct UpstreamInfo {
     pub hops: u32,
     pub mac: String,
@@ -23,12 +22,18 @@ pub struct UpstreamInfo {
     /// Present only when the simulator runs with the `mobility` feature
     /// (fading model active).  Typical range: −40 (strong) to −100 (weak).
     pub rssi_dbm: Option<f32>,
+    /// Link latency in microseconds as measured by the routing layer.
+    pub latency_us: Option<u64>,
 }
 
 /// Routing / type info for one node, as returned by `GET /node_info`.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct NodeInfo {
     pub node_type: String,
+    pub mac: String,
+    pub cloud_ip: Option<String>,
+    pub virtual_ip: Option<String>,
+    pub has_session: bool,
     pub upstream: Option<UpstreamInfo>,
 }
 

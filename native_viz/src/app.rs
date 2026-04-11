@@ -1,4 +1,4 @@
-use crate::api::Snapshot;
+use crate::api::{Snapshot, UpstreamInfo};
 use crate::nodes_plugin::NodesPlugin;
 use std::sync::mpsc::Receiver;
 use walkers::{lon_lat, sources::OpenStreetMap, HttpTiles, Map, MapMemory};
@@ -14,6 +14,10 @@ pub struct VizApp {
     tile_opacity: f32,
     /// Whether to draw the RSU coverage range circles.
     show_rsu_range: bool,
+    /// Current text in the search box.
+    search_query: String,
+    /// Node name that is currently highlighted (jumped to via search).
+    highlighted_node: Option<String>,
 }
 
 impl VizApp {
@@ -32,6 +36,8 @@ impl VizApp {
             fitted: false,
             tile_opacity: 1.0,
             show_rsu_range: false,
+            search_query: String::new(),
+            highlighted_node: None,
         }
     }
 }
@@ -55,7 +61,7 @@ impl eframe::App for VizApp {
             self.fitted = true;
         }
 
-        egui::Panel::right("info_panel")
+        let jump_to: Option<String> = egui::Panel::right("info_panel")
             .resizable(false)
             .exact_size(200.0)
             .show_inside(ui, |ui| {
@@ -64,19 +70,30 @@ impl eframe::App for VizApp {
                     &self.snapshot,
                     &mut self.tile_opacity,
                     &mut self.show_rsu_range,
-                );
-            });
+                    &mut self.search_query,
+                    &mut self.highlighted_node,
+                )
+            })
+            .inner;
+
+        // Jump: center map on the matched node's position.
+        if let Some(ref name) = jump_to {
+            if let Some(pos) = self.snapshot.positions.get(name) {
+                self.map_memory.center_at(lon_lat(pos.lon, pos.lat));
+            }
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
-                // `my_position` is not used for tracking here because we
-                // call `center_at` to detach the map immediately — it just
-                // serves as the initial fallback anchor.
                 let my_pos = lon_lat(-8.625, 41.157);
                 let map = Map::new(None, &mut self.map_memory, my_pos)
                     .with_layer(&mut self.tiles, self.tile_opacity)
-                    .with_plugin(NodesPlugin::new(&self.snapshot, self.show_rsu_range));
+                    .with_plugin(NodesPlugin::new(
+                        &self.snapshot,
+                        self.show_rsu_range,
+                        self.highlighted_node.clone(),
+                    ));
 
                 map.show(ui, |_, _, _, _| ());
             });
@@ -91,12 +108,17 @@ fn centroid(positions: &std::collections::HashMap<String, crate::api::NodePositi
     (sum_lat / n, sum_lon / n)
 }
 
+/// Returns the node name to jump to (if the user confirmed a search), or `None`.
 fn draw_sidebar(
     ui: &mut egui::Ui,
     snap: &Snapshot,
     tile_opacity: &mut f32,
     show_rsu_range: &mut bool,
-) {
+    search_query: &mut String,
+    highlighted_node: &mut Option<String>,
+) -> Option<String> {
+    let mut jump_to: Option<String> = None;
+
     ui.add_space(8.0);
     ui.heading("vigilant-parakeet");
     ui.separator();
@@ -174,6 +196,86 @@ fn draw_sidebar(
 
     ui.separator();
 
+    // Search
+    ui.label("Find node");
+    let query_lower = search_query.to_lowercase();
+    let matches: Vec<String> = if query_lower.is_empty() {
+        vec![]
+    } else {
+        let mut v: Vec<String> = snap
+            .positions
+            .keys()
+            .filter(|n| n.to_lowercase().contains(&query_lower))
+            .cloned()
+            .collect();
+        v.sort_unstable();
+        v
+    };
+
+    let search_response = ui.add(
+        egui::TextEdit::singleline(search_query)
+            .hint_text("node name…")
+            .desired_width(f32::INFINITY),
+    );
+
+    // Clear button + match count on the same row.
+    ui.horizontal(|ui| {
+        if ui.small_button("✕").clicked() {
+            search_query.clear();
+            *highlighted_node = None;
+        }
+        match matches.len() {
+            0 if !search_query.is_empty() => {
+                ui.label(
+                    egui::RichText::new("no match")
+                        .small()
+                        .color(egui::Color32::YELLOW),
+                );
+            }
+            n if n == 1 => {
+                ui.label(
+                    egui::RichText::new("1 match")
+                        .small()
+                        .color(egui::Color32::GREEN),
+                );
+            }
+            n if n > 1 => {
+                ui.label(egui::RichText::new(format!("{n} matches")).small());
+            }
+            _ => {}
+        }
+    });
+
+    // Jump on Enter, or immediately when there is exactly one match.
+    let pressed_enter =
+        search_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+    if pressed_enter || matches.len() == 1 {
+        if let Some(name) = matches.first() {
+            *highlighted_node = Some(name.clone());
+            jump_to = Some(name.clone());
+        }
+    } else if search_query.is_empty() {
+        *highlighted_node = None;
+    }
+
+    // Show a scrollable list when there are multiple matches.
+    if matches.len() > 1 {
+        egui::ScrollArea::vertical()
+            .max_height(120.0)
+            .show(ui, |ui| {
+                for name in &matches {
+                    let selected = highlighted_node.as_deref() == Some(name.as_str());
+                    if ui.selectable_label(selected, name).clicked() {
+                        *highlighted_node = Some(name.clone());
+                        jump_to = Some(name.clone());
+                    }
+                }
+            });
+    }
+
+    ui.separator();
+
     // Legend
     let (rect, _) = ui.allocate_exact_size(
         egui::Vec2::new(ui.available_width(), 16.0),
@@ -229,6 +331,69 @@ fn draw_sidebar(
                 .italics(),
         );
     }
+
+    ui.separator();
+
+    if let Some(t) = highlighted_node.as_ref() {
+        if let Some(info) = snap.node_info.get(t) {
+            ui.label(
+                egui::RichText::new(format!("Type: {}", info.node_type))
+                    .small()
+                    .color(egui::Color32::WHITE),
+            );
+            ui.label(
+                egui::RichText::new(format!("mac: {}", info.mac))
+                    .small()
+                    .color(egui::Color32::WHITE),
+            );
+            if let Some(ip) = &info.virtual_ip {
+                ui.label(
+                    egui::RichText::new(format!("local ip: {}", ip))
+                        .small()
+                        .color(egui::Color32::WHITE),
+                );
+            }
+            if let Some(upstream) = &info.upstream {
+                ui.label(
+                    egui::RichText::new(format!("upstream mac: {}", upstream.mac))
+                        .small()
+                        .color(egui::Color32::WHITE),
+                );
+                ui.label(
+                    egui::RichText::new(format!("upstream hops: {}", upstream.hops))
+                        .small()
+                        .color(egui::Color32::WHITE),
+                );
+                ui.label(
+                    egui::RichText::new(format!(
+                        "upstream rssi: {}",
+                        upstream
+                            .rssi_dbm
+                            .map_or("N/A".to_string(), |l| format!("{} dbm", l))
+                    ))
+                    .small()
+                    .color(egui::Color32::WHITE),
+                );
+                ui.label(
+                    egui::RichText::new(format!(
+                        "latency: {}",
+                        upstream
+                            .latency_us
+                            .map_or("N/A".to_string(), |l| format!("{} us", l))
+                    ))
+                    .small()
+                    .color(egui::Color32::WHITE),
+                );
+            }
+            ui.label(
+                egui::RichText::new(format!("has session: {}", info.has_session))
+                    .small()
+                    .color(egui::Color32::WHITE),
+            );
+        }
+    }
+
+    jump_to
 }
 
 /// Draw an upward-pointing equilateral triangle centred at `centre`.

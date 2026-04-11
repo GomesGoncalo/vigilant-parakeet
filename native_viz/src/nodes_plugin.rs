@@ -7,27 +7,31 @@ const RSU_COLOR: Color32 = Color32::from_rgb(220, 120, 30);
 //const SERVER_COLOR: Color32 = Color32::from_rgb(140, 140, 140);
 /// Longest upstream line (screen pixels) that maps to full red (fallback when RSSI unavailable).
 const UPSTREAM_MAX_PX: f32 = 400.0;
-/// RSU coverage radius in metres at the −95 dBm routing-guard cutoff.
-///   d = 10^((95 − 40) / 20) ≈ 562 m
+/// RSU coverage radius in metres — matches the simulator's `max_range_m` (800 m).
 ///
 /// Used both for the range-circle radius and the colour gradient denominator.
 /// RSSI is converted back to metres before mapping to [0, 1] so the gradient
 /// is linear in distance (matching what the map looks like spatially) rather
 /// than linear in dBm (which compresses the near/green end of the scale).
-const RSU_RANGE_M: f32 = 562.0;
+///
+/// With the ITS-G5 formula RSSI ≈ −20 − 20·log₁₀(d_m):
+///   800 m → −78 dBm (usable edge of channel range).
+const RSU_RANGE_M: f32 = 800.0;
 const LABEL_BG: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 160);
 
 /// walkers [`Plugin`] that draws every node in the current [`Snapshot`].
 pub struct NodesPlugin {
     snapshot: Snapshot,
     show_rsu_range: bool,
+    highlighted_node: Option<String>,
 }
 
 impl NodesPlugin {
-    pub fn new(snapshot: &Snapshot, show_rsu_range: bool) -> Self {
+    pub fn new(snapshot: &Snapshot, show_rsu_range: bool, highlighted_node: Option<String>) -> Self {
         Self {
             snapshot: snapshot.clone(),
             show_rsu_range,
+            highlighted_node,
         }
     }
 }
@@ -72,6 +76,9 @@ impl Plugin for NodesPlugin {
 
         // --- Pass 1: upstream routing lines (rendered below node symbols) ---
         for (name, info) in &self.snapshot.node_info {
+            if info.node_type == "Server" {
+                continue;
+            }
             let Some(ref up) = info.upstream else {
                 continue;
             };
@@ -94,8 +101,12 @@ impl Plugin for NodesPlugin {
             // formula to get metres, then map that linearly to [0, 1].  This
             // way the colour matches what you see against the RSU range circle.
             let t = if let Some(rssi) = up.rssi_dbm {
-                let dist_m = 10.0_f32.powf((rssi + 40.0) / -20.0);
-                (dist_m / RSU_RANGE_M).clamp(0.0, 1.0)
+                // Invert RSSI ≈ −20 − 20·log₁₀(d)  →  d = 10^((-rssi − 20) / 20)
+                let dist_m = 10.0_f32.powf((-rssi - 20.0) / 20.0);
+                // Apply gamma > 1 so the green end stretches further:
+                // linear t would show green only for d < ~80 m; gamma=0.5 (sqrt)
+                // makes the gradient perceptually even across the whole range.
+                (dist_m / RSU_RANGE_M).clamp(0.0, 1.0).powf(0.5)
             } else {
                 ((a - b).length() / UPSTREAM_MAX_PX).clamp(0.0, 1.0)
             };
@@ -116,6 +127,10 @@ impl Plugin for NodesPlugin {
                 .get(name)
                 .map(|n| n.node_type.as_str())
                 .unwrap_or("Obu");
+
+            if node_type == "Server" {
+                continue;
+            }
 
             let screen = to_screen(pos.lat, pos.lon);
 
@@ -139,6 +154,25 @@ impl Plugin for NodesPlugin {
                     }
                 }
                 _ => {}
+            }
+
+            // Highlight ring for the searched node.
+            if self.highlighted_node.as_deref() == Some(name.as_str()) {
+                let ring_r = if node_type == "Rsu" {
+                    rsu_half * 1.8
+                } else {
+                    obu_r + 6.0
+                };
+                painter.circle_stroke(
+                    screen,
+                    ring_r,
+                    egui::Stroke::new(3.0, egui::Color32::WHITE),
+                );
+                painter.circle_stroke(
+                    screen,
+                    ring_r + 3.5,
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 220, 0)),
+                );
             }
 
             // Labels only when zoomed in enough.

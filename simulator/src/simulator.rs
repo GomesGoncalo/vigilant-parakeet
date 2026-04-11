@@ -609,9 +609,12 @@ impl Simulator {
                                     let loss = crate::fading::nakagami_loss(d, &cfg);
                                     let latency_ms = ((d / 100.0) * cfg.latency_ms_per_100m)
                                         .round() as u64;
-                                    // RSSI: free-space path loss at 5.9 GHz
+                                    // RSSI: free-space path loss at 5.9 GHz (ITS-G5).
+                                    // Reference level at 1 m ≈ −20 dBm:
+                                    //   TX 23 dBm + ant gain 3 dBi×2 − FSPL(1 m, 5.9 GHz) 47.8 dB ≈ −19 dBm
+                                    // At 100 m → −60 dBm (comfortable); at 800 m → −78 dBm (usable edge).
                                     let rssi_dbm =
-                                        (-40.0_f64 - 20.0 * d.max(1.0).log10()) as f32;
+                                        (-20.0_f64 - 20.0 * d.max(1.0).log10()) as f32;
 
                                     if channels.get(from).and_then(|m| m.get(to)).is_none() {
                                         to_create.push((from.clone(), to.clone()));
