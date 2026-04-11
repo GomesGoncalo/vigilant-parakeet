@@ -232,7 +232,7 @@ fn draw_sidebar(
                         .color(egui::Color32::YELLOW),
                 );
             }
-            n if n == 1 => {
+            1 => {
                 ui.label(
                     egui::RichText::new("1 match")
                         .small()
