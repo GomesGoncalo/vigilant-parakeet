@@ -52,8 +52,8 @@ impl Default for ChannelStats {
             bytes_sent: 0,
             total_latency_us: 0,
             packets_delayed: 0,
-            latency_samples: VecDeque::with_capacity(1000),
-            throughput_window: VecDeque::with_capacity(2000),
+            latency_samples: VecDeque::new(),
+            throughput_window: VecDeque::new(),
             last_seen: Instant::now(),
         }
     }

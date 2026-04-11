@@ -51,6 +51,16 @@ const CHANNEL_QUEUE_DEPTH: usize = 32;
 ///
 /// The channel filters packets by MAC address and applies the configured
 /// network conditions before forwarding to the destination interface.
+///
+/// ## Task lifetime
+///
+/// `Channel::new` spawns one background task.  The task holds independent
+/// `Arc` clones of only the fields it needs (`parameters`, `tun`,
+/// `param_notify`) — it does **not** hold `Arc<Channel>`.  This means the
+/// task exits as soon as the last external `Arc<Channel>` is dropped: when
+/// that happens `tx` is freed, `rx.recv()` returns `None`, and the task
+/// terminates cleanly.  Without this design, dynamically-removed channels
+/// (e.g. from range-based pruning) would leak one zombie task per removal.
 pub struct Channel {
     tx: mpsc::Sender<Packet>,
     /// Coalescing notifier for parameter changes. Uses `Notify` (not a channel)
@@ -61,7 +71,9 @@ pub struct Channel {
         allow(dead_code)
     )]
     param_notify: Arc<Notify>,
-    parameters: RwLock<ChannelParameters>,
+    /// Shared with the background forwarding task so parameters can be updated
+    /// without keeping the full `Arc<Channel>` alive inside the task.
+    parameters: Arc<RwLock<ChannelParameters>>,
     mac: MacAddress,
     tun: Arc<Tun>,
     /// Source node name
@@ -168,37 +180,38 @@ impl Channel {
     ) -> Arc<Self> {
         // Bounded packet queue: prevents unbounded memory growth when latency > 0.
         // Packets beyond CHANNEL_QUEUE_DEPTH are congestion-dropped (realistic behaviour).
-        let (tx, mut rx) = mpsc::channel(CHANNEL_QUEUE_DEPTH);
+        let (tx, mut rx): (mpsc::Sender<Packet>, mpsc::Receiver<Packet>) =
+            mpsc::channel(CHANNEL_QUEUE_DEPTH);
         // Notify instead of a channel: multiple rapid param changes (e.g. fading task)
         // collapse into one pending wakeup, so the buffer never grows unboundedly.
         let param_notify = Arc::new(Notify::new());
         let notify_for_task = param_notify.clone();
 
-        tracing::info!(from, to, ?parameters, "Created channel");
-        let this = Arc::new(Self {
-            tx,
-            param_notify,
-            parameters: parameters.into(),
-            mac,
-            tun,
-            from: from.clone(),
-            to: to.clone(),
-        });
-        let thisc = this.clone();
+        // Wrap parameters in Arc so the task can share it without holding Arc<Channel>.
+        // IMPORTANT: the task must NOT hold Arc<Channel> — if it did, dropping the
+        // last external Arc<Channel> would leave tx alive (inside the Arc<Channel>
+        // kept by the task), so rx.recv() would never return None and the task would
+        // leak permanently.  With independent Arc clones the task only keeps the fields
+        // it actually uses; once all external owners drop Arc<Channel>, tx is freed,
+        // rx.recv() returns None, and the task exits cleanly.
+        let parameters: Arc<RwLock<ChannelParameters>> = Arc::new(parameters.into());
+        let params_for_task = parameters.clone();
+        let tun_for_task = tun.clone();
 
-        // Spawn task to process packets from channel with latency simulation
+        tracing::debug!(from, to, "Created channel");
+
+        // Spawn task to process packets from channel with latency simulation.
         tokio::spawn(async move {
             loop {
                 let Some(packet) = rx.recv().await else {
-                    // Channel closed, exit task
+                    // tx was dropped (Arc<Channel> freed) — exit cleanly.
                     break;
                 };
 
                 loop {
-                    // Calculate latency with jitter in a separate scope to drop the lock
+                    // Calculate latency with jitter in a separate scope to drop the lock.
                     let latency = {
-                        let params = thisc
-                            .parameters
+                        let params = params_for_task
                             .read()
                             .expect("channel parameters lock poisoned");
 
@@ -228,23 +241,32 @@ impl Channel {
                     let duration = (packet.instant + latency).duration_since(Instant::now());
 
                     if duration.is_zero() {
-                        let _ = thisc.tun.send_all(&packet.packet[..packet.size]).await;
+                        let _ = tun_for_task.send_all(&packet.packet[..packet.size]).await;
                         break;
                     } else {
                         tokio::select! {
                             _ = tokio_timerfd::sleep(duration) => {
-                                let _ = thisc.tun.send_all(&packet.packet[..packet.size]).await;
+                                let _ = tun_for_task.send_all(&packet.packet[..packet.size]).await;
                                 break;
                             },
                             _ = notify_for_task.notified() => {
-                                // Parameters changed, recalculate duration
+                                // Parameters changed, recalculate duration.
                             },
                         }
                     }
                 }
             }
         });
-        this
+
+        Arc::new(Self {
+            tx,
+            param_notify,
+            parameters,
+            mac,
+            tun,
+            from: from.clone(),
+            to: to.clone(),
+        })
     }
 
     /// Send a packet through this channel
