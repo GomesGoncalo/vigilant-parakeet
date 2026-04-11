@@ -9,6 +9,7 @@ use petgraph::algo::{dijkstra, kosaraju_scc};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use rand::{Rng, RngExt};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 
 /// Equirectangular projection constants.
@@ -108,7 +109,7 @@ impl RoadGraph {
             .collect();
         // Remove in reverse index order so indices stay valid while removing.
         let mut sorted_remove = to_remove;
-        sorted_remove.sort_unstable_by(|a, b| b.index().cmp(&a.index()));
+        sorted_remove.sort_unstable_by_key(|b| Reverse(b.index()));
         for n in sorted_remove {
             graph.remove_node(n);
         }
