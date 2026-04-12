@@ -43,8 +43,8 @@ mod simulator_tests {
             params,
             mac,
             tun.clone(),
-            &"from".to_string(),
-            &"to".to_string(),
+            "from".to_string(),
+            "to".to_string(),
         );
 
         // send data from peer side so channel.recv will receive it
@@ -186,8 +186,8 @@ impl Simulator {
                                 *parameters,
                                 device.0.mac_address(),
                                 vanet_tun.clone(),
-                                tnode,
-                                node,
+                                tnode.to_string(),
+                                node.to_string(),
                             ),
                         );
                     }
@@ -225,7 +225,7 @@ impl Simulator {
                 .or_default()
                 .entry(to_key.clone())
                 .or_insert_with(|| {
-                    Channel::new(params, no_filter_mac, to_cloud.clone(), &from_key, &to_key)
+                    Channel::new(params, no_filter_mac, to_cloud.clone(), from_key.clone(), to_key.clone())
                 });
             channels
                 .entry(to_key.clone())
@@ -236,8 +236,8 @@ impl Simulator {
                         params,
                         no_filter_mac,
                         from_cloud.clone(),
-                        &to_key,
-                        &from_key,
+                        to_key.clone(),
+                        from_key.clone(),
                     )
                 });
             tracing::info!(from = %from_node, to = %to_node, "Created bidirectional cloud channel");
@@ -637,7 +637,7 @@ impl Simulator {
                                 vanet_node_info.get(to).expect("node in info map");
                             tracing::debug!(from = %from, to = %to, "Creating VANET channel");
                             let ch =
-                                Channel::new(default_params, *to_mac, to_tun.clone(), from, to);
+                                Channel::new(default_params, *to_mac, to_tun.clone(), from.clone(), to.clone());
                             channels
                                 .entry(from.clone())
                                 .or_default()
@@ -746,8 +746,8 @@ impl Simulator {
                     // MAC filter is irrelevant for recv-only reader channels.
                     MacAddress::new([0u8; 6]),
                     tun.clone(),
-                    name,
-                    name,
+                    name.clone(),
+                    name.clone(),
                 );
                 future_set.push(Self::generate_channel_reads(name.clone(), reader_ch));
             }

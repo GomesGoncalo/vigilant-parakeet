@@ -175,8 +175,8 @@ impl Channel {
         parameters: ChannelParameters,
         mac: MacAddress,
         tun: Arc<Tun>,
-        from: &String,
-        to: &String,
+        from: String,
+        to: String,
     ) -> Arc<Self> {
         // Bounded packet queue: prevents unbounded memory growth when latency > 0.
         // Packets beyond CHANNEL_QUEUE_DEPTH are congestion-dropped (realistic behaviour).
@@ -197,8 +197,10 @@ impl Channel {
         let parameters: Arc<RwLock<ChannelParameters>> = Arc::new(parameters.into());
         let params_for_task = parameters.clone();
         let tun_for_task = tun.clone();
+        let from_task = from.clone();
+        let to_task = to.clone();
 
-        tracing::debug!(from, to, "Created channel");
+        tracing::debug!(target: "sim_channel", from = %from, to = %to, "Created channel");
 
         // Spawn task to process packets from channel with latency simulation.
         tokio::spawn(async move {
@@ -207,6 +209,8 @@ impl Channel {
                     // tx was dropped (Arc<Channel> freed) — exit cleanly.
                     break;
                 };
+
+                tracing::trace!(target: "sim_channel", from = %from_task, to = %to_task, size = packet.size, "Dequeued packet for delivery");
 
                 loop {
                     // Calculate latency with jitter in a separate scope to drop the lock.
@@ -241,11 +245,13 @@ impl Channel {
                     let duration = (packet.instant + latency).duration_since(Instant::now());
 
                     if duration.is_zero() {
+                        tracing::trace!(target: "sim_channel", from = %from_task, to = %to_task, size = packet.size, "Delivering packet immediately");
                         let _ = tun_for_task.send_all(&packet.packet[..packet.size]).await;
                         break;
                     } else {
                         tokio::select! {
                             _ = tokio_timerfd::sleep(duration) => {
+                                tracing::trace!(target: "sim_channel", from = %from_task, to = %to_task, size = packet.size, latency = ?latency, "Delivering packet after latency");
                                 let _ = tun_for_task.send_all(&packet.packet[..packet.size]).await;
                                 break;
                             },
@@ -264,8 +270,8 @@ impl Channel {
             parameters,
             mac,
             tun,
-            from: from.clone(),
-            to: to.clone(),
+            from,
+            to,
         })
     }
 
@@ -285,7 +291,32 @@ impl Channel {
         packet: [u8; PACKET_BUFFER_SIZE],
         size: usize,
     ) -> Result<(), ChannelError> {
-        self.should_send(&packet[..size])?;
+        match self.should_send(&packet[..size]) {
+            Ok(()) => {
+                tracing::trace!(target: "sim_channel", from = %self.from, to = %self.to, size, "Packet accepted for send");
+            },
+            Err(ChannelError::Filtered) => {
+                // Print the first 32 bytes of the filtered packet as hex for debugging
+                let hex: String = packet[..size.min(32)]
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                tracing::debug!(
+                    target: "sim_channel",
+                    from = %self.from,
+                    to = %self.to,
+                    size,
+                    packet_hex = %hex,
+                    "Packet filtered by MAC"
+                );
+                return Err(ChannelError::Filtered);
+            },
+            Err(ChannelError::Dropped) => {
+                tracing::debug!(target: "sim_channel", from = %self.from, to = %self.to, size, "Packet dropped by loss simulation");
+                return Err(ChannelError::Dropped);
+            },
+        }
 
         // Try to enqueue; if the queue is full, treat as a congestion drop.
         if self
@@ -297,6 +328,7 @@ impl Channel {
             })
             .is_err()
         {
+            tracing::warn!(target: "sim_channel", from = %self.from, to = %self.to, size, "Packet dropped due to congestion (queue full)");
             return Err(ChannelError::Dropped);
         }
 
@@ -313,6 +345,10 @@ impl Channel {
         if self.mac != zero_mac {
             let bcast = [255u8; 6];
             let unicast = self.mac.bytes();
+            if buf.len() < 6 {
+                tracing::warn!(target: "sim_channel", from = %self.from, to = %self.to, "Packet too short for MAC filtering");
+                return Err(ChannelError::Filtered);
+            }
             if buf[0..6] != bcast && buf[0..6] != unicast {
                 return Err(ChannelError::Filtered);
             }

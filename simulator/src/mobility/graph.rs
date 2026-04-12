@@ -8,7 +8,7 @@ use anyhow::{bail, Result};
 use petgraph::algo::{dijkstra, kosaraju_scc};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
-use rand::{Rng, RngExt};
+use rand::{Rng};
 use std::cmp::Reverse;
 use std::collections::HashMap;
 

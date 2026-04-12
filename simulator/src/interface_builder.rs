@@ -99,7 +99,7 @@ impl InterfaceBuilder {
     pub fn build_tap(self) -> Result<Arc<Tun>> {
         #[cfg(not(feature = "test_helpers"))]
         {
-            let mut builder = tokio_tun::Tun::builder().tap().name(&self.name).up();
+            let mut builder = tokio_tun::Tun::builder().tap(true).name(&self.name).up().packet_info(false);
 
             if let Some(ip) = self.ip {
                 builder = builder.address(ip);
@@ -113,12 +113,7 @@ impl InterfaceBuilder {
                 builder = builder.netmask(netmask);
             }
 
-            let real_tun = builder.build()?.into_iter().next().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No TAP device returned from builder for interface '{}'",
-                    self.name
-                )
-            })?;
+            let real_tun = builder.try_build()?;
 
             // If a fixed MAC was requested, apply it now and re-up the interface.
             // `ip link set` briefly takes the interface down when changing the address.
@@ -159,6 +154,15 @@ impl InterfaceBuilder {
                     txqueuelen = TAP_TXQUEUELEN,
                     "ip link set txqueuelen failed (non-fatal)"
                 );
+            }
+
+            // Set promiscuous mode to ensure broadcast/multicast reception
+            let status = std::process::Command::new("ip")
+                .args(["link", "set", &self.name, "promisc", "on"])
+                .status()
+                .map_err(|e| anyhow::anyhow!("Failed to set promiscuous mode on {}: {}", self.name, e))?;
+            if !status.success() {
+                tracing::warn!(iface = %self.name, "ip link set promisc on failed (non-fatal)");
             }
 
             Ok(Arc::new(Tun::new_real(real_tun)))

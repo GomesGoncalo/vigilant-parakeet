@@ -184,24 +184,20 @@ impl NodeBuilder {
         let real_tun: RealTokioTun = if let Some(ip) = self.ip {
             RealTokioTun::builder()
                 .name(self.tap_name.as_ref().unwrap_or(&String::default()))
-                .tap()
+                .tap(true)
                 .mtu(self.mtu)
                 .up()
+                .packet_info(false)
                 .address(ip)
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow!("no tun devices returned from TokioTun builder"))?
+                .try_build()?
         } else {
             RealTokioTun::builder()
                 .name(self.tap_name.as_ref().unwrap_or(&String::default()))
                 .mtu(self.mtu)
-                .tap()
+                .tap(true)
                 .up()
-                .build()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow!("no tun devices returned from TokioTun builder"))?
+                .packet_info(false)
+                .try_build()?
         };
 
         Ok(Arc::new(Tun::new_real(real_tun)))

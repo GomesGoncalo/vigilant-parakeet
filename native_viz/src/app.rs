@@ -87,6 +87,15 @@ impl eframe::App for VizApp {
             }
         }
 
+        // If follow is enabled, always center on the highlighted node's position.
+        if self.follow {
+            if let Some(ref name) = self.highlighted_node {
+                if let Some(pos) = self.snapshot.positions.get(name) {
+                    self.map_memory.center_at(lon_lat(pos.lon, pos.lat));
+                }
+            }
+        }
+
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
@@ -217,6 +226,12 @@ fn draw_sidebar(
         v
     };
 
+    let search_response = ui.add(
+        egui::TextEdit::singleline(search_query)
+            .hint_text("node name…")
+            .desired_width(f32::INFINITY),
+    );
+
     // Clear button + match count on the same row.
     ui.horizontal(|ui| {
         if ui.small_button("✕").clicked() {
@@ -255,29 +270,25 @@ fn draw_sidebar(
         *follow = !*follow;
     }
 
-    if *follow {
-        if let Some(name) = matches.first() {
-            *highlighted_node = Some(name.clone());
-            jump_to = Some(name.clone());
-        }
-    } else if search_query.is_empty() {
+    if search_query.is_empty() {
         *highlighted_node = None;
+        jump_to = None;
     }
 
     // Show a scrollable list when there are multiple matches.
-    if matches.len() > 1 {
-        egui::ScrollArea::vertical()
-            .max_height(120.0)
-            .show(ui, |ui| {
-                for name in &matches {
-                    let selected = highlighted_node.as_deref() == Some(name.as_str());
-                    if ui.selectable_label(selected, name).clicked() {
-                        *highlighted_node = Some(name.clone());
+    egui::ScrollArea::vertical()
+        .max_height(120.0)
+        .show(ui, |ui| {
+            for name in &matches {
+                let selected = highlighted_node.as_deref() == Some(name.as_str());
+                if ui.selectable_label(selected, name).clicked() {
+                    *highlighted_node = Some(name.clone());
+                    if *follow {
                         jump_to = Some(name.clone());
                     }
                 }
-            });
-    }
+            }
+        });
 
     ui.separator();
 
