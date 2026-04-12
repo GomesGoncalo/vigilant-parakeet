@@ -97,7 +97,7 @@ nodes:
     config_path: examples/porto/n_rsu47.yaml
   rsu48:
     config_path: examples/porto/n_rsu48.yaml
-  # OBUs — 70 mobile nodes
+  # OBUs — 100 mobile nodes
   obu1:
     config_path: examples/porto/n_obu1.yaml
   obu2:
@@ -238,6 +238,66 @@ nodes:
     config_path: examples/porto/n_obu69.yaml
   obu70:
     config_path: examples/porto/n_obu70.yaml
+  obu71:
+    config_path: examples/porto/n_obu71.yaml
+  obu72:
+    config_path: examples/porto/n_obu72.yaml
+  obu73:
+    config_path: examples/porto/n_obu73.yaml
+  obu74:
+    config_path: examples/porto/n_obu74.yaml
+  obu75:
+    config_path: examples/porto/n_obu75.yaml
+  obu76:
+    config_path: examples/porto/n_obu76.yaml
+  obu77:
+    config_path: examples/porto/n_obu77.yaml
+  obu78:
+    config_path: examples/porto/n_obu78.yaml
+  obu79:
+    config_path: examples/porto/n_obu79.yaml
+  obu80:
+    config_path: examples/porto/n_obu80.yaml
+  obu81:
+    config_path: examples/porto/n_obu81.yaml
+  obu82:
+    config_path: examples/porto/n_obu82.yaml
+  obu83:
+    config_path: examples/porto/n_obu83.yaml
+  obu84:
+    config_path: examples/porto/n_obu84.yaml
+  obu85:
+    config_path: examples/porto/n_obu85.yaml
+  obu86:
+    config_path: examples/porto/n_obu86.yaml
+  obu87:
+    config_path: examples/porto/n_obu87.yaml
+  obu88:
+    config_path: examples/porto/n_obu88.yaml
+  obu89:
+    config_path: examples/porto/n_obu89.yaml
+  obu90:
+    config_path: examples/porto/n_obu90.yaml
+  obu91:
+    config_path: examples/porto/n_obu91.yaml
+  obu92:
+    config_path: examples/porto/n_obu92.yaml
+  obu93:
+    config_path: examples/porto/n_obu93.yaml
+  obu94:
+    config_path: examples/porto/n_obu94.yaml
+  obu95:
+    config_path: examples/porto/n_obu95.yaml
+  obu96:
+    config_path: examples/porto/n_obu96.yaml
+  obu97:
+    config_path: examples/porto/n_obu97.yaml
+  obu98:
+    config_path: examples/porto/n_obu98.yaml
+  obu99:
+    config_path: examples/porto/n_obu99.yaml
+  obu100:
+    config_path: examples/porto/n_obu100.yaml
   server1:
     config_path: examples/porto/n_server1.yaml
 
