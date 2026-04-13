@@ -244,7 +244,7 @@ pub type RssiTable = std::sync::Arc<std::sync::RwLock<HashMap<MacAddress, f32>>>
 /// per relay so that longer chains must present a proportionally stronger
 /// signal to be preferred. 5 dB corresponds to roughly 78% closer in
 /// free-space path loss (20·log₁₀ model at 5.9 GHz).
-const RSSI_HOP_PENALTY_DB: f32 = 1.0;
+const RSSI_HOP_PENALTY_DB: f32 = 5.0;
 
 // ============================================================================
 // Route construction helpers

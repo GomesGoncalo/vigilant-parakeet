@@ -42,8 +42,32 @@ Key configuration parameters (all optional; defaults shown):
 
 The model is evaluated at each simulation tick as node positions change,
 making the effective loss rate a function of current inter-node distance.
-Backward compatibility with static-parameter topologies is preserved: channels
-without a `fading` block use the fixed `loss` field as before.
+
+Sampling modes
+
+- `Periodic` (default): a background fading task recomputes a per-channel
+  outage probability at `update_ms` intervals and stores it in the channel
+  parameters. This is computationally inexpensive and matches the original
+  periodic behaviour.
+
+- `PerPacket`: the outage probability is sampled on a per-packet basis at
+  transmit time, producing maximal temporal fidelity for short-lived links or
+  experiments that require independent fading on every packet.
+
+- `Hybrid`: per-packet sampling with a short coherence cache. The per-channel
+  cache stores the last sampled loss and a timestamp; packets transmitted
+  within `coherence_ms` of the cached sample reuse it to model short-term
+  temporal correlation while still allowing re-sampling when the channel
+  decorrelates.
+
+RNG seeding and determinism
+
+For reproducible experiments, the simulator supports deriving per-channel RNGs
+from a base seed (see simulator arguments / env VPARAKEET_RNG_SEED). When a
+seed is provided, each channel receives a deterministic StdRng instance derived
+from the base seed and channel identifiers; otherwise the simulator falls back
+to non-deterministic thread-local randomness. This enables repeatable per-packet
+sampling while preserving non-determinism by default.
 
 == Configuration example
 

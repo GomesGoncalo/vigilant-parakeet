@@ -45,7 +45,7 @@ namespaces) and the `visualization` UI (browser-based dashboard).
 - **DH message signing** — Ed25519 digital signatures on key exchange messages authenticate the DH handshake (see [DH Signatures](#dh-message-signing) below)
 - HTTP API for runtime stats and for changing channel parameters
 - Browser visualization (in `visualization/`) to monitor traffic and change
-  parameters interactively (optional `webview` feature)
+  parameters interactively via the simulator HTTP API (webview).
 
 ## Project structure
 
@@ -83,17 +83,11 @@ Build release artifacts (all crates):
 cargo build --workspace --release
 ```
 
-Build the simulator with optional features:
+Build the simulator (webview, TUI, and stats enabled by default):
 
 ```sh
-# With webview (HTTP API and metrics endpoint)
-cargo build -p simulator --release --features webview
-
-# With TUI (Terminal User Interface dashboard)
-cargo build -p simulator --release --features tui
-
-# With both webview and TUI
-cargo build -p simulator --release --features "webview,tui"
+# Build simulator (includes web API, TUI and metrics by default)
+cargo build -p simulator --release
 ```
 
 Build the node binary only:

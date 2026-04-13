@@ -127,10 +127,17 @@ impl Plugin for NodesPlugin {
         }
 
         // --- Pass 2: node symbols ---
-        let now = self.snapshot.last_positions_at.unwrap_or_else(std::time::Instant::now);
+        let now = self
+            .snapshot
+            .last_positions_at
+            .unwrap_or_else(std::time::Instant::now);
         let prev_time = self.prev_time.unwrap_or(now);
         let dt = (now - prev_time).as_secs_f32().clamp(0.0, 0.5);
-        let interp = if dt > 0.0 && dt < 0.5 { (dt / 0.2).clamp(0.0, 1.0) } else { 1.0 };
+        let interp = if dt > 0.0 && dt < 0.5 {
+            (dt / 0.2).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
 
         for (name, pos) in &self.snapshot.positions {
             let node_type = self

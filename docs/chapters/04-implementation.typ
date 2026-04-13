@@ -360,7 +360,9 @@ set of interfaces and node instance inside the namespace context:
 - *RSU*: `vanet` TAP + `cloud` TAP (UDP socket bound here) → `rsu_lib::create_with_vdev(args, device, name)`
 - *Server*: `virtual` TAP + `cloud` TAP (UDP socket) → `Server::new(...).with_tun(tun)`, `server.start()` called immediately via `block_in_place`
 
-=== HTTP Control API (feature: `webview`)
+=== HTTP Control API
+
+The simulator exposes an HTTP control API (port 3030) implemented with the `warp` framework. The API provides endpoints for metrics, per-node and per-channel inspection, and runtime updates used by the TUI and the native visualization tools.
 
 #figure(
   table(

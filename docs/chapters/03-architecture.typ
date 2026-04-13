@@ -263,8 +263,9 @@ The simulator is the central orchestration layer. Its responsibilities are:
   userspace. Channel parameters can be updated at runtime without restarting
   any node.
 
-+ *Observability*: exposes an HTTP metrics API (feature: `webview`, port 3030)
-  and a terminal TUI dashboard (feature: `tui`).
++ *Observability*: exposes an HTTP metrics API (port 3030) and a terminal
+  TUI dashboard. The simulator enables observability (metrics, web API and TUI)
+  by default to support interactive experiment runs and the native visualization tool.
 
 The simulator architecture is described in full in @implementation.
 
@@ -397,7 +398,7 @@ The simulator manages node lifecycle as follows:
 
 === TUI Dashboard
 
-The terminal TUI (feature: `tui`, built on `ratatui`) provides seven tabs
+The terminal TUI (built on `ratatui`) provides seven tabs
 accessible via number keys:
 
 / *Metrics*: per-node counters (packets sent/received, loops detected, crypto
@@ -524,17 +525,15 @@ nanosecond precision without wall-clock waits.
 `warp` crates in the Rust ecosystem provide the building blocks for all major
 subsystems without requiring any unsafe code in the node libraries.
 
-=== Feature-Gated Instrumentation
+=== Instrumentation and default features
 
-The `stats` feature compiles in atomic counters (`loop_detected_count`,
-`encrypted_frames_sent`, etc.) at zero cost when disabled. The `webview` and
-`tui` features are similarly additive. This design pattern — compile-time
-feature flags rather than runtime configuration — ensures that production
-builds carry no instrumentation overhead, while experiment builds have full
-observability.
-
-The `test_helpers` feature unlocks in-process hub and TUN shim implementations
-used by the integration test suite. It is never compiled into production builds.
+To simplify experiment workflows, the simulator ships with observability enabled
+by default: the HTTP API, terminal TUI, and the lightweight `stats` counters
+are included in normal simulator builds. Library crates (for example
+`node_lib` and `common`) keep their `stats` code behind an optional feature so
+that downstream consumers can opt in or keep node builds minimal. The
+`test_helpers` feature still unlocks in-process hub and TUN shim implementations
+used by the integration test suite and remains opt-in for CI and local tests.
 
 === Test Infrastructure Without Root
 

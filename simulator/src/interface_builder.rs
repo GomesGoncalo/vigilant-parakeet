@@ -13,6 +13,7 @@ use std::sync::Arc;
 /// Linux default is 1000 packets.  With a 9000 B VANET MTU and 119 nodes that
 /// is ~1 GB of kernel sk_buff memory; shrinking to 16 drops it to ~17 MB.
 /// Cloud/virtual interfaces (1500 B MTU) benefit proportionally.
+#[allow(dead_code)]
 const TAP_TXQUEUELEN: u32 = 16;
 
 /// Builder for creating network interfaces with optional configuration
@@ -99,7 +100,7 @@ impl InterfaceBuilder {
     pub fn build_tap(self) -> Result<Arc<Tun>> {
         #[cfg(not(feature = "test_helpers"))]
         {
-            let mut builder = tokio_tun::Tun::builder().tap(true).name(&self.name).up().packet_info(false);
+            let mut builder = tokio_tun::Tun::builder().tap().name(&self.name).up();
 
             if let Some(ip) = self.ip {
                 builder = builder.address(ip);
@@ -113,7 +114,12 @@ impl InterfaceBuilder {
                 builder = builder.netmask(netmask);
             }
 
-            let real_tun = builder.try_build()?;
+            let real_tun = builder.build()?.into_iter().next().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Failed to get TUN device after creation for interface {}",
+                    self.name
+                )
+            })?;
 
             // If a fixed MAC was requested, apply it now and re-up the interface.
             // `ip link set` briefly takes the interface down when changing the address.
@@ -160,7 +166,9 @@ impl InterfaceBuilder {
             let status = std::process::Command::new("ip")
                 .args(["link", "set", &self.name, "promisc", "on"])
                 .status()
-                .map_err(|e| anyhow::anyhow!("Failed to set promiscuous mode on {}: {}", self.name, e))?;
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to set promiscuous mode on {}: {}", self.name, e)
+                })?;
             if !status.success() {
                 tracing::warn!(iface = %self.name, "ip link set promisc on failed (non-fatal)");
             }

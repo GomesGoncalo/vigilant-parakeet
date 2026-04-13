@@ -226,7 +226,7 @@ fn draw_sidebar(
         v
     };
 
-    let search_response = ui.add(
+    let _search_response = ui.add(
         egui::TextEdit::singleline(search_query)
             .hint_text("node name…")
             .desired_width(f32::INFINITY),

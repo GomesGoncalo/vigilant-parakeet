@@ -120,16 +120,19 @@ sudo RUST_LOG=info ./target/release/simulator --config-file examples/simulator.y
 ```
 
 - The simulator exposes an HTTP API (default port 3030) for runtime stats and
-  channel control.
+  channel control. The simulator enables observability (HTTP API, TUI and
+  lightweight stats counters) by default to support experiments and the native
+  visualization.
 
 Config & features
 
-- To enable runtime metrics / counters (cheap atomics) enable the `stats`
-  feature when building:
+- Library crates keep `stats` behind an optional feature so downstream consumers
+  can opt in. To exercise library-level counters in `node_lib` during development
+  or tests enable the feature:
 
 ```bash
+# Run node_lib tests with metrics enabled
 cargo test -p node_lib --features stats
-cargo build --features stats
 ```
 
 Best practices for tests

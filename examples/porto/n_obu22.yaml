@@ -1,5 +1,5 @@
 node_type: Obu
-hello_history: 10
+hello_history: 3
 ip: 10.0.0.23
 enable_encryption: true
 enable_dh_signatures: true

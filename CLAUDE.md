@@ -82,9 +82,9 @@ RUST_LOG=trace cargo test -p node_lib -- <test_name> -- --nocapture  # With logs
 | Flag | Purpose |
 |---|---|
 | `test_helpers` | Enables TUN shims and in-process Hub for non-privileged testing — **required for CI tests** |
-| `stats` | Enables metrics/counters collection |
-| `webview` | Enables HTTP API on port 3030 (warp-based, JSON metrics) |
-| `tui` | Enables terminal UI dashboard |
+| `stats` | Enables metrics/counters collection (library opt-in). The simulator enables metrics by default for experiment runs. |
+| `webview` | Enables HTTP API on port 3030 (warp-based, JSON metrics). The simulator includes the web API by default. |
+| `tui` | Enables terminal UI dashboard. The simulator includes the TUI by default. |
 
 ---
 

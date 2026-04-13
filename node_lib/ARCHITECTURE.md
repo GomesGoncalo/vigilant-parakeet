@@ -145,9 +145,9 @@ Callers: prefer `get_route_to(Some(_))` when only a read is needed. Call `select
   - Avoid calling functions that mutate internal cache fields while holding a `read()` lock. If a read-path must update a cache, document it clearly and prefer internal lock promotion or explicit write-call APIs.
 
 - Feature flags & metrics
-  - `node_lib` defines a `stats` feature in `Cargo.toml` (this enables `common/stats`). When `stats` is enabled the crate exposes lightweight atomic counters in `node_lib::metrics` consumed by both `obu_lib` and `rsu_lib`.
+  - `node_lib` exposes lightweight atomic counters behind an optional `stats` feature (enabled in `Cargo.toml`). The simulator enables observability (web API, TUI and metrics) by default and will enable the `stats` feature when building the simulator binary; downstream consumers can keep `stats` disabled to produce leaner node binaries.
   - Current counters: `inc_loop_detected()` and `loop_detected_count()`; consider adding `inc_skip_forward()` and `inc_forward()` for more observability.
-  - To build with metrics enabled: `cargo build -p node_lib --features stats` (or enable the feature when building dependent crates).
+  - To build node_lib with metrics enabled for local tests: `cargo build -p node_lib --features stats` (the simulator build toggles this feature for experiment builds).
 
 Runtime example — enable stats and read counters
 

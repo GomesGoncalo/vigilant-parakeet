@@ -41,28 +41,10 @@ pub struct NodeInterfaces {
     /// - Server: UDP listener interface receiving from RSUs (172.x.x.x)
     pub cloud: Option<Arc<Tun>>,
     /// IP address configured on the virtual TAP (10.x.x.x) when present
-    #[cfg_attr(
-        not(any(
-            feature = "tui",
-            feature = "webview",
-            feature = "test_helpers",
-            feature = "mobility"
-        )),
-        allow(dead_code)
-    )]
     #[allow(dead_code)]
     pub virtual_ip: Option<Ipv4Addr>,
 
     /// IP address configured on the cloud interface (172.x.x.x) when present
-    #[cfg_attr(
-        not(any(
-            feature = "tui",
-            feature = "webview",
-            feature = "test_helpers",
-            feature = "mobility"
-        )),
-        allow(dead_code)
-    )]
     #[allow(dead_code)]
     pub cloud_ip: Option<Ipv4Addr>,
 }

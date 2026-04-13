@@ -321,4 +321,5 @@ nakagami:
   snr_thresh_db: 10.0 # Standard DSRC SNR threshold (dB); avoids cliff near hard cutoff
   max_range_m: 800.0  # Hard cut-off (m); covers RSU spacing gaps (~580–670 m with 6×8 grid)
   latency_ms_per_100m: 0.5 # 0.5 ms/100m ≈ 5x realistic V2X propagation; keeps routing preference without inflating RTTs
-  update_ms: 20       # How often to recompute fading (ms)
+  update_ms: 2       # How often to recompute fading (ms)
+  default_mode: per_packet # Fading mode: per_packet, per_link, or none

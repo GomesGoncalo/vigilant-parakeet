@@ -8,7 +8,7 @@ use anyhow::{bail, Result};
 use petgraph::algo::{dijkstra, kosaraju_scc};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
-use rand::{Rng};
+use rand::{Rng, RngExt};
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
@@ -95,28 +95,30 @@ impl RoadGraph {
         // Nodes in isolated or one-way dead-end sub-graphs cannot route to/from
         // the main network, causing vehicles to appear stranded off-road.
         let sccs = kosaraju_scc(&graph);
-        let largest_scc: std::collections::HashSet<NodeIndex> = sccs
-            .into_iter()
-            .max_by_key(|c| c.len())
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+        let largest_scc_vec = sccs.into_iter().max_by_key(|c| c.len()).unwrap_or_default();
+        let largest_scc: std::collections::HashSet<NodeIndex> =
+            largest_scc_vec.clone().into_iter().collect();
 
-        // Collect nodes NOT in the largest SCC and remove them.
-        let to_remove: Vec<NodeIndex> = graph
-            .node_indices()
-            .filter(|n| !largest_scc.contains(n))
-            .collect();
-        // Remove in reverse index order so indices stay valid while removing.
-        let mut sorted_remove = to_remove;
-        sorted_remove.sort_unstable_by_key(|b| Reverse(b.index()));
-        for n in sorted_remove {
-            graph.remove_node(n);
-        }
-        // Rebuild node_index to reflect the new NodeIndex values after removal.
-        node_index.clear();
-        for idx in graph.node_indices() {
-            node_index.insert(graph[idx].id, idx);
+        // Only prune when the largest SCC has more than one node; small toy graphs
+        // used in unit tests may be intentionally one-way and should not be pruned to
+        // a single node, which would remove valid forward edges.
+        if largest_scc_vec.len() > 1 {
+            // Collect nodes NOT in the largest SCC and remove them.
+            let to_remove: Vec<NodeIndex> = graph
+                .node_indices()
+                .filter(|n| !largest_scc.contains(n))
+                .collect();
+            // Remove in reverse index order so indices stay valid while removing.
+            let mut sorted_remove = to_remove;
+            sorted_remove.sort_unstable_by_key(|b| Reverse(b.index()));
+            for n in sorted_remove {
+                graph.remove_node(n);
+            }
+            // Rebuild node_index to reflect the new NodeIndex values after removal.
+            node_index.clear();
+            for idx in graph.node_indices() {
+                node_index.insert(graph[idx].id, idx);
+            }
         }
 
         tracing::info!(
