@@ -244,7 +244,7 @@ pub type RssiTable = std::sync::Arc<std::sync::RwLock<HashMap<MacAddress, f32>>>
 /// per relay so that longer chains must present a proportionally stronger
 /// signal to be preferred. 5 dB corresponds to roughly 78% closer in
 /// free-space path loss (20·log₁₀ model at 5.9 GHz).
-const RSSI_HOP_PENALTY_DB: f32 = 5.0;
+const RSSI_HOP_PENALTY_DB: f32 = 0.5;
 
 // ============================================================================
 // Route construction helpers
@@ -385,14 +385,25 @@ impl Routing {
             if rssi_snap.is_empty() {
                 hop_routes.sort_by_key(|(_, _, hops)| *hops);
             } else {
-                // Sort by effective RSSI descending: penalise relay chains so that
-                // a longer path must have a proportionally stronger first-hop signal.
+                // Nonlinear RSSI scaling: convert dBm → metres using the inverse
+                // path-loss approximation, then apply an exponent > 1 to
+                // exaggerate long/weak links. Subtract per-hop penalty afterwards.
+                // This makes very weak first-hop RSSI much worse and so multi-hop
+                // paths (with stronger first hops) become preferred.
+                const RSSI_NONLINEAR_EXPONENT: f32 = 3.0; // user-chosen
                 hop_routes.sort_by(|(_, mac_a, hops_a), (_, mac_b, hops_b)| {
-                    let ra = rssi_snap.get(*mac_a).copied().unwrap_or(-100.0_f32)
+                    let r_a_db = rssi_snap.get(*mac_a).copied().unwrap_or(-100.0_f32);
+                    let r_b_db = rssi_snap.get(*mac_b).copied().unwrap_or(-100.0_f32);
+                    // Invert RSSI ≈ −20 − 20·log₁₀(d)  →  d = 10^((-rssi − 20) / 20)
+                    let d_a = 10.0_f32.powf((-r_a_db - 20.0) / 20.0);
+                    let d_b = 10.0_f32.powf((-r_b_db - 20.0) / 20.0);
+                    let score_a = -d_a.powf(RSSI_NONLINEAR_EXPONENT)
                         - RSSI_HOP_PENALTY_DB * (*hops_a).saturating_sub(1) as f32;
-                    let rb = rssi_snap.get(*mac_b).copied().unwrap_or(-100.0_f32)
+                    let score_b = -d_b.powf(RSSI_NONLINEAR_EXPONENT)
                         - RSSI_HOP_PENALTY_DB * (*hops_b).saturating_sub(1) as f32;
-                    rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
+                    score_b
+                        .partial_cmp(&score_a)
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 });
             }
             let mut seen: HashSet<MacAddress> = out.iter().copied().collect();

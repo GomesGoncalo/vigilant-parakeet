@@ -212,16 +212,12 @@ impl Plugin for NodesPlugin {
             }
         }
 
-        // If a node is highlighted and it has an upstream destination, draw a green cross at the destination
+        // If a node is highlighted and it has a trip destination, draw a green cross at the destination
         if let Some(ref highlighted) = self.highlighted_node {
-            if let Some(info) = self.snapshot.node_info.get(highlighted) {
-                if let Some(up) = &info.upstream {
-                    if let Some(dest_name) = &up.node_name {
-                        if let Some(dest_pos) = self.snapshot.positions.get(dest_name) {
-                            let dest_screen = to_screen(dest_pos.lat, dest_pos.lon);
-                            draw_cross(painter, dest_screen, 10.0, Color32::from_rgb(0, 200, 0));
-                        }
-                    }
+            if let Some(pos) = self.snapshot.positions.get(highlighted) {
+                if let (Some(dlat), Some(dlon)) = (pos.dest_lat, pos.dest_lon) {
+                    let dest_screen = to_screen(dlat, dlon);
+                    draw_cross(painter, dest_screen, 10.0, Color32::from_rgb(0, 200, 0));
                 }
             }
         }
