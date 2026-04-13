@@ -63,13 +63,13 @@ pub fn setup_routes(
                                 #[cfg(feature = "stats")]
                                 { device.stats() }
                                 #[cfg(not(feature = "stats"))]
-                                { crate::common::stats::Stats::default() }
+                                { common::stats::Stats::default() }
                             };
                             let tun_stats = {
                                 #[cfg(feature = "stats")]
                                 { tun.stats() }
                                 #[cfg(not(feature = "stats"))]
-                                { crate::common::stats::Stats::default() }
+                                { common::stats::Stats::default() }
                             };
                             (node, (dev_stats, tun_stats))
                         })
@@ -92,13 +92,13 @@ pub fn setup_routes(
                             #[cfg(feature = "stats")]
                             { device.stats() }
                             #[cfg(not(feature = "stats"))]
-                            { crate::common::stats::Stats::default() }
+                            { common::stats::Stats::default() }
                         };
                         let tun_stats = {
                             #[cfg(feature = "stats")]
                             { tun.stats() }
                             #[cfg(not(feature = "stats"))]
-                            { crate::common::stats::Stats::default() }
+                            { common::stats::Stats::default() }
                         };
                         (dev_stats, tun_stats)
                     })
