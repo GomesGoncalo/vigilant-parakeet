@@ -185,7 +185,6 @@ pub fn sample_nakagami_loss(d_m: f64, cfg: &NakagamiConfig) -> f64 {
     }
 }
 
-
 /// Lower regularised incomplete gamma P(a, x) = γ(a,x)/Γ(a).
 ///
 /// Uses the exact closed-form for integer/half-integer a via series expansion,
@@ -334,6 +333,9 @@ mod tests {
             actual.push(v < p);
         }
 
-        assert_eq!(expected, actual, "deterministic RNG should match expected sequence");
+        assert_eq!(
+            expected, actual,
+            "deterministic RNG should match expected sequence"
+        );
     }
 }

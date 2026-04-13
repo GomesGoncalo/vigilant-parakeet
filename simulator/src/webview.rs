@@ -62,7 +62,8 @@ pub fn setup_routes(
                         let dev = {
                             #[cfg(feature = "stats")]
                             {
-                                serde_json::to_value(device.stats()).unwrap_or(serde_json::Value::Null)
+                                serde_json::to_value(device.stats())
+                                    .unwrap_or(serde_json::Value::Null)
                             }
                             #[cfg(not(feature = "stats"))]
                             {
@@ -93,32 +94,29 @@ pub fn setup_routes(
             .and(warp::path!("node" / String))
             .and(warp::path::end())
             .map(move |node: String| {
-                let Some(reply) = sim_nodes
-                    .get(&node)
-                    .map(|(device, tun, _node)| {
-                        let dev = {
-                            #[cfg(feature = "stats")]
-                            {
-                                serde_json::to_value(device.stats()).unwrap_or(serde_json::Value::Null)
-                            }
-                            #[cfg(not(feature = "stats"))]
-                            {
-                                serde_json::Value::Null
-                            }
-                        };
-                        let tunv = {
-                            #[cfg(feature = "stats")]
-                            {
-                                serde_json::to_value(tun.stats()).unwrap_or(serde_json::Value::Null)
-                            }
-                            #[cfg(not(feature = "stats"))]
-                            {
-                                serde_json::Value::Null
-                            }
-                        };
-                        (dev, tunv)
-                    })
-                else {
+                let Some(reply) = sim_nodes.get(&node).map(|(device, tun, _node)| {
+                    let dev = {
+                        #[cfg(feature = "stats")]
+                        {
+                            serde_json::to_value(device.stats()).unwrap_or(serde_json::Value::Null)
+                        }
+                        #[cfg(not(feature = "stats"))]
+                        {
+                            serde_json::Value::Null
+                        }
+                    };
+                    let tunv = {
+                        #[cfg(feature = "stats")]
+                        {
+                            serde_json::to_value(tun.stats()).unwrap_or(serde_json::Value::Null)
+                        }
+                        #[cfg(not(feature = "stats"))]
+                        {
+                            serde_json::Value::Null
+                        }
+                    };
+                    (dev, tunv)
+                }) else {
                     let json = warp::reply::json(&ErrorMessage {
                         code: 404,
                         message: "node not found".to_string(),

@@ -349,9 +349,13 @@ impl Simulator {
     where
         F: Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
     {
-
-        let (channels, namespaces, nodes, node_namespace_map) =
-            Self::parse_topology(&args.config_file, callback, std::env::var("VPARAKEET_RNG_SEED").ok().and_then(|s| s.parse::<u64>().ok()))?;
+        let (channels, namespaces, nodes, node_namespace_map) = Self::parse_topology(
+            &args.config_file,
+            callback,
+            std::env::var("VPARAKEET_RNG_SEED")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok()),
+        )?;
 
         // Parse optional Nakagami-m fading config.
         // VANET channels are now created dynamically by the fading task based on
@@ -398,7 +402,6 @@ impl Simulator {
                     .map(|tun| (name.clone(), (device.mac_address(), tun.clone())))
             })
             .collect();
-
 
         Ok(Self {
             namespaces,
@@ -540,7 +543,9 @@ impl Simulator {
 
         // Spawn Nakagami-m fading task if enabled (requires mobility positions).
         // Prepare optional RNG seed and per-channel RNG factory before spawning tasks
-        let rng_seed: Option<u64> = std::env::var("VPARAKEET_RNG_SEED").ok().and_then(|s| s.parse::<u64>().ok());
+        let rng_seed: Option<u64> = std::env::var("VPARAKEET_RNG_SEED")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok());
         let mk_rng = move |from: &str, to: &str| -> Option<Arc<Mutex<StdRng>>> {
             if let Some(base) = rng_seed {
                 let mut h = base.wrapping_add(0x9E3779B97F4A7C15u64);

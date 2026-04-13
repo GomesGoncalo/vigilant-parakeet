@@ -1,6 +1,6 @@
 use rand::rngs::StdRng;
-use rand::{SeedableRng, RngCore};
-use simulator::fading::{NakagamiConfig, NakagamiMode, NakagamiModel, sample_nakagami_loss};
+use rand::{RngCore, SeedableRng};
+use simulator::fading::{sample_nakagami_loss, NakagamiConfig, NakagamiMode, NakagamiModel};
 
 #[test]
 fn modes_share_base_loss() {
