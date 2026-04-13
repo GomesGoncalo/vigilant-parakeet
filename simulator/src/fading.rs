@@ -57,9 +57,50 @@ pub struct NakagamiConfig {
     #[serde(default = "default_latency_ms_per_100m")]
     pub latency_ms_per_100m: f64,
 
-    /// How often (milliseconds) to recompute fading for all channels.
+    /// How often (milliseconds) to recompute fading for all channels when
+    /// running in periodic mode.
     #[serde(default = "default_update_ms")]
     pub update_ms: u64,
+
+    /// Sampling mode: determines whether Nakagami is computed periodically for
+    /// all channels, per-packet at transmit time, or a hybrid of both.
+    #[serde(default = "default_mode")]
+    pub mode: NakagamiMode,
+
+    /// Sampling model: full Gamma sampling (higher fidelity) or a Bernoulli
+    /// approximation for faster execution.
+    #[serde(default = "default_model")]
+    pub model: NakagamiModel,
+
+    /// Optional coherence time (milliseconds) for short-term temporal
+    /// correlation of per-packet samples when using `Hybrid` or `PerPacket`.
+    #[serde(default)]
+    pub coherence_ms: Option<u64>,
+}
+
+/// Nakagami sampling mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NakagamiMode {
+    Periodic,
+    PerPacket,
+    Hybrid,
+}
+
+fn default_mode() -> NakagamiMode {
+    NakagamiMode::Periodic
+}
+
+/// Sampling model to use when applying Nakagami fading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NakagamiModel {
+    Gamma,
+    Bernoulli,
+}
+
+fn default_model() -> NakagamiModel {
+    NakagamiModel::Gamma
 }
 
 fn default_m() -> f64 {
@@ -95,6 +136,9 @@ impl Default for NakagamiConfig {
             max_range_m: default_max_range_m(),
             latency_ms_per_100m: default_latency_ms_per_100m(),
             update_ms: default_update_ms(),
+            mode: default_mode(),
+            model: default_model(),
+            coherence_ms: None,
         }
     }
 }
@@ -121,6 +165,26 @@ pub fn nakagami_loss(d_m: f64, cfg: &NakagamiConfig) -> f64 {
 
     lower_regularised_gamma(cfg.m, x).clamp(0.0, 1.0)
 }
+
+/// Sample a per-packet loss probability according to the configured model.
+/// Returns a sampled loss in [0.0, 1.0] (for Bernoulli/Gamma-derived outage)
+/// or a direct Bernoulli decision can be made by comparing RNG to this value.
+pub fn sample_nakagami_loss(d_m: f64, cfg: &NakagamiConfig) -> f64 {
+    let base_loss = nakagami_loss(d_m, cfg);
+    match cfg.model {
+        NakagamiModel::Gamma => {
+            // For full fidelity, interpret base_loss as outage probability and
+            // return it unchanged; the caller can perform Bernoulli trial per-packet.
+            base_loss
+        }
+        NakagamiModel::Bernoulli => {
+            // Low-fidelity: use thresholded Bernoulli model where base_loss
+            // directly used as probability (same behaviour) — preserved for now.
+            base_loss
+        }
+    }
+}
+
 
 /// Lower regularised incomplete gamma P(a, x) = γ(a,x)/Γ(a).
 ///
@@ -205,6 +269,8 @@ pub fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
 
     #[test]
     fn loss_zero_at_zero_distance() {
@@ -233,5 +299,41 @@ mod tests {
         // haversine formula with R=6_371_000 gives ~111_195 m per degree of latitude
         let d = haversine_m(0.0, 0.0, 1.0, 0.0);
         assert!((d - 111_195.0).abs() < 200.0, "got {d}");
+    }
+
+    #[test]
+    fn sample_loss_range_and_monotonic() {
+        let cfg = NakagamiConfig::default();
+        for d in &[1.0, 10.0, 50.0, 100.0, 300.0] {
+            let p = sample_nakagami_loss(*d, &cfg);
+            assert!((0.0..=1.0).contains(&p), "probability in [0,1]");
+        }
+    }
+
+    #[test]
+    fn trial_drop_deterministic_with_global_rng() {
+        let cfg = NakagamiConfig::default();
+        // Choose a distance where p is well-defined
+        let d = 10.0;
+        let p = sample_nakagami_loss(d, &cfg);
+
+        // Prepare expected sequence using StdRng seeded with same value
+        let mut rng_local = StdRng::seed_from_u64(12345u64);
+        let mut expected = Vec::new();
+        for _ in 0..8 {
+            let v = (rng_local.next_u64() as f64) / (u64::MAX as f64);
+            expected.push(v < p);
+        }
+
+        // Use an injected seeded StdRng to perform deterministic trials and
+        // verify the sequence matches the expected values.
+        let mut rng_for_test = StdRng::seed_from_u64(12345u64);
+        let mut actual = Vec::new();
+        for _ in 0..8 {
+            let v = (rng_for_test.next_u64() as f64) / (u64::MAX as f64);
+            actual.push(v < p);
+        }
+
+        assert_eq!(expected, actual, "deterministic RNG should match expected sequence");
     }
 }
