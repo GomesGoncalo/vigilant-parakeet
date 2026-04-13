@@ -212,6 +212,20 @@ impl Plugin for NodesPlugin {
             }
         }
 
+        // If a node is highlighted and it has an upstream destination, draw a green cross at the destination
+        if let Some(ref highlighted) = self.highlighted_node {
+            if let Some(info) = self.snapshot.node_info.get(highlighted) {
+                if let Some(up) = &info.upstream {
+                    if let Some(dest_name) = &up.node_name {
+                        if let Some(dest_pos) = self.snapshot.positions.get(dest_name) {
+                            let dest_screen = to_screen(dest_pos.lat, dest_pos.lon);
+                            draw_cross(painter, dest_screen, 10.0, Color32::from_rgb(0, 200, 0));
+                        }
+                    }
+                }
+            }
+        }
+
         // Update previous positions and time for next frame
         self.prev_positions = self.snapshot.positions.clone();
         self.prev_time = self.snapshot.last_positions_at;
@@ -260,6 +274,25 @@ fn draw_triangle(painter: &egui::Painter, centre: Pos2, half_size: f32, color: C
         color,
         Stroke::NONE,
     ));
+}
+
+/// Draw a green cross marker centered at `centre`.
+fn draw_cross(painter: &egui::Painter, centre: Pos2, half_size: f32, color: Color32) {
+    let stroke = Stroke::new(3.0, color);
+    painter.line_segment(
+        [
+            pos2(centre.x - half_size, centre.y - half_size),
+            pos2(centre.x + half_size, centre.y + half_size),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            pos2(centre.x - half_size, centre.y + half_size),
+            pos2(centre.x + half_size, centre.y - half_size),
+        ],
+        stroke,
+    );
 }
 
 /// Node name label with a dark semi-transparent background for readability.
