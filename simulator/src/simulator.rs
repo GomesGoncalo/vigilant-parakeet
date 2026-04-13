@@ -127,8 +127,6 @@ pub struct Simulator {
     /// Kept so the fading task can construct new `Channel` objects on demand without
     /// needing to borrow from the full node map.
     vanet_node_info: HashMap<String, (MacAddress, Arc<Tun>)>,
-    /// Optional global RNG injected into channels for deterministic runs
-    global_rng: Option<Arc<Mutex<StdRng>>>,
 }
 
 type CallbackReturn = Result<(Arc<Device>, crate::node_interfaces::NodeInterfaces, SimNode)>;
@@ -138,7 +136,7 @@ impl Simulator {
     fn parse_topology(
         config_file: &str,
         callback: impl Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
-        rng: Option<Arc<Mutex<StdRng>>>,
+        rng_seed: Option<u64>,
     ) -> Result<(
         HashMap<String, HashMap<String, Arc<Channel>>>,
         Vec<NamespaceWrapper>,
@@ -150,6 +148,20 @@ impl Simulator {
 
         // Create namespace manager
         let mut ns_manager = NamespaceManager::new();
+        // Prepare per-channel RNG factory derived from an optional base seed
+        let mk_rng = |from: &str, to: &str| -> Option<Arc<Mutex<StdRng>>> {
+            if let Some(base) = rng_seed {
+                // derive a per-channel seed from base + names
+                let mut h = base.wrapping_add(0x9E3779B97F4A7C15u64);
+                for b in from.as_bytes().iter().chain(to.as_bytes().iter()) {
+                    h = h.wrapping_mul(0x100000001b3u64).wrapping_add(*b as u64);
+                    h = h.rotate_left(13) ^ h;
+                }
+                Some(Arc::new(Mutex::new(StdRng::seed_from_u64(h))))
+            } else {
+                None
+            }
+        };
         let mut node_map: HashMap<
             String,
             (Arc<Device>, crate::node_interfaces::NodeInterfaces, SimNode),
@@ -185,7 +197,7 @@ impl Simulator {
                                 tnode.to_string(),
                                 node.to_string(),
                                 None,
-                                rng.clone(),
+                                mk_rng(tnode.as_str(), node.as_str()),
                             ),
                         );
                     }
@@ -233,7 +245,7 @@ impl Simulator {
                         from_key.clone(),
                         to_key.clone(),
                         None,
-                        rng.clone(),
+                        mk_rng(&from_key, &to_key),
                     )
                 });
             channels
@@ -248,7 +260,7 @@ impl Simulator {
                         to_key.clone(),
                         from_key.clone(),
                         None,
-                        rng.clone(),
+                        mk_rng(&to_key, &from_key),
                     )
                 });
             tracing::info!(from = %from_node, to = %to_node, "Created bidirectional cloud channel");
@@ -337,20 +349,9 @@ impl Simulator {
     where
         F: Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
     {
-        // Initialize optional simulator-level RNG before parsing topology so
-        // channels created during topology parsing receive the same injected RNG.
-        let global_rng = if let Ok(s) = std::env::var("VPARAKEET_RNG_SEED") {
-            if let Ok(seed) = s.parse::<u64>() {
-                Some(Arc::new(Mutex::new(StdRng::seed_from_u64(seed))))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
 
         let (channels, namespaces, nodes, node_namespace_map) =
-            Self::parse_topology(&args.config_file, callback, global_rng.clone())?;
+            Self::parse_topology(&args.config_file, callback, std::env::var("VPARAKEET_RNG_SEED").ok().and_then(|s| s.parse::<u64>().ok()))?;
 
         // Parse optional Nakagami-m fading config.
         // VANET channels are now created dynamically by the fading task based on
