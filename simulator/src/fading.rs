@@ -343,14 +343,12 @@ mod tests {
     #[test]
     fn modes_share_base_loss() {
         let d = 50.0_f64;
-        let mut cfg = NakagamiConfig::default();
-        cfg.mode = NakagamiMode::Periodic;
-        cfg.model = NakagamiModel::Gamma;
+        let cfg = NakagamiConfig { mode: NakagamiMode::Periodic, model: NakagamiModel::Gamma, ..Default::default() };
         let p1 = sample_nakagami_loss(d, &cfg);
-        cfg.mode = NakagamiMode::PerPacket;
-        let p2 = sample_nakagami_loss(d, &cfg);
-        cfg.mode = NakagamiMode::Hybrid;
-        let p3 = sample_nakagami_loss(d, &cfg);
+        let cfg2 = NakagamiConfig { mode: NakagamiMode::PerPacket, model: NakagamiModel::Gamma, ..Default::default() };
+        let p2 = sample_nakagami_loss(d, &cfg2);
+        let cfg3 = NakagamiConfig { mode: NakagamiMode::Hybrid, model: NakagamiModel::Gamma, ..Default::default() };
+        let p3 = sample_nakagami_loss(d, &cfg3);
         assert!((p1 - p2).abs() < 1e-12 && (p2 - p3).abs() < 1e-12);
     }
 
