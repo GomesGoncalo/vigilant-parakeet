@@ -399,16 +399,6 @@ impl Simulator {
             })
             .collect();
 
-        // Initialize optional global RNG from environment for deterministic runs
-        let global_rng = if let Ok(s) = std::env::var("VPARAKEET_RNG_SEED") {
-            if let Ok(seed) = s.parse::<u64>() {
-                Some(Arc::new(Mutex::new(StdRng::seed_from_u64(seed))))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
 
         Ok(Self {
             namespaces,
@@ -423,7 +413,6 @@ impl Simulator {
             rssi_tables,
             vanet_channels: Arc::new(RwLock::new(HashMap::new())),
             vanet_node_info,
-            global_rng,
         })
     }
 
@@ -550,6 +539,20 @@ impl Simulator {
         }
 
         // Spawn Nakagami-m fading task if enabled (requires mobility positions).
+        // Prepare optional RNG seed and per-channel RNG factory before spawning tasks
+        let rng_seed: Option<u64> = std::env::var("VPARAKEET_RNG_SEED").ok().and_then(|s| s.parse::<u64>().ok());
+        let mk_rng = move |from: &str, to: &str| -> Option<Arc<Mutex<StdRng>>> {
+            if let Some(base) = rng_seed {
+                let mut h = base.wrapping_add(0x9E3779B97F4A7C15u64);
+                for b in from.as_bytes().iter().chain(to.as_bytes().iter()) {
+                    h = h.wrapping_mul(0x100000001b3u64).wrapping_add(*b as u64);
+                    h = h.rotate_left(13) ^ h;
+                }
+                Some(Arc::new(Mutex::new(StdRng::seed_from_u64(h))))
+            } else {
+                None
+            }
+        };
         //
         // The task runs every `update_ms` and, for each ordered pair of VANET nodes:
         //   • distance < max_range_m → create the channel if absent, then update
@@ -565,7 +568,6 @@ impl Simulator {
             let cfg = nak_cfg.clone();
             let vanet_channels = self.vanet_channels.clone();
             let vanet_node_info = self.vanet_node_info.clone();
-            let rng = self.global_rng.clone();
 
             // name → MAC, for RSSI table keying.
             let name_to_mac: HashMap<String, MacAddress> = self
@@ -669,7 +671,7 @@ impl Simulator {
                                 from.clone(),
                                 to.clone(),
                                 Some(cfg.clone()),
-                                rng.clone(),
+                                mk_rng(from.as_str(), to.as_str()),
                             );
                             channels
                                 .entry(from.clone())
@@ -784,7 +786,7 @@ impl Simulator {
                     name.clone(),
                     name.clone(),
                     None,
-                    self.global_rng.clone(),
+                    mk_rng(name.as_str(), name.as_str()),
                 );
                 future_set.push(Self::generate_channel_reads(name.clone(), reader_ch));
             }
