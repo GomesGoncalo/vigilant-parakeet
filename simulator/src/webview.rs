@@ -169,6 +169,7 @@ pub fn setup_routes(
     let node_info_endpoint = {
         let sim_nodes_full = sim_nodes_full.clone();
         let rssi_tables = rssi_tables.clone();
+        let nakagami_cfg = nakagami_config.clone();
         warp::get()
             .and(warp::path("node_info"))
             .and(warp::path::end())
@@ -218,12 +219,34 @@ pub fn setup_routes(
                             .get(name)
                             .and_then(|tbl| tbl.read().ok())
                             .and_then(|guard| guard.get(&r.mac).copied());
+                        // Prefer reported latency when available (measured via heartbeat replies).
+                        // Otherwise, estimate latency from RSSI → distance using the Nakagami
+                        // configured latency_ms_per_100m when available so the UI shows a
+                        // heuristic latency value instead of "NA".
+                        let latency_us = if let Some(d) = r.latency {
+                            Some(d.as_micros() as u64)
+                        } else if let (Some(rssi), Some(cfg)) = (rssi_dbm, nakagami_cfg.as_ref().as_ref()) {
+                            // Improved heuristic: derive distance from SNR path-loss model
+                            // using the Nakagami config. Assume a receiver noise floor (dBm)
+                            // to convert RSSI→SNR. The noise floor is conservative; make it
+                            // configurable later if needed.
+                            const NOISE_FLOOR_DB: f64 = -90.0;
+                            let snr_db = (rssi as f64) - NOISE_FLOOR_DB;
+                            // SNR_mean_db(d) = snr_0_db - 10 * eta * log10(d)
+                            // => d = 10^((snr_0_db - snr_db) / (10 * eta))
+                            let distance = 10.0_f64.powf((cfg.snr_0_db - snr_db) / (10.0 * cfg.eta));
+                            // Estimate latency from distance using latency_ms_per_100m
+                            let latency_ms = (distance / 100.0) * cfg.latency_ms_per_100m;
+                            Some((latency_ms * 1000.0) as u64)
+                        } else {
+                            None
+                        };
                         UpstreamInfo {
                             hops: r.hops,
                             mac: format!("{}", r.mac),
                             node_name: mac_map.get(&r.mac).cloned(),
                             rssi_dbm,
-                            latency_us: r.latency.map(|d| d.as_micros() as u64),
+                            latency_us,
                         }
                     });
 

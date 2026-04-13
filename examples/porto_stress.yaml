@@ -311,7 +311,7 @@ mobility:
   osm_cache: osm_cache.json
   tick_ms: 100
   min_trip_distance_m: 10000
-  desired_speed_ms: 13.9
+  desired_speed_ms: 25
 
 nakagami:
   enabled: true
@@ -320,6 +320,6 @@ nakagami:
   snr_0_db: 85.0      # Mean SNR at 1 m reference (dB); realistic for V2X DSRC TX power
   snr_thresh_db: 10.0 # Standard DSRC SNR threshold (dB); avoids cliff near hard cutoff
   max_range_m: 800.0  # Hard cut-off (m); covers RSU spacing gaps (~580–670 m with 6×8 grid)
-  latency_ms_per_100m: 0.5 # 0.5 ms/100m ≈ 5x realistic V2X propagation; keeps routing preference without inflating RTTs
+  latency_ms_per_100m: 2.0 # 0.5 ms/100m ≈ 5x realistic V2X propagation; keeps routing preference without inflating RTTs
   update_ms: 2       # How often to recompute fading (ms)
   default_mode: per_packet # Fading mode: per_packet, per_link, or none
