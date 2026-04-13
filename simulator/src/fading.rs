@@ -269,7 +269,7 @@ pub fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 mod tests {
     use super::*;
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngCore, SeedableRng};
 
     #[test]
     fn loss_zero_at_zero_distance() {
@@ -320,7 +320,7 @@ mod tests {
         let mut rng_local = StdRng::seed_from_u64(12345u64);
         let mut expected = Vec::new();
         for _ in 0..8 {
-            let v = rng_local.gen::<f64>();
+            let v = (rng_local.next_u64() as f64) / (u64::MAX as f64);
             expected.push(v < p);
         }
 
@@ -329,7 +329,7 @@ mod tests {
         let mut rng_for_test = StdRng::seed_from_u64(12345u64);
         let mut actual = Vec::new();
         for _ in 0..8 {
-            let v = rng_for_test.gen::<f64>();
+            let v = (rng_for_test.next_u64() as f64) / (u64::MAX as f64);
             actual.push(v < p);
         }
 
@@ -365,8 +365,8 @@ mod tests {
         let mut seq1 = Vec::new();
         let mut seq2 = Vec::new();
         for _ in 0..256 {
-            let v1 = r1.gen::<f64>();
-            let v2 = r2.gen::<f64>();
+            let v1 = (r1.next_u64() as f64) / (u64::MAX as f64);
+            let v2 = (r2.next_u64() as f64) / (u64::MAX as f64);
             seq1.push(v1 < p);
             seq2.push(v2 < p);
         }
