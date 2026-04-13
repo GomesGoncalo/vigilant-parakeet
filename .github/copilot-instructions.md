@@ -233,17 +233,12 @@ RUST_LOG=trace cargo test -p node_lib -- <test_name> -- --nocapture
 
 For visualization development:
 ```bash
-# Install wasm tools (optional)
-rustup target add wasm32-unknown-unknown
-cargo install wasm-pack trunk
+See native_viz/README.md for visualization build instructions.
 ```
 
 Test visualization:
 ```bash
-cd visualization
-cargo test  # Host tests
-wasm-pack test --headless --firefox  # WASM tests
-trunk build --release  # Build frontend
+# See native_viz/README.md for visualization test/build steps
 ```
 
 ## Commit Message Guidelines

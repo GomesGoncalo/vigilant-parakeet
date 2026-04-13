@@ -271,9 +271,7 @@ The simulator architecture is described in full in @implementation.
 
 === `visualization` — Browser Dashboard
 
-A Yew/WASM application compiled to WebAssembly and served from a static HTTP
-server. It polls the simulator's `/node_info` endpoint on a configurable
-interval and renders:
+A browser frontend (Yew-based) served from a static HTTP server. It polls the simulator's `/node_info` endpoint on a configurable interval and renders:
 
 - A live topology graph showing nodes and active links, with per-link
   channel parameters.

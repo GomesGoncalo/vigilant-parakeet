@@ -239,16 +239,9 @@ ip: 10.0.0.2
 
 ---
 
-## Visualization (WASM)
+## Visualization
 
-```bash
-rustup target add wasm32-unknown-unknown
-cargo install trunk
-
-cd visualization
-trunk build --release   # Build WASM frontend
-trunk serve             # Dev server
-```
+The visualization is now provided by the native visualization tooling and the simulator HTTP API. The repository no longer relies on a WASM frontend; see native_viz/README.md and the simulator HTTP API documentation for build and run instructions.
 
 ---
 

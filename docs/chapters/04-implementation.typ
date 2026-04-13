@@ -451,27 +451,11 @@ management API.
 
 == Visualisation Dashboard <sec-visualization>
 
-The browser-based visualisation dashboard (`visualization/`) is a
-Yew/WebAssembly application compiled to WASM and served alongside the simulator
-HTTP API. It provides a live read-only view of simulation state without
-modifying any node behaviour, making it suitable for demonstration and
-monitoring without experimental side effects.
+The visualization dashboard is provided by the native_viz tool and the simulator HTTP API. It provides a live read-only view of simulation state without modifying any node behaviour, making it suitable for demonstration and monitoring without experimental side effects.
 
 === Technology Stack
 
-The frontend is written in Rust using the *Yew* framework — a component-based
-web UI library analogous to React, but compiled from Rust to WebAssembly via
-`wasm-bindgen`. Building and serving the dashboard requires `trunk`, a Rust
-WASM bundler:
-
-```sh
-rustup target add wasm32-unknown-unknown
-cargo install trunk
-
-cd visualization
-trunk build --release   # produces dist/ with index.html + wasm bundle
-trunk serve             # dev server with live reload
-```
+The frontend is implemented in a dedicated visualization crate and consumes the simulator HTTP API. See native_viz/README.md for build and run instructions for the native visualization tooling.
 
 The Yew component model maps directly onto the simulator's data model:
 `NodeState`, `ChannelState`, and `UpstreamState` structs are shared with the
