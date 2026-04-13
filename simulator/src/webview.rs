@@ -59,15 +59,25 @@ pub fn setup_routes(
                 let map: HashMap<String, serde_json::Value> = sim_nodes
                     .iter()
                     .map(|(node, (device, tun, _node))| {
-                        let dev = if cfg!(feature = "stats") {
-                            serde_json::to_value(device.stats()).unwrap_or(serde_json::Value::Null)
-                        } else {
-                            serde_json::Value::Null
+                        let dev = {
+                            #[cfg(feature = "stats")]
+                            {
+                                serde_json::to_value(device.stats()).unwrap_or(serde_json::Value::Null)
+                            }
+                            #[cfg(not(feature = "stats"))]
+                            {
+                                serde_json::Value::Null
+                            }
                         };
-                        let tunv = if cfg!(feature = "stats") {
-                            serde_json::to_value(tun.stats()).unwrap_or(serde_json::Value::Null)
-                        } else {
-                            serde_json::Value::Null
+                        let tunv = {
+                            #[cfg(feature = "stats")]
+                            {
+                                serde_json::to_value(tun.stats()).unwrap_or(serde_json::Value::Null)
+                            }
+                            #[cfg(not(feature = "stats"))]
+                            {
+                                serde_json::Value::Null
+                            }
                         };
                         (node.clone(), json!({"device": dev, "tun": tunv}))
                     })
@@ -86,15 +96,25 @@ pub fn setup_routes(
                 let Some(reply) = sim_nodes
                     .get(&node)
                     .map(|(device, tun, _node)| {
-                        let dev = if cfg!(feature = "stats") {
-                            serde_json::to_value(device.stats()).unwrap_or(serde_json::Value::Null)
-                        } else {
-                            serde_json::Value::Null
+                        let dev = {
+                            #[cfg(feature = "stats")]
+                            {
+                                serde_json::to_value(device.stats()).unwrap_or(serde_json::Value::Null)
+                            }
+                            #[cfg(not(feature = "stats"))]
+                            {
+                                serde_json::Value::Null
+                            }
                         };
-                        let tunv = if cfg!(feature = "stats") {
-                            serde_json::to_value(tun.stats()).unwrap_or(serde_json::Value::Null)
-                        } else {
-                            serde_json::Value::Null
+                        let tunv = {
+                            #[cfg(feature = "stats")]
+                            {
+                                serde_json::to_value(tun.stats()).unwrap_or(serde_json::Value::Null)
+                            }
+                            #[cfg(not(feature = "stats"))]
+                            {
+                                serde_json::Value::Null
+                            }
                         };
                         (dev, tunv)
                     })
