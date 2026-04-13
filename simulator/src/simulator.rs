@@ -138,6 +138,7 @@ impl Simulator {
     fn parse_topology(
         config_file: &str,
         callback: impl Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
+        rng: Option<Arc<Mutex<StdRng>>>,
     ) -> Result<(
         HashMap<String, HashMap<String, Arc<Channel>>>,
         Vec<NamespaceWrapper>,
@@ -184,7 +185,7 @@ impl Simulator {
                                 tnode.to_string(),
                                 node.to_string(),
                                 None,
-                                None,
+                                rng.clone(),
                             ),
                         );
                     }
@@ -232,7 +233,7 @@ impl Simulator {
                         from_key.clone(),
                         to_key.clone(),
                         None,
-                        None,
+                        rng.clone(),
                     )
                 });
             channels
@@ -247,7 +248,7 @@ impl Simulator {
                         to_key.clone(),
                         from_key.clone(),
                         None,
-                        None,
+                        rng.clone(),
                     )
                 });
             tracing::info!(from = %from_node, to = %to_node, "Created bidirectional cloud channel");
@@ -336,8 +337,20 @@ impl Simulator {
     where
         F: Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
     {
+        // Initialize optional simulator-level RNG before parsing topology so
+        // channels created during topology parsing receive the same injected RNG.
+        let global_rng = if let Ok(s) = std::env::var("VPARAKEET_RNG_SEED") {
+            if let Ok(seed) = s.parse::<u64>() {
+                Some(Arc::new(Mutex::new(StdRng::seed_from_u64(seed))))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let (channels, namespaces, nodes, node_namespace_map) =
-            Self::parse_topology(&args.config_file, callback)?;
+            Self::parse_topology(&args.config_file, callback, global_rng.clone())?;
 
         // Parse optional Nakagami-m fading config.
         // VANET channels are now created dynamically by the fading task based on
@@ -770,7 +783,7 @@ impl Simulator {
                     name.clone(),
                     name.clone(),
                     None,
-                    None,
+                    self.global_rng.clone(),
                 );
                 future_set.push(Self::generate_channel_reads(name.clone(), reader_ch));
             }
