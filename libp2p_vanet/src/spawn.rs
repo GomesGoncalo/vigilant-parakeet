@@ -9,7 +9,7 @@ use libp2p::{
     gossipsub::IdentTopic,
     identity::Keypair,
     noise,
-    swarm::SwarmEvent,
+    swarm::{dial_opts::DialOpts, SwarmEvent},
     yamux, SwarmBuilder, Transport,
 };
 use mac_address::MacAddress;
@@ -108,18 +108,30 @@ pub fn spawn_obu_gossipsub_task(
 
         let rsu_addr: libp2p::Multiaddr =
             format!("/memory/{rsu_memory_port}").parse().expect("addr");
-        if let Err(e) = swarm.dial(rsu_addr) {
-            tracing::warn!(error = %e, "OBU GossipSub dial RSU failed");
-            return;
-        }
+
+        let dial = |swarm: &mut libp2p::Swarm<VanetBehaviour>| {
+            let opts = DialOpts::unknown_peer_id()
+                .address(rsu_addr.clone())
+                .build();
+            if let Err(e) = swarm.dial(opts) {
+                tracing::warn!(error = %e, "OBU GossipSub initial dial failed");
+            }
+        };
+        dial(&mut swarm);
 
         loop {
-            let event = swarm.select_next_some().await;
-            if let SwarmEvent::Behaviour(VanetBehaviourEvent::Gossipsub(
-                libp2p::gossipsub::Event::Message { message, .. },
-            )) = event
-            {
-                handle_heartbeat(message.data);
+            match swarm.select_next_some().await {
+                SwarmEvent::Behaviour(VanetBehaviourEvent::Gossipsub(
+                    libp2p::gossipsub::Event::Message { message, .. },
+                )) => {
+                    handle_heartbeat(message.data);
+                }
+                SwarmEvent::OutgoingConnectionError { error, .. } => {
+                    tracing::debug!(error = %error, "OBU GossipSub connection failed, retrying");
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    dial(&mut swarm);
+                }
+                _ => {}
             }
         }
     });
