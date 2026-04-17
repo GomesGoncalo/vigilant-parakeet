@@ -1,5 +1,5 @@
 [workspace]
-members = [ "common", "node_lib", "rsu_lib", "obu_lib", "server_lib", "simulator", "node", "keygen", "visualization", "scripts_tools", "native_viz" ]
+members = [ "common", "node_lib", "rsu_lib", "obu_lib", "server_lib", "simulator", "node", "keygen", "visualization", "scripts_tools", "native_viz", "libp2p_vanet" ]
 resolver = "2"
 
 [profile.release]

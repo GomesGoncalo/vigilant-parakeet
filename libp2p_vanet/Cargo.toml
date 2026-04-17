@@ -1,0 +1,25 @@
+[package]
+name = "libp2p_vanet"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../common", features = ["test_helpers"] }
+libp2p = { version = "0.56", features = [
+    "gossipsub",
+    "noise",
+    "yamux",
+    "tokio",
+    "identify",
+    "macros",
+] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+thiserror = "2"
+mac_address = "1"
+bytes = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

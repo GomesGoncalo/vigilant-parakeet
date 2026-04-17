@@ -10,6 +10,9 @@ pub mod control;
 
 pub use control::Rsu;
 
+#[cfg(feature = "libp2p_gossipsub")]
+pub mod gossipsub;
+
 #[cfg(any(test, feature = "test_helpers"))]
 pub mod test_helpers;
 
