@@ -44,6 +44,7 @@ webview = [ "dep:warp", "dep:serde_json", "node_lib/stats" ]
 tui = [ "dep:ratatui", "dep:crossterm", "dep:sysinfo" ]
 test_helpers = [ "common/test_helpers", "node_lib/test_helpers", "obu_lib/test_helpers", "rsu_lib/test_helpers" ]
 mobility = [ "dep:reqwest", "dep:petgraph", "dep:serde_json" ]
+libp2p_gossipsub = [ "rsu_lib/libp2p_gossipsub", "obu_lib/libp2p_gossipsub" ]
 
 [dev-dependencies]
 serde_json = "*"

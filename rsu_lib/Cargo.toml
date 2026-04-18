@@ -23,6 +23,7 @@ serde = { version = "*", features = ["derive"]}
 common = { path = "../common/" }
 node_lib = { path = "../node_lib/" }
 server_lib = { path = "../server_lib/" }
+libp2p_vanet = { path = "../libp2p_vanet", optional = true }
 arc-swap = { version = "*" }
 tracing-subscriber = { version = "*", features = ["env-filter"] }
 thiserror = "*"
@@ -30,6 +31,7 @@ thiserror = "*"
 [features]
 stats = [ "common/stats", "node_lib/stats" ]
 test_helpers = [ "common/test_helpers", "node_lib/test_helpers" ]
+libp2p_gossipsub = [ "dep:libp2p_vanet" ]
 
 [dev-dependencies]
 criterion = "0.5"

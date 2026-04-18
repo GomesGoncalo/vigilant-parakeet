@@ -8,6 +8,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use common::device::Device;
+#[cfg(feature = "libp2p_gossipsub")]
+use common::network_interface::NetworkInterface;
 
 use crate::interface_builder::InterfaceBuilder;
 use crate::node_interfaces::{NodeCreationResult, NodeInterfaces};
@@ -267,6 +269,13 @@ pub fn create_node_from_settings(
             }
         }
 
+        #[cfg(feature = "libp2p_gossipsub")]
+        {
+            let obu_mac = dev.mac_address();
+            obu_lib::gossipsub::spawn_gossipsub_task(obu_mac, obu.routing_shared());
+            tracing::info!(obu_mac = %obu_mac, "OBU GossipSub task spawned");
+        }
+
         let node = SimNode::Obu(obu);
         let interfaces = NodeInterfaces::obu(vanet_tun, virtual_tun.clone(), Some(ip));
         Ok(NodeCreationResult::new(dev, interfaces, node))
@@ -302,18 +311,20 @@ pub fn create_node_from_settings(
             .and_then(|p| u16::try_from(p).ok())
             .unwrap_or(8080);
 
+        let hello_periodicity: u32 = settings
+            .get_int("hello_periodicity")
+            .map(|x| u32::try_from(x).ok())
+            .ok()
+            .flatten()
+            .ok_or_else(|| anyhow::anyhow!("hello_periodicity is required"))?;
+
         let rsu_args = rsu_lib::RsuArgs {
             bind: vanet_tun.name().to_string(),
             mtu,
             cloud_ip: Some(external_ip),
             rsu_params: rsu_lib::RsuParameters {
                 hello_history,
-                hello_periodicity: settings
-                    .get_int("hello_periodicity")
-                    .map(|x| u32::try_from(x).ok())
-                    .ok()
-                    .flatten()
-                    .ok_or_else(|| anyhow::anyhow!("hello_periodicity is required"))?,
+                hello_periodicity,
                 cached_candidates,
                 server_ip,
                 server_port,
@@ -336,6 +347,17 @@ pub fn create_node_from_settings(
             if let Err(e) = rsu_lib::admin::spawn(rsu.clone(), listener) {
                 tracing::warn!(error = %e, "Failed to spawn RSU admin accept loop (non-fatal)");
             }
+        }
+
+        #[cfg(feature = "libp2p_gossipsub")]
+        {
+            let rsu_mac = dev.mac_address();
+            rsu_lib::gossipsub::spawn_gossipsub_task(
+                rsu_mac,
+                rsu.routing_shared(),
+                hello_periodicity,
+            );
+            tracing::info!(mac = %rsu_mac, "RSU GossipSub task spawned");
         }
 
         let node = SimNode::Rsu(rsu);

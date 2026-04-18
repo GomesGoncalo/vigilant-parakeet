@@ -81,6 +81,9 @@ async fn main() -> Result<()> {
         }
     }
 
+    #[cfg(feature = "libp2p_gossipsub")]
+    rsu_lib::gossipsub::start_bootstrap();
+
     let simulator = std::sync::Arc::new(
         Simulator::new(&args, |name, config| {
             let Some(config) = config.get("config_path") else {
