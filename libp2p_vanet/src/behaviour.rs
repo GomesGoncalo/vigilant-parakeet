@@ -25,12 +25,33 @@ impl VanetBehaviour {
         keypair: &Keypair,
         topics: &[IdentTopic],
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::build(keypair, topics, 3, 2, 6)
+    }
+
+    /// Construct the relay/bootstrap behaviour with a large mesh capacity.
+    ///
+    /// Used by the in-process bootstrap node so it can hold all RSU and OBU
+    /// swarms in its mesh without pruning them.
+    pub fn new_relay(
+        keypair: &Keypair,
+        topics: &[IdentTopic],
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::build(keypair, topics, 100, 1, 1000)
+    }
+
+    fn build(
+        keypair: &Keypair,
+        topics: &[IdentTopic],
+        mesh_n: usize,
+        mesh_n_low: usize,
+        mesh_n_high: usize,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let gossipsub_config = gossipsub::ConfigBuilder::default()
             .heartbeat_interval(Duration::from_millis(50))
             .validation_mode(ValidationMode::Strict)
-            .mesh_n(3)
-            .mesh_n_low(2)
-            .mesh_n_high(6)
+            .mesh_n(mesh_n)
+            .mesh_n_low(mesh_n_low)
+            .mesh_n_high(mesh_n_high)
             .build()
             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
                 format!("gossipsub config error: {e}").into()

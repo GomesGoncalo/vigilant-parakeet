@@ -15,10 +15,11 @@ use crate::control::routing::Routing;
 /// Spawn a GossipSub heartbeat-receiving task alongside this OBU's existing
 /// raw-L2 wire traffic loop.
 ///
-/// `rsu_memory_port` should be derived via
-/// `libp2p_vanet::spawn::rsu_memory_port(rsu_mac)`.
-pub fn spawn_gossipsub_task(obu_mac: MacAddress, routing: Shared<Routing>, rsu_memory_port: u64) {
-    spawn_obu_gossipsub_task(rsu_memory_port, move |bytes: Vec<u8>| {
+/// The task dials the shared in-process bootstrap relay — no RSU address is
+/// needed.  This is correct for mobile OBUs that may be in range of different
+/// RSUs over time: the bootstrap relays heartbeats from all RSUs.
+pub fn spawn_gossipsub_task(obu_mac: MacAddress, routing: Shared<Routing>) {
+    spawn_obu_gossipsub_task(move |bytes: Vec<u8>| {
         let msg = match Message::try_from(bytes.as_slice()) {
             Ok(m) => m,
             Err(e) => {

@@ -270,18 +270,10 @@ pub fn create_node_from_settings(
         }
 
         #[cfg(feature = "libp2p_gossipsub")]
-        if let Ok(rsu_mac_str) = settings.get_string("rsu_mac") {
-            if let Some(rsu_mac_bytes) = parse_mac(&rsu_mac_str) {
-                let rsu_mac: MacAddress = rsu_mac_bytes.into();
-                let port = rsu_lib::gossipsub::memory_port(rsu_mac);
-                let obu_mac = dev.mac_address();
-                obu_lib::gossipsub::spawn_gossipsub_task(obu_mac, obu.routing_shared(), port);
-                tracing::info!(
-                    obu_mac = %obu_mac,
-                    rsu_mac = %rsu_mac,
-                    "OBU GossipSub task spawned"
-                );
-            }
+        {
+            let obu_mac = dev.mac_address();
+            obu_lib::gossipsub::spawn_gossipsub_task(obu_mac, obu.routing_shared());
+            tracing::info!(obu_mac = %obu_mac, "OBU GossipSub task spawned");
         }
 
         let node = SimNode::Obu(obu);
