@@ -139,6 +139,12 @@ impl Rsu {
         self.device.mac_address()
     }
 
+    /// Return a shared handle to the routing table (for GossipSub integration).
+    #[cfg(feature = "libp2p_gossipsub")]
+    pub fn routing_shared(&self) -> Shared<routing::Routing> {
+        self.routing.clone()
+    }
+
     /// Return all known OBU clients: `(obu_mac, via_mac)`.
     pub fn get_clients(&self) -> Vec<(MacAddress, MacAddress)> {
         self.cache

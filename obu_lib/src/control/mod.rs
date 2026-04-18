@@ -150,6 +150,12 @@ impl Obu {
         self.device.mac_address()
     }
 
+    /// Return a shared handle to the routing table (for GossipSub integration).
+    #[cfg(feature = "libp2p_gossipsub")]
+    pub fn routing_shared(&self) -> Shared<routing::Routing> {
+        self.routing.clone()
+    }
+
     /// Return the ordered list of cached upstream candidates (primary first).
     pub fn get_upstream_candidates(&self) -> Vec<MacAddress> {
         self.routing

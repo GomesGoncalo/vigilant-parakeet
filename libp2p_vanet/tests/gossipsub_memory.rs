@@ -48,9 +48,8 @@ async fn gossipsub_heartbeat_delivery() {
 
     // Give the RSU swarm a tick to register the listener.
     loop {
-        match rsu_swarm.select_next_some().await {
-            SwarmEvent::NewListenAddr { .. } => break,
-            _ => {}
+        if let SwarmEvent::NewListenAddr { .. } = rsu_swarm.select_next_some().await {
+            break;
         }
     }
 
