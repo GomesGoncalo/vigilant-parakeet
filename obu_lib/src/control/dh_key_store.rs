@@ -33,6 +33,8 @@ pub struct EstablishedKey {
     pub key: Vec<u8>,
     pub key_id: u32,
     pub established_at: Instant,
+    /// Wall-clock duration of the handshake (init → established), in milliseconds.
+    pub handshake_duration_ms: u64,
 }
 
 /// Per-peer DH key store managing pending exchanges and established keys.
@@ -211,6 +213,7 @@ impl DhKeyStore {
                 key: derived_key.clone(),
                 key_id,
                 established_at: Instant::now(),
+                handshake_duration_ms: session_duration.as_millis() as u64,
             },
         );
 
@@ -278,6 +281,7 @@ impl DhKeyStore {
                 key: derived_key,
                 key_id,
                 established_at: Instant::now(),
+                handshake_duration_ms: 0,
             },
         );
 
@@ -336,6 +340,30 @@ impl DhKeyStore {
     pub fn get_session_info(&self, peer: MacAddress) -> Option<(u32, u64)> {
         let key = self.established.get(&peer.bytes())?;
         Some((key.key_id, key.established_at.elapsed().as_secs()))
+    }
+
+    /// Return `(key_id, handshake_duration_ms, age_ms, dh_group_str, signing_algo_str)`
+    /// for the established session with a peer, if any.
+    pub fn session_timing_info(
+        &self,
+        peer: MacAddress,
+    ) -> Option<(u32, u64, u64, &'static str, &'static str)> {
+        let key = self.established.get(&peer.bytes())?;
+        let dh_group = match self.crypto_config.dh_group {
+            node_lib::crypto::DhGroup::X25519 => "x25519",
+            node_lib::crypto::DhGroup::MlKem768 => "ml-kem-768",
+        };
+        let signing = match self.crypto_config.signing_algorithm {
+            node_lib::crypto::SigningAlgorithm::Ed25519 => "ed25519",
+            node_lib::crypto::SigningAlgorithm::MlDsa65 => "ml-dsa-65",
+        };
+        Some((
+            key.key_id,
+            key.handshake_duration_ms,
+            key.established_at.elapsed().as_millis() as u64,
+            dh_group,
+            signing,
+        ))
     }
 
     /// Clear any established key and pending exchange for a peer.

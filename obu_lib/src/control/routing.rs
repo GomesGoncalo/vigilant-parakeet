@@ -249,8 +249,8 @@ const RSSI_HOP_PENALTY_DB: f32 = 0.5;
 
 // Force-prefer multi-hop when direct RSSI drops below this threshold.
 const RSSI_FORCE_THRESHOLD_DB: f32 = -60.0; // user-chosen
-// Minimum dB margin a multi-hop candidate must beat the cached effective RSSI by
-const RSSI_FORCE_MARGIN_DB: f32 = 0.5;
+                                            // Minimum dB margin a multi-hop candidate must beat the cached effective RSSI by
+const RSSI_FORCE_MARGIN_DB: f32 = 0.0;
 // Per-source cooldown (seconds) to avoid flapping when forcing switches
 const SWITCH_COOLDOWN_SECS: u64 = 3;
 
@@ -1120,14 +1120,24 @@ impl Routing {
                                                 .unwrap_or(std::cmp::Ordering::Equal)
                                         });
                                     if let Some(mc) = multi_candidate {
-                                        if eff_rssi(mc) >= eff_rssi(cached_mac) + RSSI_FORCE_MARGIN_DB {
+                                        if eff_rssi(mc)
+                                            >= eff_rssi(cached_mac) + RSSI_FORCE_MARGIN_DB
+                                        {
                                             // Respect cooldown
-                                            let mut ls = self.last_switch.lock().expect("last_switch lock");
-                                            let allow = ls.get(&cached_mac).map_or(true, |t| now.duration_since(*t).as_secs() >= SWITCH_COOLDOWN_SECS);
+                                            let mut ls =
+                                                self.last_switch.lock().expect("last_switch lock");
+                                            let allow = ls.get(&cached_mac).map_or(true, |t| {
+                                                now.duration_since(*t).as_secs()
+                                                    >= SWITCH_COOLDOWN_SECS
+                                            });
                                             if allow {
                                                 ls.insert(cached_mac, now);
                                                 let hops = upstream_hops[&mc];
-                                                return Some(Route { mac: mc, hops, latency: None });
+                                                return Some(Route {
+                                                    mac: mc,
+                                                    hops,
+                                                    latency: None,
+                                                });
                                             }
                                         }
                                     }

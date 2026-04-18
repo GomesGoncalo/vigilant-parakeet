@@ -225,7 +225,9 @@ pub fn setup_routes(
                         // heuristic latency value instead of "NA".
                         let latency_us = if let Some(d) = r.latency {
                             Some(d.as_micros() as u64)
-                        } else if let (Some(rssi), Some(cfg)) = (rssi_dbm, nakagami_cfg.as_ref().as_ref()) {
+                        } else if let (Some(rssi), Some(cfg)) =
+                            (rssi_dbm, nakagami_cfg.as_ref().as_ref())
+                        {
                             // Improved heuristic: derive distance from SNR path-loss model
                             // using the Nakagami config. Assume a receiver noise floor (dBm)
                             // to convert RSSI→SNR. The noise floor is conservative; make it
@@ -234,7 +236,8 @@ pub fn setup_routes(
                             let snr_db = (rssi as f64) - NOISE_FLOOR_DB;
                             // SNR_mean_db(d) = snr_0_db - 10 * eta * log10(d)
                             // => d = 10^((snr_0_db - snr_db) / (10 * eta))
-                            let distance = 10.0_f64.powf((cfg.snr_0_db - snr_db) / (10.0 * cfg.eta));
+                            let distance =
+                                10.0_f64.powf((cfg.snr_0_db - snr_db) / (10.0 * cfg.eta));
                             // Estimate latency from distance using latency_ms_per_100m
                             let latency_ms = (distance / 100.0) * cfg.latency_ms_per_100m;
                             Some((latency_ms * 1000.0) as u64)

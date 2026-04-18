@@ -1,0 +1,5 @@
+# Generated node config
+node_type: Obu
+hello_history: 10
+hello_periodicity: 5000
+ip: 10.0.2.192

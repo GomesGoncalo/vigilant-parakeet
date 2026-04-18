@@ -269,18 +269,15 @@ The simulator is the central orchestration layer. Its responsibilities are:
 
 The simulator architecture is described in full in @implementation.
 
-=== `visualization` — Browser Dashboard
+=== `visualization` — Native Dashboard
 
-A browser frontend (Yew-based) served from a static HTTP server. It polls the simulator's `/node_info` endpoint on a configurable interval and renders:
+The native visualization (native_viz) is provided as a separate native application that consumes the simulator HTTP API. It polls the `/node_info` endpoint on a configurable interval and renders:
 
-- A live topology graph showing nodes and active links, with per-link
-  channel parameters.
+- A live topology graph showing nodes and active links, with per-link channel parameters.
 - Per-node traffic counters updated in real time.
-- Upstream routing state for each OBU, showing the currently selected relay
-  path toward each RSU.
+- Upstream routing state for each OBU, showing the currently selected relay path toward each RSU.
 
-The visualisation is purely read-only and stateless: all state lives in the
-simulator; the browser is a rendering frontend with no persistent storage.
+The visualization is read-only and stateless: all authoritative state lives in the simulator; the dashboard is a rendering frontend with no persistent storage. The native implementation is optimised for large node counts: icon bitmaps are cached and reused; marker layers are grouped by node type; directional routing arrows are rendered using a lightweight canvas overlay rather than heavyweight SVG per-edge geometry. Performance-sensitive paths use a native polling path that updates map layers directly and minimises main-thread work, improving responsiveness on lower-power clients.
 
 === `scripts_tools` — Experiment Analysis CLI
 
