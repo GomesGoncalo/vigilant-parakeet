@@ -1,0 +1,58 @@
+# Thesis topology: Star-5
+#
+#   server1
+#     └── rsu1  (cloud channel, auto-created)
+#           ├── obu1
+#           ├── obu2
+#           ├── obu3
+#           └── obu4
+#
+# All four OBUs connect directly to rsu1 (single hop).
+# Tests tie-breaking under higher node density: four OBUs compete for the same RSU,
+# exercising the routing score comparison and hysteresis paths.
+# hello_periodicity = 500 ms.
+
+nodes:
+  server1:
+    config_path: examples/thesis/star-5/nodes/server1.yaml
+  rsu1:
+    config_path: examples/thesis/star-5/nodes/rsu1.yaml
+  obu1:
+    config_path: examples/thesis/star-5/nodes/obu1.yaml
+  obu2:
+    config_path: examples/thesis/star-5/nodes/obu2.yaml
+  obu3:
+    config_path: examples/thesis/star-5/nodes/obu3.yaml
+  obu4:
+    config_path: examples/thesis/star-5/nodes/obu4.yaml
+
+topology:
+  rsu1:
+    obu1:
+      latency: 10
+      loss: 0.0
+    obu2:
+      latency: 10
+      loss: 0.0
+    obu3:
+      latency: 10
+      loss: 0.0
+    obu4:
+      latency: 10
+      loss: 0.0
+  obu1:
+    rsu1:
+      latency: 10
+      loss: 0.0
+  obu2:
+    rsu1:
+      latency: 10
+      loss: 0.0
+  obu3:
+    rsu1:
+      latency: 10
+      loss: 0.0
+  obu4:
+    rsu1:
+      latency: 10
+      loss: 0.0

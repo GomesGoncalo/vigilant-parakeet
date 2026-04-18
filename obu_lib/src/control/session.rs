@@ -168,6 +168,15 @@ impl CryptoState {
             .get_session_info(server_virtual_mac())
     }
 
+    /// Return `(key_id, handshake_duration_ms, age_ms, dh_group, signing_algo)` for
+    /// the established session with the server, if any.
+    pub(super) fn get_session_timing(&self) -> Option<(u32, u64, u64, &'static str, &'static str)> {
+        self.dh_key_store
+            .read()
+            .expect("dh key store read lock poisoned")
+            .session_timing_info(server_virtual_mac())
+    }
+
     /// Immediately trigger a DH re-key exchange, bypassing the normal interval.
     ///
     /// Clears the current established session (if any) and wakes the re-keying

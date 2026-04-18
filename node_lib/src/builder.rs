@@ -191,7 +191,7 @@ impl NodeBuilder {
                 .build()?
                 .into_iter()
                 .next()
-                .ok_or_else(|| anyhow!("no tun devices returned from TokioTun builder"))?
+                .ok_or_else(|| anyhow!("Failed to get TUN device after creation"))?
         } else {
             RealTokioTun::builder()
                 .name(self.tap_name.as_ref().unwrap_or(&String::default()))
@@ -201,7 +201,7 @@ impl NodeBuilder {
                 .build()?
                 .into_iter()
                 .next()
-                .ok_or_else(|| anyhow!("no tun devices returned from TokioTun builder"))?
+                .ok_or_else(|| anyhow!("Failed to get TUN device after creation"))?
         };
 
         Ok(Arc::new(Tun::new_real(real_tun)))

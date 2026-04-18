@@ -1,0 +1,2024 @@
+# Generated simulator config
+nodes:
+  obu1:
+    config_path: nodes/obu1.yaml
+  obu2:
+    config_path: nodes/obu2.yaml
+  obu3:
+    config_path: nodes/obu3.yaml
+  obu4:
+    config_path: nodes/obu4.yaml
+  obu5:
+    config_path: nodes/obu5.yaml
+  obu6:
+    config_path: nodes/obu6.yaml
+  obu7:
+    config_path: nodes/obu7.yaml
+  obu8:
+    config_path: nodes/obu8.yaml
+  obu9:
+    config_path: nodes/obu9.yaml
+  obu10:
+    config_path: nodes/obu10.yaml
+  obu11:
+    config_path: nodes/obu11.yaml
+  obu12:
+    config_path: nodes/obu12.yaml
+  obu13:
+    config_path: nodes/obu13.yaml
+  obu14:
+    config_path: nodes/obu14.yaml
+  obu15:
+    config_path: nodes/obu15.yaml
+  obu16:
+    config_path: nodes/obu16.yaml
+  obu17:
+    config_path: nodes/obu17.yaml
+  obu18:
+    config_path: nodes/obu18.yaml
+  obu19:
+    config_path: nodes/obu19.yaml
+  obu20:
+    config_path: nodes/obu20.yaml
+  obu21:
+    config_path: nodes/obu21.yaml
+  obu22:
+    config_path: nodes/obu22.yaml
+  obu23:
+    config_path: nodes/obu23.yaml
+  obu24:
+    config_path: nodes/obu24.yaml
+  obu25:
+    config_path: nodes/obu25.yaml
+  obu26:
+    config_path: nodes/obu26.yaml
+  obu27:
+    config_path: nodes/obu27.yaml
+  obu28:
+    config_path: nodes/obu28.yaml
+  obu29:
+    config_path: nodes/obu29.yaml
+  obu30:
+    config_path: nodes/obu30.yaml
+  obu31:
+    config_path: nodes/obu31.yaml
+  obu32:
+    config_path: nodes/obu32.yaml
+  obu33:
+    config_path: nodes/obu33.yaml
+  obu34:
+    config_path: nodes/obu34.yaml
+  obu35:
+    config_path: nodes/obu35.yaml
+  obu36:
+    config_path: nodes/obu36.yaml
+  obu37:
+    config_path: nodes/obu37.yaml
+  obu38:
+    config_path: nodes/obu38.yaml
+  obu39:
+    config_path: nodes/obu39.yaml
+  obu40:
+    config_path: nodes/obu40.yaml
+  obu41:
+    config_path: nodes/obu41.yaml
+  obu42:
+    config_path: nodes/obu42.yaml
+  obu43:
+    config_path: nodes/obu43.yaml
+  obu44:
+    config_path: nodes/obu44.yaml
+  obu45:
+    config_path: nodes/obu45.yaml
+  obu46:
+    config_path: nodes/obu46.yaml
+  obu47:
+    config_path: nodes/obu47.yaml
+  obu48:
+    config_path: nodes/obu48.yaml
+  obu49:
+    config_path: nodes/obu49.yaml
+  obu50:
+    config_path: nodes/obu50.yaml
+  obu51:
+    config_path: nodes/obu51.yaml
+  obu52:
+    config_path: nodes/obu52.yaml
+  obu53:
+    config_path: nodes/obu53.yaml
+  obu54:
+    config_path: nodes/obu54.yaml
+  obu55:
+    config_path: nodes/obu55.yaml
+  obu56:
+    config_path: nodes/obu56.yaml
+  obu57:
+    config_path: nodes/obu57.yaml
+  obu58:
+    config_path: nodes/obu58.yaml
+  obu59:
+    config_path: nodes/obu59.yaml
+  obu60:
+    config_path: nodes/obu60.yaml
+  obu61:
+    config_path: nodes/obu61.yaml
+  obu62:
+    config_path: nodes/obu62.yaml
+  obu63:
+    config_path: nodes/obu63.yaml
+  obu64:
+    config_path: nodes/obu64.yaml
+  obu65:
+    config_path: nodes/obu65.yaml
+  obu66:
+    config_path: nodes/obu66.yaml
+  obu67:
+    config_path: nodes/obu67.yaml
+  obu68:
+    config_path: nodes/obu68.yaml
+  obu69:
+    config_path: nodes/obu69.yaml
+  obu70:
+    config_path: nodes/obu70.yaml
+  obu71:
+    config_path: nodes/obu71.yaml
+  obu72:
+    config_path: nodes/obu72.yaml
+  obu73:
+    config_path: nodes/obu73.yaml
+  obu74:
+    config_path: nodes/obu74.yaml
+  obu75:
+    config_path: nodes/obu75.yaml
+  obu76:
+    config_path: nodes/obu76.yaml
+  obu77:
+    config_path: nodes/obu77.yaml
+  obu78:
+    config_path: nodes/obu78.yaml
+  obu79:
+    config_path: nodes/obu79.yaml
+  obu80:
+    config_path: nodes/obu80.yaml
+  obu81:
+    config_path: nodes/obu81.yaml
+  obu82:
+    config_path: nodes/obu82.yaml
+  obu83:
+    config_path: nodes/obu83.yaml
+  obu84:
+    config_path: nodes/obu84.yaml
+  obu85:
+    config_path: nodes/obu85.yaml
+  obu86:
+    config_path: nodes/obu86.yaml
+  obu87:
+    config_path: nodes/obu87.yaml
+  obu88:
+    config_path: nodes/obu88.yaml
+  obu89:
+    config_path: nodes/obu89.yaml
+  obu90:
+    config_path: nodes/obu90.yaml
+  obu91:
+    config_path: nodes/obu91.yaml
+  obu92:
+    config_path: nodes/obu92.yaml
+  obu93:
+    config_path: nodes/obu93.yaml
+  obu94:
+    config_path: nodes/obu94.yaml
+  obu95:
+    config_path: nodes/obu95.yaml
+  obu96:
+    config_path: nodes/obu96.yaml
+  obu97:
+    config_path: nodes/obu97.yaml
+  obu98:
+    config_path: nodes/obu98.yaml
+  obu99:
+    config_path: nodes/obu99.yaml
+  obu100:
+    config_path: nodes/obu100.yaml
+  obu101:
+    config_path: nodes/obu101.yaml
+  obu102:
+    config_path: nodes/obu102.yaml
+  obu103:
+    config_path: nodes/obu103.yaml
+  obu104:
+    config_path: nodes/obu104.yaml
+  obu105:
+    config_path: nodes/obu105.yaml
+  obu106:
+    config_path: nodes/obu106.yaml
+  obu107:
+    config_path: nodes/obu107.yaml
+  obu108:
+    config_path: nodes/obu108.yaml
+  obu109:
+    config_path: nodes/obu109.yaml
+  obu110:
+    config_path: nodes/obu110.yaml
+  obu111:
+    config_path: nodes/obu111.yaml
+  obu112:
+    config_path: nodes/obu112.yaml
+  obu113:
+    config_path: nodes/obu113.yaml
+  obu114:
+    config_path: nodes/obu114.yaml
+  obu115:
+    config_path: nodes/obu115.yaml
+  obu116:
+    config_path: nodes/obu116.yaml
+  obu117:
+    config_path: nodes/obu117.yaml
+  obu118:
+    config_path: nodes/obu118.yaml
+  obu119:
+    config_path: nodes/obu119.yaml
+  obu120:
+    config_path: nodes/obu120.yaml
+  obu121:
+    config_path: nodes/obu121.yaml
+  obu122:
+    config_path: nodes/obu122.yaml
+  obu123:
+    config_path: nodes/obu123.yaml
+  obu124:
+    config_path: nodes/obu124.yaml
+  obu125:
+    config_path: nodes/obu125.yaml
+  obu126:
+    config_path: nodes/obu126.yaml
+  obu127:
+    config_path: nodes/obu127.yaml
+  obu128:
+    config_path: nodes/obu128.yaml
+  obu129:
+    config_path: nodes/obu129.yaml
+  obu130:
+    config_path: nodes/obu130.yaml
+  obu131:
+    config_path: nodes/obu131.yaml
+  obu132:
+    config_path: nodes/obu132.yaml
+  obu133:
+    config_path: nodes/obu133.yaml
+  obu134:
+    config_path: nodes/obu134.yaml
+  obu135:
+    config_path: nodes/obu135.yaml
+  obu136:
+    config_path: nodes/obu136.yaml
+  obu137:
+    config_path: nodes/obu137.yaml
+  obu138:
+    config_path: nodes/obu138.yaml
+  obu139:
+    config_path: nodes/obu139.yaml
+  obu140:
+    config_path: nodes/obu140.yaml
+  obu141:
+    config_path: nodes/obu141.yaml
+  obu142:
+    config_path: nodes/obu142.yaml
+  obu143:
+    config_path: nodes/obu143.yaml
+  obu144:
+    config_path: nodes/obu144.yaml
+  obu145:
+    config_path: nodes/obu145.yaml
+  obu146:
+    config_path: nodes/obu146.yaml
+  obu147:
+    config_path: nodes/obu147.yaml
+  obu148:
+    config_path: nodes/obu148.yaml
+  obu149:
+    config_path: nodes/obu149.yaml
+  obu150:
+    config_path: nodes/obu150.yaml
+  obu151:
+    config_path: nodes/obu151.yaml
+  obu152:
+    config_path: nodes/obu152.yaml
+  obu153:
+    config_path: nodes/obu153.yaml
+  obu154:
+    config_path: nodes/obu154.yaml
+  obu155:
+    config_path: nodes/obu155.yaml
+  obu156:
+    config_path: nodes/obu156.yaml
+  obu157:
+    config_path: nodes/obu157.yaml
+  obu158:
+    config_path: nodes/obu158.yaml
+  obu159:
+    config_path: nodes/obu159.yaml
+  obu160:
+    config_path: nodes/obu160.yaml
+  obu161:
+    config_path: nodes/obu161.yaml
+  obu162:
+    config_path: nodes/obu162.yaml
+  obu163:
+    config_path: nodes/obu163.yaml
+  obu164:
+    config_path: nodes/obu164.yaml
+  obu165:
+    config_path: nodes/obu165.yaml
+  obu166:
+    config_path: nodes/obu166.yaml
+  obu167:
+    config_path: nodes/obu167.yaml
+  obu168:
+    config_path: nodes/obu168.yaml
+  obu169:
+    config_path: nodes/obu169.yaml
+  obu170:
+    config_path: nodes/obu170.yaml
+  obu171:
+    config_path: nodes/obu171.yaml
+  obu172:
+    config_path: nodes/obu172.yaml
+  obu173:
+    config_path: nodes/obu173.yaml
+  obu174:
+    config_path: nodes/obu174.yaml
+  obu175:
+    config_path: nodes/obu175.yaml
+  obu176:
+    config_path: nodes/obu176.yaml
+  obu177:
+    config_path: nodes/obu177.yaml
+  obu178:
+    config_path: nodes/obu178.yaml
+  obu179:
+    config_path: nodes/obu179.yaml
+  obu180:
+    config_path: nodes/obu180.yaml
+  obu181:
+    config_path: nodes/obu181.yaml
+  obu182:
+    config_path: nodes/obu182.yaml
+  obu183:
+    config_path: nodes/obu183.yaml
+  obu184:
+    config_path: nodes/obu184.yaml
+  obu185:
+    config_path: nodes/obu185.yaml
+  obu186:
+    config_path: nodes/obu186.yaml
+  obu187:
+    config_path: nodes/obu187.yaml
+  obu188:
+    config_path: nodes/obu188.yaml
+  obu189:
+    config_path: nodes/obu189.yaml
+  obu190:
+    config_path: nodes/obu190.yaml
+  obu191:
+    config_path: nodes/obu191.yaml
+  obu192:
+    config_path: nodes/obu192.yaml
+  obu193:
+    config_path: nodes/obu193.yaml
+  obu194:
+    config_path: nodes/obu194.yaml
+  obu195:
+    config_path: nodes/obu195.yaml
+  obu196:
+    config_path: nodes/obu196.yaml
+  obu197:
+    config_path: nodes/obu197.yaml
+  obu198:
+    config_path: nodes/obu198.yaml
+  obu199:
+    config_path: nodes/obu199.yaml
+  obu200:
+    config_path: nodes/obu200.yaml
+  obu201:
+    config_path: nodes/obu201.yaml
+  obu202:
+    config_path: nodes/obu202.yaml
+  obu203:
+    config_path: nodes/obu203.yaml
+  obu204:
+    config_path: nodes/obu204.yaml
+  obu205:
+    config_path: nodes/obu205.yaml
+  obu206:
+    config_path: nodes/obu206.yaml
+  obu207:
+    config_path: nodes/obu207.yaml
+  obu208:
+    config_path: nodes/obu208.yaml
+  obu209:
+    config_path: nodes/obu209.yaml
+  obu210:
+    config_path: nodes/obu210.yaml
+  obu211:
+    config_path: nodes/obu211.yaml
+  obu212:
+    config_path: nodes/obu212.yaml
+  obu213:
+    config_path: nodes/obu213.yaml
+  obu214:
+    config_path: nodes/obu214.yaml
+  obu215:
+    config_path: nodes/obu215.yaml
+  obu216:
+    config_path: nodes/obu216.yaml
+  obu217:
+    config_path: nodes/obu217.yaml
+  obu218:
+    config_path: nodes/obu218.yaml
+  obu219:
+    config_path: nodes/obu219.yaml
+  obu220:
+    config_path: nodes/obu220.yaml
+  obu221:
+    config_path: nodes/obu221.yaml
+  obu222:
+    config_path: nodes/obu222.yaml
+  obu223:
+    config_path: nodes/obu223.yaml
+  obu224:
+    config_path: nodes/obu224.yaml
+  obu225:
+    config_path: nodes/obu225.yaml
+  obu226:
+    config_path: nodes/obu226.yaml
+  obu227:
+    config_path: nodes/obu227.yaml
+  obu228:
+    config_path: nodes/obu228.yaml
+  obu229:
+    config_path: nodes/obu229.yaml
+  obu230:
+    config_path: nodes/obu230.yaml
+  obu231:
+    config_path: nodes/obu231.yaml
+  obu232:
+    config_path: nodes/obu232.yaml
+  obu233:
+    config_path: nodes/obu233.yaml
+  obu234:
+    config_path: nodes/obu234.yaml
+  obu235:
+    config_path: nodes/obu235.yaml
+  obu236:
+    config_path: nodes/obu236.yaml
+  obu237:
+    config_path: nodes/obu237.yaml
+  obu238:
+    config_path: nodes/obu238.yaml
+  obu239:
+    config_path: nodes/obu239.yaml
+  obu240:
+    config_path: nodes/obu240.yaml
+  obu241:
+    config_path: nodes/obu241.yaml
+  obu242:
+    config_path: nodes/obu242.yaml
+  obu243:
+    config_path: nodes/obu243.yaml
+  obu244:
+    config_path: nodes/obu244.yaml
+  obu245:
+    config_path: nodes/obu245.yaml
+  obu246:
+    config_path: nodes/obu246.yaml
+  obu247:
+    config_path: nodes/obu247.yaml
+  obu248:
+    config_path: nodes/obu248.yaml
+  obu249:
+    config_path: nodes/obu249.yaml
+  obu250:
+    config_path: nodes/obu250.yaml
+  obu251:
+    config_path: nodes/obu251.yaml
+  obu252:
+    config_path: nodes/obu252.yaml
+  obu253:
+    config_path: nodes/obu253.yaml
+  obu254:
+    config_path: nodes/obu254.yaml
+  obu255:
+    config_path: nodes/obu255.yaml
+  obu256:
+    config_path: nodes/obu256.yaml
+  obu257:
+    config_path: nodes/obu257.yaml
+  obu258:
+    config_path: nodes/obu258.yaml
+  obu259:
+    config_path: nodes/obu259.yaml
+  obu260:
+    config_path: nodes/obu260.yaml
+  obu261:
+    config_path: nodes/obu261.yaml
+  obu262:
+    config_path: nodes/obu262.yaml
+  obu263:
+    config_path: nodes/obu263.yaml
+  obu264:
+    config_path: nodes/obu264.yaml
+  obu265:
+    config_path: nodes/obu265.yaml
+  obu266:
+    config_path: nodes/obu266.yaml
+  obu267:
+    config_path: nodes/obu267.yaml
+  obu268:
+    config_path: nodes/obu268.yaml
+  obu269:
+    config_path: nodes/obu269.yaml
+  obu270:
+    config_path: nodes/obu270.yaml
+  obu271:
+    config_path: nodes/obu271.yaml
+  obu272:
+    config_path: nodes/obu272.yaml
+  obu273:
+    config_path: nodes/obu273.yaml
+  obu274:
+    config_path: nodes/obu274.yaml
+  obu275:
+    config_path: nodes/obu275.yaml
+  obu276:
+    config_path: nodes/obu276.yaml
+  obu277:
+    config_path: nodes/obu277.yaml
+  obu278:
+    config_path: nodes/obu278.yaml
+  obu279:
+    config_path: nodes/obu279.yaml
+  obu280:
+    config_path: nodes/obu280.yaml
+  obu281:
+    config_path: nodes/obu281.yaml
+  obu282:
+    config_path: nodes/obu282.yaml
+  obu283:
+    config_path: nodes/obu283.yaml
+  obu284:
+    config_path: nodes/obu284.yaml
+  obu285:
+    config_path: nodes/obu285.yaml
+  obu286:
+    config_path: nodes/obu286.yaml
+  obu287:
+    config_path: nodes/obu287.yaml
+  obu288:
+    config_path: nodes/obu288.yaml
+  obu289:
+    config_path: nodes/obu289.yaml
+  obu290:
+    config_path: nodes/obu290.yaml
+  obu291:
+    config_path: nodes/obu291.yaml
+  obu292:
+    config_path: nodes/obu292.yaml
+  obu293:
+    config_path: nodes/obu293.yaml
+  obu294:
+    config_path: nodes/obu294.yaml
+  obu295:
+    config_path: nodes/obu295.yaml
+  obu296:
+    config_path: nodes/obu296.yaml
+  obu297:
+    config_path: nodes/obu297.yaml
+  obu298:
+    config_path: nodes/obu298.yaml
+  obu299:
+    config_path: nodes/obu299.yaml
+  obu300:
+    config_path: nodes/obu300.yaml
+  obu301:
+    config_path: nodes/obu301.yaml
+  obu302:
+    config_path: nodes/obu302.yaml
+  obu303:
+    config_path: nodes/obu303.yaml
+  obu304:
+    config_path: nodes/obu304.yaml
+  obu305:
+    config_path: nodes/obu305.yaml
+  obu306:
+    config_path: nodes/obu306.yaml
+  obu307:
+    config_path: nodes/obu307.yaml
+  obu308:
+    config_path: nodes/obu308.yaml
+  obu309:
+    config_path: nodes/obu309.yaml
+  obu310:
+    config_path: nodes/obu310.yaml
+  obu311:
+    config_path: nodes/obu311.yaml
+  obu312:
+    config_path: nodes/obu312.yaml
+  obu313:
+    config_path: nodes/obu313.yaml
+  obu314:
+    config_path: nodes/obu314.yaml
+  obu315:
+    config_path: nodes/obu315.yaml
+  obu316:
+    config_path: nodes/obu316.yaml
+  obu317:
+    config_path: nodes/obu317.yaml
+  obu318:
+    config_path: nodes/obu318.yaml
+  obu319:
+    config_path: nodes/obu319.yaml
+  obu320:
+    config_path: nodes/obu320.yaml
+  obu321:
+    config_path: nodes/obu321.yaml
+  obu322:
+    config_path: nodes/obu322.yaml
+  obu323:
+    config_path: nodes/obu323.yaml
+  obu324:
+    config_path: nodes/obu324.yaml
+  obu325:
+    config_path: nodes/obu325.yaml
+  obu326:
+    config_path: nodes/obu326.yaml
+  obu327:
+    config_path: nodes/obu327.yaml
+  obu328:
+    config_path: nodes/obu328.yaml
+  obu329:
+    config_path: nodes/obu329.yaml
+  obu330:
+    config_path: nodes/obu330.yaml
+  obu331:
+    config_path: nodes/obu331.yaml
+  obu332:
+    config_path: nodes/obu332.yaml
+  obu333:
+    config_path: nodes/obu333.yaml
+  obu334:
+    config_path: nodes/obu334.yaml
+  obu335:
+    config_path: nodes/obu335.yaml
+  obu336:
+    config_path: nodes/obu336.yaml
+  obu337:
+    config_path: nodes/obu337.yaml
+  obu338:
+    config_path: nodes/obu338.yaml
+  obu339:
+    config_path: nodes/obu339.yaml
+  obu340:
+    config_path: nodes/obu340.yaml
+  obu341:
+    config_path: nodes/obu341.yaml
+  obu342:
+    config_path: nodes/obu342.yaml
+  obu343:
+    config_path: nodes/obu343.yaml
+  obu344:
+    config_path: nodes/obu344.yaml
+  obu345:
+    config_path: nodes/obu345.yaml
+  obu346:
+    config_path: nodes/obu346.yaml
+  obu347:
+    config_path: nodes/obu347.yaml
+  obu348:
+    config_path: nodes/obu348.yaml
+  obu349:
+    config_path: nodes/obu349.yaml
+  obu350:
+    config_path: nodes/obu350.yaml
+  obu351:
+    config_path: nodes/obu351.yaml
+  obu352:
+    config_path: nodes/obu352.yaml
+  obu353:
+    config_path: nodes/obu353.yaml
+  obu354:
+    config_path: nodes/obu354.yaml
+  obu355:
+    config_path: nodes/obu355.yaml
+  obu356:
+    config_path: nodes/obu356.yaml
+  obu357:
+    config_path: nodes/obu357.yaml
+  obu358:
+    config_path: nodes/obu358.yaml
+  obu359:
+    config_path: nodes/obu359.yaml
+  obu360:
+    config_path: nodes/obu360.yaml
+  obu361:
+    config_path: nodes/obu361.yaml
+  obu362:
+    config_path: nodes/obu362.yaml
+  obu363:
+    config_path: nodes/obu363.yaml
+  obu364:
+    config_path: nodes/obu364.yaml
+  obu365:
+    config_path: nodes/obu365.yaml
+  obu366:
+    config_path: nodes/obu366.yaml
+  obu367:
+    config_path: nodes/obu367.yaml
+  obu368:
+    config_path: nodes/obu368.yaml
+  obu369:
+    config_path: nodes/obu369.yaml
+  obu370:
+    config_path: nodes/obu370.yaml
+  obu371:
+    config_path: nodes/obu371.yaml
+  obu372:
+    config_path: nodes/obu372.yaml
+  obu373:
+    config_path: nodes/obu373.yaml
+  obu374:
+    config_path: nodes/obu374.yaml
+  obu375:
+    config_path: nodes/obu375.yaml
+  obu376:
+    config_path: nodes/obu376.yaml
+  obu377:
+    config_path: nodes/obu377.yaml
+  obu378:
+    config_path: nodes/obu378.yaml
+  obu379:
+    config_path: nodes/obu379.yaml
+  obu380:
+    config_path: nodes/obu380.yaml
+  obu381:
+    config_path: nodes/obu381.yaml
+  obu382:
+    config_path: nodes/obu382.yaml
+  obu383:
+    config_path: nodes/obu383.yaml
+  obu384:
+    config_path: nodes/obu384.yaml
+  obu385:
+    config_path: nodes/obu385.yaml
+  obu386:
+    config_path: nodes/obu386.yaml
+  obu387:
+    config_path: nodes/obu387.yaml
+  obu388:
+    config_path: nodes/obu388.yaml
+  obu389:
+    config_path: nodes/obu389.yaml
+  obu390:
+    config_path: nodes/obu390.yaml
+  obu391:
+    config_path: nodes/obu391.yaml
+  obu392:
+    config_path: nodes/obu392.yaml
+  obu393:
+    config_path: nodes/obu393.yaml
+  obu394:
+    config_path: nodes/obu394.yaml
+  obu395:
+    config_path: nodes/obu395.yaml
+  obu396:
+    config_path: nodes/obu396.yaml
+  obu397:
+    config_path: nodes/obu397.yaml
+  obu398:
+    config_path: nodes/obu398.yaml
+  obu399:
+    config_path: nodes/obu399.yaml
+  obu400:
+    config_path: nodes/obu400.yaml
+  obu401:
+    config_path: nodes/obu401.yaml
+  obu402:
+    config_path: nodes/obu402.yaml
+  obu403:
+    config_path: nodes/obu403.yaml
+  obu404:
+    config_path: nodes/obu404.yaml
+  obu405:
+    config_path: nodes/obu405.yaml
+  obu406:
+    config_path: nodes/obu406.yaml
+  obu407:
+    config_path: nodes/obu407.yaml
+  obu408:
+    config_path: nodes/obu408.yaml
+  obu409:
+    config_path: nodes/obu409.yaml
+  obu410:
+    config_path: nodes/obu410.yaml
+  obu411:
+    config_path: nodes/obu411.yaml
+  obu412:
+    config_path: nodes/obu412.yaml
+  obu413:
+    config_path: nodes/obu413.yaml
+  obu414:
+    config_path: nodes/obu414.yaml
+  obu415:
+    config_path: nodes/obu415.yaml
+  obu416:
+    config_path: nodes/obu416.yaml
+  obu417:
+    config_path: nodes/obu417.yaml
+  obu418:
+    config_path: nodes/obu418.yaml
+  obu419:
+    config_path: nodes/obu419.yaml
+  obu420:
+    config_path: nodes/obu420.yaml
+  obu421:
+    config_path: nodes/obu421.yaml
+  obu422:
+    config_path: nodes/obu422.yaml
+  obu423:
+    config_path: nodes/obu423.yaml
+  obu424:
+    config_path: nodes/obu424.yaml
+  obu425:
+    config_path: nodes/obu425.yaml
+  obu426:
+    config_path: nodes/obu426.yaml
+  obu427:
+    config_path: nodes/obu427.yaml
+  obu428:
+    config_path: nodes/obu428.yaml
+  obu429:
+    config_path: nodes/obu429.yaml
+  obu430:
+    config_path: nodes/obu430.yaml
+  obu431:
+    config_path: nodes/obu431.yaml
+  obu432:
+    config_path: nodes/obu432.yaml
+  obu433:
+    config_path: nodes/obu433.yaml
+  obu434:
+    config_path: nodes/obu434.yaml
+  obu435:
+    config_path: nodes/obu435.yaml
+  obu436:
+    config_path: nodes/obu436.yaml
+  obu437:
+    config_path: nodes/obu437.yaml
+  obu438:
+    config_path: nodes/obu438.yaml
+  obu439:
+    config_path: nodes/obu439.yaml
+  obu440:
+    config_path: nodes/obu440.yaml
+  obu441:
+    config_path: nodes/obu441.yaml
+  obu442:
+    config_path: nodes/obu442.yaml
+  obu443:
+    config_path: nodes/obu443.yaml
+  obu444:
+    config_path: nodes/obu444.yaml
+  obu445:
+    config_path: nodes/obu445.yaml
+  obu446:
+    config_path: nodes/obu446.yaml
+  obu447:
+    config_path: nodes/obu447.yaml
+  obu448:
+    config_path: nodes/obu448.yaml
+  obu449:
+    config_path: nodes/obu449.yaml
+  obu450:
+    config_path: nodes/obu450.yaml
+  obu451:
+    config_path: nodes/obu451.yaml
+  obu452:
+    config_path: nodes/obu452.yaml
+  obu453:
+    config_path: nodes/obu453.yaml
+  obu454:
+    config_path: nodes/obu454.yaml
+  obu455:
+    config_path: nodes/obu455.yaml
+  obu456:
+    config_path: nodes/obu456.yaml
+  obu457:
+    config_path: nodes/obu457.yaml
+  obu458:
+    config_path: nodes/obu458.yaml
+  obu459:
+    config_path: nodes/obu459.yaml
+  obu460:
+    config_path: nodes/obu460.yaml
+  obu461:
+    config_path: nodes/obu461.yaml
+  obu462:
+    config_path: nodes/obu462.yaml
+  obu463:
+    config_path: nodes/obu463.yaml
+  obu464:
+    config_path: nodes/obu464.yaml
+  obu465:
+    config_path: nodes/obu465.yaml
+  obu466:
+    config_path: nodes/obu466.yaml
+  obu467:
+    config_path: nodes/obu467.yaml
+  obu468:
+    config_path: nodes/obu468.yaml
+  obu469:
+    config_path: nodes/obu469.yaml
+  obu470:
+    config_path: nodes/obu470.yaml
+  obu471:
+    config_path: nodes/obu471.yaml
+  obu472:
+    config_path: nodes/obu472.yaml
+  obu473:
+    config_path: nodes/obu473.yaml
+  obu474:
+    config_path: nodes/obu474.yaml
+  obu475:
+    config_path: nodes/obu475.yaml
+  obu476:
+    config_path: nodes/obu476.yaml
+  obu477:
+    config_path: nodes/obu477.yaml
+  obu478:
+    config_path: nodes/obu478.yaml
+  obu479:
+    config_path: nodes/obu479.yaml
+  obu480:
+    config_path: nodes/obu480.yaml
+  obu481:
+    config_path: nodes/obu481.yaml
+  obu482:
+    config_path: nodes/obu482.yaml
+  obu483:
+    config_path: nodes/obu483.yaml
+  obu484:
+    config_path: nodes/obu484.yaml
+  obu485:
+    config_path: nodes/obu485.yaml
+  obu486:
+    config_path: nodes/obu486.yaml
+  obu487:
+    config_path: nodes/obu487.yaml
+  obu488:
+    config_path: nodes/obu488.yaml
+  obu489:
+    config_path: nodes/obu489.yaml
+  obu490:
+    config_path: nodes/obu490.yaml
+  obu491:
+    config_path: nodes/obu491.yaml
+  obu492:
+    config_path: nodes/obu492.yaml
+  obu493:
+    config_path: nodes/obu493.yaml
+  obu494:
+    config_path: nodes/obu494.yaml
+  obu495:
+    config_path: nodes/obu495.yaml
+  obu496:
+    config_path: nodes/obu496.yaml
+  obu497:
+    config_path: nodes/obu497.yaml
+  obu498:
+    config_path: nodes/obu498.yaml
+  obu499:
+    config_path: nodes/obu499.yaml
+  obu500:
+    config_path: nodes/obu500.yaml
+  obu501:
+    config_path: nodes/obu501.yaml
+  obu502:
+    config_path: nodes/obu502.yaml
+  obu503:
+    config_path: nodes/obu503.yaml
+  obu504:
+    config_path: nodes/obu504.yaml
+  obu505:
+    config_path: nodes/obu505.yaml
+  obu506:
+    config_path: nodes/obu506.yaml
+  obu507:
+    config_path: nodes/obu507.yaml
+  obu508:
+    config_path: nodes/obu508.yaml
+  obu509:
+    config_path: nodes/obu509.yaml
+  obu510:
+    config_path: nodes/obu510.yaml
+  obu511:
+    config_path: nodes/obu511.yaml
+  obu512:
+    config_path: nodes/obu512.yaml
+  obu513:
+    config_path: nodes/obu513.yaml
+  obu514:
+    config_path: nodes/obu514.yaml
+  obu515:
+    config_path: nodes/obu515.yaml
+  obu516:
+    config_path: nodes/obu516.yaml
+  obu517:
+    config_path: nodes/obu517.yaml
+  obu518:
+    config_path: nodes/obu518.yaml
+  obu519:
+    config_path: nodes/obu519.yaml
+  obu520:
+    config_path: nodes/obu520.yaml
+  obu521:
+    config_path: nodes/obu521.yaml
+  obu522:
+    config_path: nodes/obu522.yaml
+  obu523:
+    config_path: nodes/obu523.yaml
+  obu524:
+    config_path: nodes/obu524.yaml
+  obu525:
+    config_path: nodes/obu525.yaml
+  obu526:
+    config_path: nodes/obu526.yaml
+  obu527:
+    config_path: nodes/obu527.yaml
+  obu528:
+    config_path: nodes/obu528.yaml
+  obu529:
+    config_path: nodes/obu529.yaml
+  obu530:
+    config_path: nodes/obu530.yaml
+  obu531:
+    config_path: nodes/obu531.yaml
+  obu532:
+    config_path: nodes/obu532.yaml
+  obu533:
+    config_path: nodes/obu533.yaml
+  obu534:
+    config_path: nodes/obu534.yaml
+  obu535:
+    config_path: nodes/obu535.yaml
+  obu536:
+    config_path: nodes/obu536.yaml
+  obu537:
+    config_path: nodes/obu537.yaml
+  obu538:
+    config_path: nodes/obu538.yaml
+  obu539:
+    config_path: nodes/obu539.yaml
+  obu540:
+    config_path: nodes/obu540.yaml
+  obu541:
+    config_path: nodes/obu541.yaml
+  obu542:
+    config_path: nodes/obu542.yaml
+  obu543:
+    config_path: nodes/obu543.yaml
+  obu544:
+    config_path: nodes/obu544.yaml
+  obu545:
+    config_path: nodes/obu545.yaml
+  obu546:
+    config_path: nodes/obu546.yaml
+  obu547:
+    config_path: nodes/obu547.yaml
+  obu548:
+    config_path: nodes/obu548.yaml
+  obu549:
+    config_path: nodes/obu549.yaml
+  obu550:
+    config_path: nodes/obu550.yaml
+  obu551:
+    config_path: nodes/obu551.yaml
+  obu552:
+    config_path: nodes/obu552.yaml
+  obu553:
+    config_path: nodes/obu553.yaml
+  obu554:
+    config_path: nodes/obu554.yaml
+  obu555:
+    config_path: nodes/obu555.yaml
+  obu556:
+    config_path: nodes/obu556.yaml
+  obu557:
+    config_path: nodes/obu557.yaml
+  obu558:
+    config_path: nodes/obu558.yaml
+  obu559:
+    config_path: nodes/obu559.yaml
+  obu560:
+    config_path: nodes/obu560.yaml
+  obu561:
+    config_path: nodes/obu561.yaml
+  obu562:
+    config_path: nodes/obu562.yaml
+  obu563:
+    config_path: nodes/obu563.yaml
+  obu564:
+    config_path: nodes/obu564.yaml
+  obu565:
+    config_path: nodes/obu565.yaml
+  obu566:
+    config_path: nodes/obu566.yaml
+  obu567:
+    config_path: nodes/obu567.yaml
+  obu568:
+    config_path: nodes/obu568.yaml
+  obu569:
+    config_path: nodes/obu569.yaml
+  obu570:
+    config_path: nodes/obu570.yaml
+  obu571:
+    config_path: nodes/obu571.yaml
+  obu572:
+    config_path: nodes/obu572.yaml
+  obu573:
+    config_path: nodes/obu573.yaml
+  obu574:
+    config_path: nodes/obu574.yaml
+  obu575:
+    config_path: nodes/obu575.yaml
+  obu576:
+    config_path: nodes/obu576.yaml
+  obu577:
+    config_path: nodes/obu577.yaml
+  obu578:
+    config_path: nodes/obu578.yaml
+  obu579:
+    config_path: nodes/obu579.yaml
+  obu580:
+    config_path: nodes/obu580.yaml
+  obu581:
+    config_path: nodes/obu581.yaml
+  obu582:
+    config_path: nodes/obu582.yaml
+  obu583:
+    config_path: nodes/obu583.yaml
+  obu584:
+    config_path: nodes/obu584.yaml
+  obu585:
+    config_path: nodes/obu585.yaml
+  obu586:
+    config_path: nodes/obu586.yaml
+  obu587:
+    config_path: nodes/obu587.yaml
+  obu588:
+    config_path: nodes/obu588.yaml
+  obu589:
+    config_path: nodes/obu589.yaml
+  obu590:
+    config_path: nodes/obu590.yaml
+  obu591:
+    config_path: nodes/obu591.yaml
+  obu592:
+    config_path: nodes/obu592.yaml
+  obu593:
+    config_path: nodes/obu593.yaml
+  obu594:
+    config_path: nodes/obu594.yaml
+  obu595:
+    config_path: nodes/obu595.yaml
+  obu596:
+    config_path: nodes/obu596.yaml
+  obu597:
+    config_path: nodes/obu597.yaml
+  obu598:
+    config_path: nodes/obu598.yaml
+  obu599:
+    config_path: nodes/obu599.yaml
+  obu600:
+    config_path: nodes/obu600.yaml
+  obu601:
+    config_path: nodes/obu601.yaml
+  obu602:
+    config_path: nodes/obu602.yaml
+  obu603:
+    config_path: nodes/obu603.yaml
+  obu604:
+    config_path: nodes/obu604.yaml
+  obu605:
+    config_path: nodes/obu605.yaml
+  obu606:
+    config_path: nodes/obu606.yaml
+  obu607:
+    config_path: nodes/obu607.yaml
+  obu608:
+    config_path: nodes/obu608.yaml
+  obu609:
+    config_path: nodes/obu609.yaml
+  obu610:
+    config_path: nodes/obu610.yaml
+  obu611:
+    config_path: nodes/obu611.yaml
+  obu612:
+    config_path: nodes/obu612.yaml
+  obu613:
+    config_path: nodes/obu613.yaml
+  obu614:
+    config_path: nodes/obu614.yaml
+  obu615:
+    config_path: nodes/obu615.yaml
+  obu616:
+    config_path: nodes/obu616.yaml
+  obu617:
+    config_path: nodes/obu617.yaml
+  obu618:
+    config_path: nodes/obu618.yaml
+  obu619:
+    config_path: nodes/obu619.yaml
+  obu620:
+    config_path: nodes/obu620.yaml
+  obu621:
+    config_path: nodes/obu621.yaml
+  obu622:
+    config_path: nodes/obu622.yaml
+  obu623:
+    config_path: nodes/obu623.yaml
+  obu624:
+    config_path: nodes/obu624.yaml
+  obu625:
+    config_path: nodes/obu625.yaml
+  obu626:
+    config_path: nodes/obu626.yaml
+  obu627:
+    config_path: nodes/obu627.yaml
+  obu628:
+    config_path: nodes/obu628.yaml
+  obu629:
+    config_path: nodes/obu629.yaml
+  obu630:
+    config_path: nodes/obu630.yaml
+  obu631:
+    config_path: nodes/obu631.yaml
+  obu632:
+    config_path: nodes/obu632.yaml
+  obu633:
+    config_path: nodes/obu633.yaml
+  obu634:
+    config_path: nodes/obu634.yaml
+  obu635:
+    config_path: nodes/obu635.yaml
+  obu636:
+    config_path: nodes/obu636.yaml
+  obu637:
+    config_path: nodes/obu637.yaml
+  obu638:
+    config_path: nodes/obu638.yaml
+  obu639:
+    config_path: nodes/obu639.yaml
+  obu640:
+    config_path: nodes/obu640.yaml
+  obu641:
+    config_path: nodes/obu641.yaml
+  obu642:
+    config_path: nodes/obu642.yaml
+  obu643:
+    config_path: nodes/obu643.yaml
+  obu644:
+    config_path: nodes/obu644.yaml
+  obu645:
+    config_path: nodes/obu645.yaml
+  obu646:
+    config_path: nodes/obu646.yaml
+  obu647:
+    config_path: nodes/obu647.yaml
+  obu648:
+    config_path: nodes/obu648.yaml
+  obu649:
+    config_path: nodes/obu649.yaml
+  obu650:
+    config_path: nodes/obu650.yaml
+  obu651:
+    config_path: nodes/obu651.yaml
+  obu652:
+    config_path: nodes/obu652.yaml
+  obu653:
+    config_path: nodes/obu653.yaml
+  obu654:
+    config_path: nodes/obu654.yaml
+  obu655:
+    config_path: nodes/obu655.yaml
+  obu656:
+    config_path: nodes/obu656.yaml
+  obu657:
+    config_path: nodes/obu657.yaml
+  obu658:
+    config_path: nodes/obu658.yaml
+  obu659:
+    config_path: nodes/obu659.yaml
+  obu660:
+    config_path: nodes/obu660.yaml
+  obu661:
+    config_path: nodes/obu661.yaml
+  obu662:
+    config_path: nodes/obu662.yaml
+  obu663:
+    config_path: nodes/obu663.yaml
+  obu664:
+    config_path: nodes/obu664.yaml
+  obu665:
+    config_path: nodes/obu665.yaml
+  obu666:
+    config_path: nodes/obu666.yaml
+  obu667:
+    config_path: nodes/obu667.yaml
+  obu668:
+    config_path: nodes/obu668.yaml
+  obu669:
+    config_path: nodes/obu669.yaml
+  obu670:
+    config_path: nodes/obu670.yaml
+  obu671:
+    config_path: nodes/obu671.yaml
+  obu672:
+    config_path: nodes/obu672.yaml
+  obu673:
+    config_path: nodes/obu673.yaml
+  obu674:
+    config_path: nodes/obu674.yaml
+  obu675:
+    config_path: nodes/obu675.yaml
+  obu676:
+    config_path: nodes/obu676.yaml
+  obu677:
+    config_path: nodes/obu677.yaml
+  obu678:
+    config_path: nodes/obu678.yaml
+  obu679:
+    config_path: nodes/obu679.yaml
+  obu680:
+    config_path: nodes/obu680.yaml
+  obu681:
+    config_path: nodes/obu681.yaml
+  obu682:
+    config_path: nodes/obu682.yaml
+  obu683:
+    config_path: nodes/obu683.yaml
+  obu684:
+    config_path: nodes/obu684.yaml
+  obu685:
+    config_path: nodes/obu685.yaml
+  obu686:
+    config_path: nodes/obu686.yaml
+  obu687:
+    config_path: nodes/obu687.yaml
+  obu688:
+    config_path: nodes/obu688.yaml
+  obu689:
+    config_path: nodes/obu689.yaml
+  obu690:
+    config_path: nodes/obu690.yaml
+  obu691:
+    config_path: nodes/obu691.yaml
+  obu692:
+    config_path: nodes/obu692.yaml
+  obu693:
+    config_path: nodes/obu693.yaml
+  obu694:
+    config_path: nodes/obu694.yaml
+  obu695:
+    config_path: nodes/obu695.yaml
+  obu696:
+    config_path: nodes/obu696.yaml
+  obu697:
+    config_path: nodes/obu697.yaml
+  obu698:
+    config_path: nodes/obu698.yaml
+  obu699:
+    config_path: nodes/obu699.yaml
+  obu700:
+    config_path: nodes/obu700.yaml
+  obu701:
+    config_path: nodes/obu701.yaml
+  obu702:
+    config_path: nodes/obu702.yaml
+  obu703:
+    config_path: nodes/obu703.yaml
+  obu704:
+    config_path: nodes/obu704.yaml
+  obu705:
+    config_path: nodes/obu705.yaml
+  obu706:
+    config_path: nodes/obu706.yaml
+  obu707:
+    config_path: nodes/obu707.yaml
+  obu708:
+    config_path: nodes/obu708.yaml
+  obu709:
+    config_path: nodes/obu709.yaml
+  obu710:
+    config_path: nodes/obu710.yaml
+  obu711:
+    config_path: nodes/obu711.yaml
+  obu712:
+    config_path: nodes/obu712.yaml
+  obu713:
+    config_path: nodes/obu713.yaml
+  obu714:
+    config_path: nodes/obu714.yaml
+  obu715:
+    config_path: nodes/obu715.yaml
+  obu716:
+    config_path: nodes/obu716.yaml
+  obu717:
+    config_path: nodes/obu717.yaml
+  obu718:
+    config_path: nodes/obu718.yaml
+  obu719:
+    config_path: nodes/obu719.yaml
+  obu720:
+    config_path: nodes/obu720.yaml
+  obu721:
+    config_path: nodes/obu721.yaml
+  obu722:
+    config_path: nodes/obu722.yaml
+  obu723:
+    config_path: nodes/obu723.yaml
+  obu724:
+    config_path: nodes/obu724.yaml
+  obu725:
+    config_path: nodes/obu725.yaml
+  obu726:
+    config_path: nodes/obu726.yaml
+  obu727:
+    config_path: nodes/obu727.yaml
+  obu728:
+    config_path: nodes/obu728.yaml
+  obu729:
+    config_path: nodes/obu729.yaml
+  obu730:
+    config_path: nodes/obu730.yaml
+  obu731:
+    config_path: nodes/obu731.yaml
+  obu732:
+    config_path: nodes/obu732.yaml
+  obu733:
+    config_path: nodes/obu733.yaml
+  obu734:
+    config_path: nodes/obu734.yaml
+  obu735:
+    config_path: nodes/obu735.yaml
+  obu736:
+    config_path: nodes/obu736.yaml
+  obu737:
+    config_path: nodes/obu737.yaml
+  obu738:
+    config_path: nodes/obu738.yaml
+  obu739:
+    config_path: nodes/obu739.yaml
+  obu740:
+    config_path: nodes/obu740.yaml
+  obu741:
+    config_path: nodes/obu741.yaml
+  obu742:
+    config_path: nodes/obu742.yaml
+  obu743:
+    config_path: nodes/obu743.yaml
+  obu744:
+    config_path: nodes/obu744.yaml
+  obu745:
+    config_path: nodes/obu745.yaml
+  obu746:
+    config_path: nodes/obu746.yaml
+  obu747:
+    config_path: nodes/obu747.yaml
+  obu748:
+    config_path: nodes/obu748.yaml
+  obu749:
+    config_path: nodes/obu749.yaml
+  obu750:
+    config_path: nodes/obu750.yaml
+  obu751:
+    config_path: nodes/obu751.yaml
+  obu752:
+    config_path: nodes/obu752.yaml
+  obu753:
+    config_path: nodes/obu753.yaml
+  obu754:
+    config_path: nodes/obu754.yaml
+  obu755:
+    config_path: nodes/obu755.yaml
+  obu756:
+    config_path: nodes/obu756.yaml
+  obu757:
+    config_path: nodes/obu757.yaml
+  obu758:
+    config_path: nodes/obu758.yaml
+  obu759:
+    config_path: nodes/obu759.yaml
+  obu760:
+    config_path: nodes/obu760.yaml
+  obu761:
+    config_path: nodes/obu761.yaml
+  obu762:
+    config_path: nodes/obu762.yaml
+  obu763:
+    config_path: nodes/obu763.yaml
+  obu764:
+    config_path: nodes/obu764.yaml
+  obu765:
+    config_path: nodes/obu765.yaml
+  obu766:
+    config_path: nodes/obu766.yaml
+  obu767:
+    config_path: nodes/obu767.yaml
+  obu768:
+    config_path: nodes/obu768.yaml
+  obu769:
+    config_path: nodes/obu769.yaml
+  obu770:
+    config_path: nodes/obu770.yaml
+  obu771:
+    config_path: nodes/obu771.yaml
+  obu772:
+    config_path: nodes/obu772.yaml
+  obu773:
+    config_path: nodes/obu773.yaml
+  obu774:
+    config_path: nodes/obu774.yaml
+  obu775:
+    config_path: nodes/obu775.yaml
+  obu776:
+    config_path: nodes/obu776.yaml
+  obu777:
+    config_path: nodes/obu777.yaml
+  obu778:
+    config_path: nodes/obu778.yaml
+  obu779:
+    config_path: nodes/obu779.yaml
+  obu780:
+    config_path: nodes/obu780.yaml
+  obu781:
+    config_path: nodes/obu781.yaml
+  obu782:
+    config_path: nodes/obu782.yaml
+  obu783:
+    config_path: nodes/obu783.yaml
+  obu784:
+    config_path: nodes/obu784.yaml
+  obu785:
+    config_path: nodes/obu785.yaml
+  obu786:
+    config_path: nodes/obu786.yaml
+  obu787:
+    config_path: nodes/obu787.yaml
+  obu788:
+    config_path: nodes/obu788.yaml
+  obu789:
+    config_path: nodes/obu789.yaml
+  obu790:
+    config_path: nodes/obu790.yaml
+  obu791:
+    config_path: nodes/obu791.yaml
+  obu792:
+    config_path: nodes/obu792.yaml
+  obu793:
+    config_path: nodes/obu793.yaml
+  obu794:
+    config_path: nodes/obu794.yaml
+  obu795:
+    config_path: nodes/obu795.yaml
+  obu796:
+    config_path: nodes/obu796.yaml
+  obu797:
+    config_path: nodes/obu797.yaml
+  obu798:
+    config_path: nodes/obu798.yaml
+  obu799:
+    config_path: nodes/obu799.yaml
+  obu800:
+    config_path: nodes/obu800.yaml
+  obu801:
+    config_path: nodes/obu801.yaml
+  obu802:
+    config_path: nodes/obu802.yaml
+  obu803:
+    config_path: nodes/obu803.yaml
+  obu804:
+    config_path: nodes/obu804.yaml
+  obu805:
+    config_path: nodes/obu805.yaml
+  obu806:
+    config_path: nodes/obu806.yaml
+  obu807:
+    config_path: nodes/obu807.yaml
+  obu808:
+    config_path: nodes/obu808.yaml
+  obu809:
+    config_path: nodes/obu809.yaml
+  obu810:
+    config_path: nodes/obu810.yaml
+  obu811:
+    config_path: nodes/obu811.yaml
+  obu812:
+    config_path: nodes/obu812.yaml
+  obu813:
+    config_path: nodes/obu813.yaml
+  obu814:
+    config_path: nodes/obu814.yaml
+  obu815:
+    config_path: nodes/obu815.yaml
+  obu816:
+    config_path: nodes/obu816.yaml
+  obu817:
+    config_path: nodes/obu817.yaml
+  obu818:
+    config_path: nodes/obu818.yaml
+  obu819:
+    config_path: nodes/obu819.yaml
+  obu820:
+    config_path: nodes/obu820.yaml
+  obu821:
+    config_path: nodes/obu821.yaml
+  obu822:
+    config_path: nodes/obu822.yaml
+  obu823:
+    config_path: nodes/obu823.yaml
+  obu824:
+    config_path: nodes/obu824.yaml
+  obu825:
+    config_path: nodes/obu825.yaml
+  obu826:
+    config_path: nodes/obu826.yaml
+  obu827:
+    config_path: nodes/obu827.yaml
+  obu828:
+    config_path: nodes/obu828.yaml
+  obu829:
+    config_path: nodes/obu829.yaml
+  obu830:
+    config_path: nodes/obu830.yaml
+  obu831:
+    config_path: nodes/obu831.yaml
+  obu832:
+    config_path: nodes/obu832.yaml
+  obu833:
+    config_path: nodes/obu833.yaml
+  obu834:
+    config_path: nodes/obu834.yaml
+  obu835:
+    config_path: nodes/obu835.yaml
+  obu836:
+    config_path: nodes/obu836.yaml
+  obu837:
+    config_path: nodes/obu837.yaml
+  obu838:
+    config_path: nodes/obu838.yaml
+  obu839:
+    config_path: nodes/obu839.yaml
+  obu840:
+    config_path: nodes/obu840.yaml
+  obu841:
+    config_path: nodes/obu841.yaml
+  obu842:
+    config_path: nodes/obu842.yaml
+  obu843:
+    config_path: nodes/obu843.yaml
+  obu844:
+    config_path: nodes/obu844.yaml
+  obu845:
+    config_path: nodes/obu845.yaml
+  obu846:
+    config_path: nodes/obu846.yaml
+  obu847:
+    config_path: nodes/obu847.yaml
+  obu848:
+    config_path: nodes/obu848.yaml
+  obu849:
+    config_path: nodes/obu849.yaml
+  obu850:
+    config_path: nodes/obu850.yaml
+  obu851:
+    config_path: nodes/obu851.yaml
+  obu852:
+    config_path: nodes/obu852.yaml
+  obu853:
+    config_path: nodes/obu853.yaml
+  obu854:
+    config_path: nodes/obu854.yaml
+  obu855:
+    config_path: nodes/obu855.yaml
+  obu856:
+    config_path: nodes/obu856.yaml
+  obu857:
+    config_path: nodes/obu857.yaml
+  obu858:
+    config_path: nodes/obu858.yaml
+  obu859:
+    config_path: nodes/obu859.yaml
+  obu860:
+    config_path: nodes/obu860.yaml
+  obu861:
+    config_path: nodes/obu861.yaml
+  obu862:
+    config_path: nodes/obu862.yaml
+  obu863:
+    config_path: nodes/obu863.yaml
+  obu864:
+    config_path: nodes/obu864.yaml
+  obu865:
+    config_path: nodes/obu865.yaml
+  obu866:
+    config_path: nodes/obu866.yaml
+  obu867:
+    config_path: nodes/obu867.yaml
+  obu868:
+    config_path: nodes/obu868.yaml
+  obu869:
+    config_path: nodes/obu869.yaml
+  obu870:
+    config_path: nodes/obu870.yaml
+  obu871:
+    config_path: nodes/obu871.yaml
+  obu872:
+    config_path: nodes/obu872.yaml
+  obu873:
+    config_path: nodes/obu873.yaml
+  obu874:
+    config_path: nodes/obu874.yaml
+  obu875:
+    config_path: nodes/obu875.yaml
+  obu876:
+    config_path: nodes/obu876.yaml
+  obu877:
+    config_path: nodes/obu877.yaml
+  obu878:
+    config_path: nodes/obu878.yaml
+  obu879:
+    config_path: nodes/obu879.yaml
+  obu880:
+    config_path: nodes/obu880.yaml
+  obu881:
+    config_path: nodes/obu881.yaml
+  obu882:
+    config_path: nodes/obu882.yaml
+  obu883:
+    config_path: nodes/obu883.yaml
+  obu884:
+    config_path: nodes/obu884.yaml
+  obu885:
+    config_path: nodes/obu885.yaml
+  obu886:
+    config_path: nodes/obu886.yaml
+  obu887:
+    config_path: nodes/obu887.yaml
+  obu888:
+    config_path: nodes/obu888.yaml
+  obu889:
+    config_path: nodes/obu889.yaml
+  obu890:
+    config_path: nodes/obu890.yaml
+  obu891:
+    config_path: nodes/obu891.yaml
+  obu892:
+    config_path: nodes/obu892.yaml
+  obu893:
+    config_path: nodes/obu893.yaml
+  obu894:
+    config_path: nodes/obu894.yaml
+  obu895:
+    config_path: nodes/obu895.yaml
+  obu896:
+    config_path: nodes/obu896.yaml
+  obu897:
+    config_path: nodes/obu897.yaml
+  obu898:
+    config_path: nodes/obu898.yaml
+  obu899:
+    config_path: nodes/obu899.yaml
+  obu900:
+    config_path: nodes/obu900.yaml
+  obu901:
+    config_path: nodes/obu901.yaml
+  obu902:
+    config_path: nodes/obu902.yaml
+  obu903:
+    config_path: nodes/obu903.yaml
+  obu904:
+    config_path: nodes/obu904.yaml
+  obu905:
+    config_path: nodes/obu905.yaml
+  obu906:
+    config_path: nodes/obu906.yaml
+  obu907:
+    config_path: nodes/obu907.yaml
+  obu908:
+    config_path: nodes/obu908.yaml
+  obu909:
+    config_path: nodes/obu909.yaml
+  obu910:
+    config_path: nodes/obu910.yaml
+  obu911:
+    config_path: nodes/obu911.yaml
+  obu912:
+    config_path: nodes/obu912.yaml
+  obu913:
+    config_path: nodes/obu913.yaml
+  obu914:
+    config_path: nodes/obu914.yaml
+  obu915:
+    config_path: nodes/obu915.yaml
+  obu916:
+    config_path: nodes/obu916.yaml
+  obu917:
+    config_path: nodes/obu917.yaml
+  obu918:
+    config_path: nodes/obu918.yaml
+  obu919:
+    config_path: nodes/obu919.yaml
+  obu920:
+    config_path: nodes/obu920.yaml
+  obu921:
+    config_path: nodes/obu921.yaml
+  obu922:
+    config_path: nodes/obu922.yaml
+  obu923:
+    config_path: nodes/obu923.yaml
+  obu924:
+    config_path: nodes/obu924.yaml
+  obu925:
+    config_path: nodes/obu925.yaml
+  obu926:
+    config_path: nodes/obu926.yaml
+  obu927:
+    config_path: nodes/obu927.yaml
+  obu928:
+    config_path: nodes/obu928.yaml
+  obu929:
+    config_path: nodes/obu929.yaml
+  obu930:
+    config_path: nodes/obu930.yaml
+  obu931:
+    config_path: nodes/obu931.yaml
+  obu932:
+    config_path: nodes/obu932.yaml
+  obu933:
+    config_path: nodes/obu933.yaml
+  obu934:
+    config_path: nodes/obu934.yaml
+  obu935:
+    config_path: nodes/obu935.yaml
+  obu936:
+    config_path: nodes/obu936.yaml
+  obu937:
+    config_path: nodes/obu937.yaml
+  obu938:
+    config_path: nodes/obu938.yaml
+  obu939:
+    config_path: nodes/obu939.yaml
+  obu940:
+    config_path: nodes/obu940.yaml
+  obu941:
+    config_path: nodes/obu941.yaml
+  obu942:
+    config_path: nodes/obu942.yaml
+  obu943:
+    config_path: nodes/obu943.yaml
+  obu944:
+    config_path: nodes/obu944.yaml
+  obu945:
+    config_path: nodes/obu945.yaml
+  obu946:
+    config_path: nodes/obu946.yaml
+  obu947:
+    config_path: nodes/obu947.yaml
+  obu948:
+    config_path: nodes/obu948.yaml
+  obu949:
+    config_path: nodes/obu949.yaml
+  obu950:
+    config_path: nodes/obu950.yaml
+  obu951:
+    config_path: nodes/obu951.yaml
+  obu952:
+    config_path: nodes/obu952.yaml
+  obu953:
+    config_path: nodes/obu953.yaml
+  obu954:
+    config_path: nodes/obu954.yaml
+  obu955:
+    config_path: nodes/obu955.yaml
+  obu956:
+    config_path: nodes/obu956.yaml
+  obu957:
+    config_path: nodes/obu957.yaml
+  obu958:
+    config_path: nodes/obu958.yaml
+  obu959:
+    config_path: nodes/obu959.yaml
+  obu960:
+    config_path: nodes/obu960.yaml
+  obu961:
+    config_path: nodes/obu961.yaml
+  obu962:
+    config_path: nodes/obu962.yaml
+  obu963:
+    config_path: nodes/obu963.yaml
+  obu964:
+    config_path: nodes/obu964.yaml
+  obu965:
+    config_path: nodes/obu965.yaml
+  obu966:
+    config_path: nodes/obu966.yaml
+  obu967:
+    config_path: nodes/obu967.yaml
+  obu968:
+    config_path: nodes/obu968.yaml
+  obu969:
+    config_path: nodes/obu969.yaml
+  obu970:
+    config_path: nodes/obu970.yaml
+  obu971:
+    config_path: nodes/obu971.yaml
+  obu972:
+    config_path: nodes/obu972.yaml
+  obu973:
+    config_path: nodes/obu973.yaml
+  obu974:
+    config_path: nodes/obu974.yaml
+  obu975:
+    config_path: nodes/obu975.yaml
+  obu976:
+    config_path: nodes/obu976.yaml
+  obu977:
+    config_path: nodes/obu977.yaml
+  obu978:
+    config_path: nodes/obu978.yaml
+  obu979:
+    config_path: nodes/obu979.yaml
+  obu980:
+    config_path: nodes/obu980.yaml
+  obu981:
+    config_path: nodes/obu981.yaml
+  obu982:
+    config_path: nodes/obu982.yaml
+  obu983:
+    config_path: nodes/obu983.yaml
+  obu984:
+    config_path: nodes/obu984.yaml
+  obu985:
+    config_path: nodes/obu985.yaml
+  obu986:
+    config_path: nodes/obu986.yaml
+  obu987:
+    config_path: nodes/obu987.yaml
+  obu988:
+    config_path: nodes/obu988.yaml
+  obu989:
+    config_path: nodes/obu989.yaml
+  obu990:
+    config_path: nodes/obu990.yaml
+  obu991:
+    config_path: nodes/obu991.yaml
+  obu992:
+    config_path: nodes/obu992.yaml
+  obu993:
+    config_path: nodes/obu993.yaml
+  obu994:
+    config_path: nodes/obu994.yaml
+  obu995:
+    config_path: nodes/obu995.yaml
+  obu996:
+    config_path: nodes/obu996.yaml
+  obu997:
+    config_path: nodes/obu997.yaml
+  obu998:
+    config_path: nodes/obu998.yaml
+  obu999:
+    config_path: nodes/obu999.yaml
+  obu1000:
+    config_path: nodes/obu1000.yaml
+
+mobility:
+  enabled: true
+  bbox:
+    min_lat: 41.140
+    max_lat: 41.175
+    min_lon: -8.660
+    max_lon: -8.590
+  osm_cache: osm_cache.json
+  tick_ms: 100
+  min_trip_distance_m: 10000
+  desired_speed_ms: 13.9
+
+nakagami:
+  enabled: true
+  m: 10.0
+  eta: 2.0
+  snr_0_db: 85.0
+  snr_thresh_db: 10.0
+  max_range_m: 1500.0
+  latency_ms_per_100m: 0.5
+  update_ms: 20

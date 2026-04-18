@@ -10,6 +10,9 @@ pub struct NodePosition {
     pub lon: f64,
     pub speed: f64,
     pub bearing: f64,
+    /// Optional destination coordinates for the node's current trip.
+    pub dest_lat: Option<f64>,
+    pub dest_lon: Option<f64>,
 }
 
 /// Upstream routing entry carried inside [`NodeInfo`].

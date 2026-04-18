@@ -10,6 +10,28 @@ pub struct ChannelParameters {
     /// Jitter adds random variation to latency: ±jitter_ms around base latency
     /// For example, latency=10ms, jitter=2ms gives range [8ms, 12ms]
     pub jitter: Duration,
+    /// Optional timestamped per-channel cached sample value (used for coherence)
+    /// Represented as (timestamp_ms_since_epoch, loss_sample) if present.
+    #[serde(default)]
+    pub cached_sample_ts_ms: Option<u128>,
+    #[serde(default)]
+    pub cached_sample_loss: Option<f64>,
+    /// Last computed/assigned distance (metres) for this channel, if known.
+    #[serde(default)]
+    pub last_distance_m: Option<f64>,
+}
+
+impl Default for ChannelParameters {
+    fn default() -> Self {
+        Self {
+            latency: Duration::from_millis(0),
+            loss: 0.0,
+            jitter: Duration::from_millis(0),
+            cached_sample_ts_ms: None,
+            cached_sample_loss: None,
+            last_distance_m: None,
+        }
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -32,6 +54,9 @@ impl From<HashMap<String, Value>> for ChannelParameters {
             latency: Duration::from_millis(latency),
             loss,
             jitter: Duration::from_millis(jitter),
+            cached_sample_ts_ms: None,
+            cached_sample_loss: None,
+            last_distance_m: None,
         }
     }
 }

@@ -360,7 +360,9 @@ set of interfaces and node instance inside the namespace context:
 - *RSU*: `vanet` TAP + `cloud` TAP (UDP socket bound here) → `rsu_lib::create_with_vdev(args, device, name)`
 - *Server*: `virtual` TAP + `cloud` TAP (UDP socket) → `Server::new(...).with_tun(tun)`, `server.start()` called immediately via `block_in_place`
 
-=== HTTP Control API (feature: `webview`)
+=== HTTP Control API
+
+The simulator exposes an HTTP control API (port 3030) implemented with the `warp` framework. The API provides endpoints for metrics, per-node and per-channel inspection, and runtime updates used by the TUI and the native visualization tools.
 
 #figure(
   table(
@@ -449,29 +451,13 @@ management API.
 
 == Visualisation Dashboard <sec-visualization>
 
-The browser-based visualisation dashboard (`visualization/`) is a
-Yew/WebAssembly application compiled to WASM and served alongside the simulator
-HTTP API. It provides a live read-only view of simulation state without
-modifying any node behaviour, making it suitable for demonstration and
-monitoring without experimental side effects.
+The visualization dashboard is provided by the native_viz tool and the simulator HTTP API. It provides a live read-only view of simulation state without modifying any node behaviour, making it suitable for demonstration and monitoring without experimental side effects.
 
 === Technology Stack
 
-The frontend is written in Rust using the *Yew* framework — a component-based
-web UI library analogous to React, but compiled from Rust to WebAssembly via
-`wasm-bindgen`. Building and serving the dashboard requires `trunk`, a Rust
-WASM bundler:
+The frontend is implemented in a dedicated visualization crate and consumes the simulator HTTP API. See native_viz/README.md for build and run instructions for the native visualization tooling.
 
-```sh
-rustup target add wasm32-unknown-unknown
-cargo install trunk
-
-cd visualization
-trunk build --release   # produces dist/ with index.html + wasm bundle
-trunk serve             # dev server with live reload
-```
-
-The Yew component model maps directly onto the simulator's data model:
+The native visualization's component model maps directly onto the simulator's data model:
 `NodeState`, `ChannelState`, and `UpstreamState` structs are shared with the
 HTTP API layer and serialised as JSON. The dashboard fetches the `/node_info`
 endpoint on a configurable polling interval (default 1 second) and triggers
@@ -517,11 +503,11 @@ colour encodes a composite health metric (green=good, amber=degraded, red=bad)
 derived from channel latency and loss, enabling at-a-glance topology health
 assessment.
 
-For performance-sensitive paths the dashboard bypasses the Yew/WASM render
+For performance-sensitive paths the dashboard bypasses the front-end render
 cycle and issues a native JavaScript `fetch('/node_info')` to obtain node
-positions and routing state. This JS-native polling path updates the Leaflet
+positions and routing state. This native polling path updates the Leaflet
 layers directly and only manipulates the DOM via minimal imperative calls,
-reducing WASM round-trips and improving responsiveness on lower-power clients.
+improving responsiveness on lower-power clients.
 
 The map tab filters server and cloud nodes from the display by default, and
 re-centres the viewport on visible vehicular nodes when the tab is activated.
@@ -539,10 +525,22 @@ and serialised via `serde_json`. This separation means the dashboard can be
 updated or replaced without modifying the simulator, and the simulator can
 run without a browser client.
 
-The WebAssembly target is fully separate from the simulator's compilation:
-`cargo build --workspace` does not include the `visualization` crate (it
-requires the `wasm32-unknown-unknown` target and `trunk`). CI builds the WASM
-artifact in a separate step from the native simulator.
+The native visualization is developed as a separate native crate and built independently from the simulator; see native_viz/README.md for build and run instructions. A native implementation was selected because it reduces runtime overhead and toolchain complexity compared with a WebAssembly-based frontend, facilitating real-time rendering of large topologies while maintaining a simpler build and deployment workflow for experiment runs.
+
+=== Alternatives tried: kernel bridge + tc (netem)
+
+As an alternative to the in-process channel simulation, network interfaces were attached to a Linux bridge and per-link impairments applied with `tc netem`. Example command used for each directed link:
+
+```text
+tc qdisc replace dev br0 root netem delay 50ms 10ms loss 1%
+```
+
+Batch application of qdisc rules was used to configure many links. CPU usage was monitored interactively with `htop`. Even when rules were applied in batches, the bridge+tc setup saturated the test machine (htop reported near‑100% CPU), preventing the system from scaling to the same node counts achieved by the in‑process simulator.
+
+Kernel‑level forwarding and netem-based shaping impose a high per‑packet processing cost on the host. In this project the in‑process channel simulation (implemented in Rust within the simulator runtime) provided equivalent latency/jitter/loss semantics while using far less CPU, allowing significantly larger simulated topologies on the same hardware.
+
+When reporting this experiment in the thesis, include: the exact `tc` parameters used, the test machine specifications (CPU model and core count, RAM), and a small CPU% vs node count plot or table to quantify the scalability gap. Note the measurement method (`htop`) and that even with batch rule application the kernel approach exhausted available CPU.
+
 
 == Simulator Configuration <sec-configuration>
 

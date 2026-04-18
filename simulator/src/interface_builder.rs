@@ -13,6 +13,7 @@ use std::sync::Arc;
 /// Linux default is 1000 packets.  With a 9000 B VANET MTU and 119 nodes that
 /// is ~1 GB of kernel sk_buff memory; shrinking to 16 drops it to ~17 MB.
 /// Cloud/virtual interfaces (1500 B MTU) benefit proportionally.
+#[allow(dead_code)]
 const TAP_TXQUEUELEN: u32 = 16;
 
 /// Builder for creating network interfaces with optional configuration
@@ -115,7 +116,7 @@ impl InterfaceBuilder {
 
             let real_tun = builder.build()?.into_iter().next().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "No TAP device returned from builder for interface '{}'",
+                    "Failed to get TUN device after creation for interface {}",
                     self.name
                 )
             })?;
@@ -159,6 +160,17 @@ impl InterfaceBuilder {
                     txqueuelen = TAP_TXQUEUELEN,
                     "ip link set txqueuelen failed (non-fatal)"
                 );
+            }
+
+            // Set promiscuous mode to ensure broadcast/multicast reception
+            let status = std::process::Command::new("ip")
+                .args(["link", "set", &self.name, "promisc", "on"])
+                .status()
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to set promiscuous mode on {}: {}", self.name, e)
+                })?;
+            if !status.success() {
+                tracing::warn!(iface = %self.name, "ip link set promisc on failed (non-fatal)");
             }
 
             Ok(Arc::new(Tun::new_real(real_tun)))

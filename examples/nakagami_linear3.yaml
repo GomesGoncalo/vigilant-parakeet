@@ -1,0 +1,52 @@
+# Thesis topology: Linear-3 with Nakagami-m fading
+#
+# Same chain topology as examples/thesis/linear-3/ but with per-link
+# Nakagami-m fading enabled on the VANET channels.
+#
+# Fading parameters (default m=1.0, Rayleigh):
+#   m: 0.5  severe fading
+#   m: 0.9  moderate fading
+#   m: 1.0  Rayleigh (reference)
+#   m: 2.0  mild fading
+#   m: 5.0  near-AWGN
+#
+# Vary 'm' and 'update_ms' to explore fading regimes.
+# Run 10 independent repetitions per m value.
+
+nodes:
+  server1:
+    config_path: examples/thesis/linear-3/nodes/server1.yaml
+  rsu1:
+    config_path: examples/thesis/linear-3/nodes/rsu1.yaml
+  obu1:
+    config_path: examples/thesis/linear-3/nodes/obu1.yaml
+  obu2:
+    config_path: examples/thesis/linear-3/nodes/obu2.yaml
+
+topology:
+  rsu1:
+    obu1:
+      latency: 10
+      loss: 0.0
+  obu1:
+    rsu1:
+      latency: 10
+      loss: 0.0
+    obu2:
+      latency: 10
+      loss: 0.0
+  obu2:
+    obu1:
+      latency: 10
+      loss: 0.0
+
+nakagami:
+  enabled: true
+  m: 1.0
+  eta: 2.7
+  snr_0_db: 85.0
+  snr_thresh_db: 10.0
+  max_range_m: 800.0
+  latency_ms_per_100m: 2.0
+  update_ms: 10
+  default_mode: per_packet

@@ -14,6 +14,8 @@ pub struct VizApp {
     tile_opacity: f32,
     /// Whether to draw the RSU coverage range circles.
     show_rsu_range: bool,
+    /// Whether to follow the selected OBU.
+    follow: bool,
     /// Current text in the search box.
     search_query: String,
     /// Node name that is currently highlighted (jumped to via search).
@@ -36,6 +38,7 @@ impl VizApp {
             fitted: false,
             tile_opacity: 1.0,
             show_rsu_range: false,
+            follow: false,
             search_query: String::new(),
             highlighted_node: None,
         }
@@ -51,7 +54,7 @@ impl eframe::App for VizApp {
 
         // Keep repainting at ~5 fps so movement stays visible.
         ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(200));
+            .request_repaint_after(std::time::Duration::from_millis(20));
 
         // Auto-fit to node centroid on the first non-empty positions batch.
         if !self.fitted && !self.snapshot.positions.is_empty() {
@@ -70,6 +73,7 @@ impl eframe::App for VizApp {
                     &self.snapshot,
                     &mut self.tile_opacity,
                     &mut self.show_rsu_range,
+                    &mut self.follow,
                     &mut self.search_query,
                     &mut self.highlighted_node,
                 )
@@ -80,6 +84,15 @@ impl eframe::App for VizApp {
         if let Some(ref name) = jump_to {
             if let Some(pos) = self.snapshot.positions.get(name) {
                 self.map_memory.center_at(lon_lat(pos.lon, pos.lat));
+            }
+        }
+
+        // If follow is enabled, always center on the highlighted node's position.
+        if self.follow {
+            if let Some(ref name) = self.highlighted_node {
+                if let Some(pos) = self.snapshot.positions.get(name) {
+                    self.map_memory.center_at(lon_lat(pos.lon, pos.lat));
+                }
             }
         }
 
@@ -114,6 +127,7 @@ fn draw_sidebar(
     snap: &Snapshot,
     tile_opacity: &mut f32,
     show_rsu_range: &mut bool,
+    follow: &mut bool,
     search_query: &mut String,
     highlighted_node: &mut Option<String>,
 ) -> Option<String> {
@@ -212,7 +226,7 @@ fn draw_sidebar(
         v
     };
 
-    let search_response = ui.add(
+    let _search_response = ui.add(
         egui::TextEdit::singleline(search_query)
             .hint_text("node name…")
             .desired_width(f32::INFINITY),
@@ -246,33 +260,35 @@ fn draw_sidebar(
         }
     });
 
-    // Jump on Enter, or immediately when there is exactly one match.
-    let pressed_enter =
-        search_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    // Follow toggle
+    let follow_label = if *follow {
+        "Unfollow selected node"
+    } else {
+        "Follow selected node"
+    };
+    if ui.button(follow_label).clicked() {
+        *follow = !*follow;
+    }
 
-    if pressed_enter || matches.len() == 1 {
-        if let Some(name) = matches.first() {
-            *highlighted_node = Some(name.clone());
-            jump_to = Some(name.clone());
-        }
-    } else if search_query.is_empty() {
+    if search_query.is_empty() {
         *highlighted_node = None;
+        jump_to = None;
     }
 
     // Show a scrollable list when there are multiple matches.
-    if matches.len() > 1 {
-        egui::ScrollArea::vertical()
-            .max_height(120.0)
-            .show(ui, |ui| {
-                for name in &matches {
-                    let selected = highlighted_node.as_deref() == Some(name.as_str());
-                    if ui.selectable_label(selected, name).clicked() {
-                        *highlighted_node = Some(name.clone());
+    egui::ScrollArea::vertical()
+        .max_height(120.0)
+        .show(ui, |ui| {
+            for name in &matches {
+                let selected = highlighted_node.as_deref() == Some(name.as_str());
+                if ui.selectable_label(selected, name).clicked() {
+                    *highlighted_node = Some(name.clone());
+                    if *follow {
                         jump_to = Some(name.clone());
                     }
                 }
-            });
-    }
+            }
+        });
 
     ui.separator();
 

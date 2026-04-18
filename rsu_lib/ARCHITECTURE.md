@@ -11,7 +11,7 @@ flowchart TB
 
   RS --> NL["node_lib::control (routing_utils, route, client_cache)"]
   RS --> MS["node_lib::messages"]
-  RS --> MET["node_lib::metrics (feature: stats)"]
+  RS --> MET["node_lib::metrics (optional: stats; simulator enables metrics by default)"]
   RS --> CMN["common::Tun, common::Device"]
 ```
 
