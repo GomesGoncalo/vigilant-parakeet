@@ -375,7 +375,11 @@ impl Rsu {
                             );
                         }
                     }
-                    let _ = tokio_timerfd::sleep(periodicity).await;
+                    let jitter: u32 =
+                        rand::random::<u32>() % (periodicity.as_millis() as f32 / 10.0) as u32;
+                    let jitter = Duration::from_millis(jitter.into());
+                    let sleep_duration = periodicity + jitter;
+                    let _ = tokio_timerfd::sleep(sleep_duration).await;
                 }
             }
             .instrument(span),

@@ -14,20 +14,16 @@ mod sim_args;
 use sim_args::SimArgs;
 
 mod channel;
-#[cfg(feature = "mobility")]
 mod fading;
 mod interface_builder;
 mod metrics;
-#[cfg(feature = "mobility")]
 mod mobility;
 mod namespace;
 mod node_factory;
 mod node_interfaces;
 mod simulator;
 mod topology;
-#[cfg(feature = "tui")]
 mod tui;
-#[cfg(feature = "webview")]
 mod webview;
 use node_factory::create_node_from_settings;
 use simulator::Simulator;
@@ -40,7 +36,6 @@ async fn main() -> Result<()> {
     let args = SimArgs::parse();
 
     // Set up logging based on TUI mode
-    #[cfg(feature = "tui")]
     let log_buffer = if args.tui {
         let buffer = tui::LogBuffer::new();
         let tui_layer = tui::TuiLogLayer::new(buffer.clone_buffer());
@@ -65,21 +60,6 @@ async fn main() -> Result<()> {
         }
         None
     };
-
-    #[cfg(not(feature = "tui"))]
-    {
-        if args.pretty {
-            tracing_subscriber::registry()
-                .with(fmt::layer().with_thread_ids(true).pretty())
-                .with(EnvFilter::from_default_env())
-                .init();
-        } else {
-            tracing_subscriber::registry()
-                .with(fmt::layer().with_thread_ids(true))
-                .with(EnvFilter::from_default_env())
-                .init();
-        }
-    }
 
     let simulator = std::sync::Arc::new(
         Simulator::new(&args, |name, config| {
@@ -111,14 +91,12 @@ async fn main() -> Result<()> {
     // the correct network namespace before returning
 
     // Spawn TUI if requested
-    #[cfg(feature = "tui")]
     if args.tui {
         tracing::info!("Starting TUI dashboard...");
         let metrics = simulator.get_metrics();
         let log_buffer = log_buffer.unwrap().clone_buffer();
 
-        // Start webview server if feature is enabled (before moving simulator)
-        #[cfg(feature = "webview")]
+        // Start webview server (always enabled) and TUI if requested
         {
             tracing::info!("Starting webview API server on http://127.0.0.1:3030");
             let routes = webview::setup_routes(&simulator);
@@ -148,29 +126,6 @@ async fn main() -> Result<()> {
             }
         }
 
-        // No webview feature - just TUI and simulator
-        #[cfg(not(feature = "webview"))]
-        {
-            // Pass the simulator Arc directly to the TUI (run_tui expects Arc<Simulator>)
-            let tui_sim = simulator.clone();
-            let tui_handle = tokio::spawn(async move {
-                if let Err(e) = tui::run_tui(metrics, log_buffer, tui_sim).await {
-                    tracing::error!("TUI error: {}", e);
-                }
-            });
-
-            // Run simulator in background
-            let sim_handle = tokio::spawn(async move {
-                let _ = simulator.run().await;
-            });
-
-            tokio::select! {
-                _ = tui_handle => { tracing::info!("TUI exited"); }
-                _ = sim_handle => { tracing::info!("Simulator exited"); }
-                _ = signal::ctrl_c() => { tracing::info!("Ctrl+C received"); }
-            }
-        }
-
         return Ok(());
     }
 
@@ -193,7 +148,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    #[cfg(feature = "webview")]
     {
         let routes = webview::setup_routes(&simulator);
         tokio::select! {
@@ -202,7 +156,6 @@ async fn main() -> Result<()> {
             _ = signal::ctrl_c() => {}
         }
     }
-    #[cfg(not(feature = "webview"))]
     {
         tokio::select! {
             _ = simulator.run() => {}
@@ -234,8 +187,10 @@ mod tests {
             params,
             mac,
             tun.clone(),
-            &"from".to_string(),
-            &"to".to_string(),
+            "from".to_string(),
+            "to".to_string(),
+            None,
+            None,
         );
 
         // Setting params via set_params should accept a valid map
@@ -256,7 +211,6 @@ mod tests {
         assert!(res.is_ok());
     }
 
-    #[cfg(feature = "webview")]
     #[test]
     fn error_message_serialize() {
         let em = crate::webview::ErrorMessage {

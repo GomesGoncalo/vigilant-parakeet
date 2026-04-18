@@ -1,0 +1,29 @@
+# Linear-3 variant: hop-count only (cached_candidates = 0)
+# OBUs fall back to hop count; no latency metric; no N-best failover.
+
+nodes:
+  server1:
+    config_path: examples/thesis/linear-3/nodes/server1.yaml
+  rsu1:
+    config_path: examples/thesis/linear-3/nodes/rsu1.yaml
+  obu1:
+    config_path: examples/thesis/linear-3/nodes/obu1_n0.yaml
+  obu2:
+    config_path: examples/thesis/linear-3/nodes/obu2_n0.yaml
+
+topology:
+  rsu1:
+    obu1:
+      latency: 10
+      loss: 0.0
+  obu1:
+    rsu1:
+      latency: 10
+      loss: 0.0
+    obu2:
+      latency: 10
+      loss: 0.0
+  obu2:
+    obu1:
+      latency: 10
+      loss: 0.0

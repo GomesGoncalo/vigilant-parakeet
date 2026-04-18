@@ -1,0 +1,77 @@
+# Thesis topology: Mixed-6
+#
+#   server1
+#     ├── rsu1  (cloud channel)          ├── rsu2  (cloud channel)
+#     │     ├── obu1 (10 ms)             │     ├── obu1 (20 ms)
+#     │     ├── obu2 (10 ms)             │     └── obu4 (10 ms)
+#     │     └── (obu3 via obu2, 2-hop)
+#
+# Topology:
+#   obu1 → rsu1 (10 ms) and obu1 → rsu2 (20 ms)
+#       OBU1 is equidistant in hops to both RSUs but rsu1 has lower latency.
+#       Tests latency-based metric vs. hop-count tie-breaking.
+#   obu2 → rsu1 (10 ms, direct)
+#   obu3 → obu2 (10 ms); reaches rsu1 only via obu2 (two-hop path)
+#   obu4 → rsu2 (10 ms, direct)
+#
+# This topology exercises:
+#   - competing RSU signals (obu1 must pick the better latency path)
+#   - multi-hop relay routing (obu3 via obu2)
+#   - hysteresis band (obu1 should not flip if latency difference is within 30%)
+
+nodes:
+  server1:
+    config_path: examples/thesis/mixed-6/nodes/server1.yaml
+  rsu1:
+    config_path: examples/thesis/mixed-6/nodes/rsu1.yaml
+  rsu2:
+    config_path: examples/thesis/mixed-6/nodes/rsu2.yaml
+  obu1:
+    config_path: examples/thesis/mixed-6/nodes/obu1.yaml
+  obu2:
+    config_path: examples/thesis/mixed-6/nodes/obu2.yaml
+  obu3:
+    config_path: examples/thesis/mixed-6/nodes/obu3.yaml
+  obu4:
+    config_path: examples/thesis/mixed-6/nodes/obu4.yaml
+
+topology:
+  # rsu1 <-> obu1 (low latency, preferred path for obu1)
+  rsu1:
+    obu1:
+      latency: 10
+      loss: 0.0
+    obu2:
+      latency: 10
+      loss: 0.0
+  # rsu2 <-> obu1 (high latency, secondary path for obu1) and <-> obu4
+  rsu2:
+    obu1:
+      latency: 20
+      loss: 0.0
+    obu4:
+      latency: 10
+      loss: 0.0
+  obu1:
+    rsu1:
+      latency: 10
+      loss: 0.0
+    rsu2:
+      latency: 20
+      loss: 0.0
+  obu2:
+    rsu1:
+      latency: 10
+      loss: 0.0
+    obu3:
+      latency: 10
+      loss: 0.0
+  # obu3 reaches rsu1 only through obu2
+  obu3:
+    obu2:
+      latency: 10
+      loss: 0.0
+  obu4:
+    rsu2:
+      latency: 10
+      loss: 0.0

@@ -154,7 +154,7 @@ impl MobilityManager {
                     let route = graph.route(start, dest).unwrap_or_else(|| vec![start]);
                     let vehicle = VehicleState::new(
                         if route.len() >= 2 {
-                            route
+                            route.clone()
                         } else {
                             vec![start, start]
                         },
@@ -163,6 +163,10 @@ impl MobilityManager {
                     );
                     let (x, y) = graph.projected_pos(start);
                     let (lat, lon) = back_project(x, y, origin);
+                    // Destination is the last node in the planned route.
+                    let dest_idx = *route.last().unwrap_or(&start);
+                    let (dx, dy) = graph.projected_pos(dest_idx);
+                    let (dlat, dlon) = back_project(dx, dy, origin);
                     positions.write().await.insert(
                         name.clone(),
                         NodePosition {
@@ -170,6 +174,8 @@ impl MobilityManager {
                             lon,
                             speed: 0.0,
                             bearing: 0.0,
+                            dest_lat: Some(dlat),
+                            dest_lon: Some(dlon),
                         },
                     );
                     vehicles.insert(name.clone(), vehicle);
@@ -190,6 +196,8 @@ impl MobilityManager {
                             lon,
                             speed: 0.0,
                             bearing: 0.0,
+                            dest_lat: None,
+                            dest_lon: None,
                         },
                     );
                     fixed.insert(name.clone(), (x, y));
@@ -312,6 +320,10 @@ impl MobilityManager {
         let mut pos_map = self.positions.write().await;
         for (name, v) in &self.vehicles {
             let (lat, lon) = back_project(v.x, v.y, self.origin);
+            // Destination is the last node in the vehicle's route, if any.
+            let dest_idx = *v.route.last().unwrap_or(&v.route[v.route_idx]);
+            let (dx, dy) = graph.projected_pos(dest_idx);
+            let (dlat, dlon) = back_project(dx, dy, self.origin);
             pos_map.insert(
                 name.clone(),
                 NodePosition {
@@ -319,6 +331,8 @@ impl MobilityManager {
                     lon,
                     speed: v.speed,
                     bearing: v.bearing(),
+                    dest_lat: Some(dlat),
+                    dest_lon: Some(dlon),
                 },
             );
         }
@@ -329,6 +343,8 @@ impl MobilityManager {
                 lon,
                 speed: 0.0,
                 bearing: 0.0,
+                dest_lat: None,
+                dest_lon: None,
             });
         }
     }

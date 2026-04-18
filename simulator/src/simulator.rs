@@ -1,27 +1,28 @@
 use crate::channel::Channel;
+use crate::fading::NakagamiConfig;
+use crate::mobility::{position::NodePosition, MobilityConfig, MobilityManager, NodeGeoConfig};
 use crate::namespace::{NamespaceManager, NamespaceWrapper};
 use crate::sim_args::SimArgs;
 use anyhow::{Error, Result};
+use common::channel_parameters::ChannelParameters;
 use common::device::Device;
 use common::network_interface::NetworkInterface;
-#[cfg(any(feature = "webview", feature = "mobility"))]
 use common::tun::Tun;
 use config::Value;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use itertools::Itertools;
+use mac_address::MacAddress;
 use node_lib::{Node, PACKET_BUFFER_SIZE};
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 use server_lib::Server;
-use std::{collections::HashMap, sync::Arc};
-#[cfg(feature = "mobility")]
-use {
-    crate::fading::NakagamiConfig,
-    crate::mobility::{position::NodePosition, MobilityConfig, MobilityManager, NodeGeoConfig},
-    common::channel_parameters::ChannelParameters,
-    mac_address::MacAddress,
-    std::time::Duration,
-    tokio::sync::RwLock,
+use std::time::Duration;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
 };
+use tokio::sync::RwLock;
 
 #[cfg(test)]
 mod simulator_tests {
@@ -43,8 +44,10 @@ mod simulator_tests {
             params,
             mac,
             tun.clone(),
-            &"from".to_string(),
-            &"to".to_string(),
+            "from".to_string(),
+            "to".to_string(),
+            None,
+            None,
         );
 
         // send data from peer side so channel.recv will receive it
@@ -65,7 +68,6 @@ mod simulator_tests {
 }
 
 #[derive(Clone)]
-#[cfg_attr(not(feature = "webview"), allow(dead_code))]
 pub enum SimNode {
     Obu(Arc<dyn Node>),
     Rsu(Arc<dyn Node>),
@@ -74,7 +76,6 @@ pub enum SimNode {
 }
 
 impl SimNode {
-    #[cfg(any(feature = "webview", feature = "mobility"))]
     pub fn as_any(&self) -> &dyn std::any::Any {
         match self {
             SimNode::Obu(o) => o.as_any(),
@@ -94,7 +95,6 @@ pub struct Simulator {
     channels: HashMap<String, HashMap<String, Arc<Channel>>>,
     /// Keep created nodes so external code (e.g. webview) may query node state.
     /// Stores (Device, NodeInterfaces, SimNode) - NodeInterfaces keeps ALL interfaces alive.
-    #[cfg_attr(not(feature = "webview"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     nodes: HashMap<String, (Arc<Device>, crate::node_interfaces::NodeInterfaces, SimNode)>,
     /// Map node names to their namespace index for server startup
@@ -103,36 +103,29 @@ pub struct Simulator {
     /// Real-time simulation metrics
     metrics: Arc<crate::metrics::SimulatorMetrics>,
     /// Shared geographic positions updated by the mobility manager (if enabled).
-    #[cfg(feature = "mobility")]
     positions: Arc<RwLock<HashMap<String, NodePosition>>>,
     /// Override queue: HTTP layer posts (lat, lon) here; tick loop replans.
-    #[cfg(feature = "mobility")]
     override_queue: Arc<tokio::sync::Mutex<HashMap<String, (f64, f64)>>>,
     /// Mobility manager (held here so run() can spawn its tick loop).
-    #[cfg(feature = "mobility")]
     mobility_manager: tokio::sync::Mutex<Option<MobilityManager>>,
     /// Nakagami-m fading config — present when fading is enabled.
-    #[cfg(feature = "mobility")]
     nakagami_config: Option<NakagamiConfig>,
     /// Per-OBU RSSI tables keyed by node name.
     ///
     /// The fading task writes `neighbor_mac → rssi_dbm` for each OBU every
     /// `update_ms`.  The OBU routing layer reads the table to prefer nearby RSUs.
-    #[cfg(feature = "mobility")]
     rssi_tables: HashMap<String, obu_lib::RssiTable>,
     /// Dynamic VANET channels, created/removed by the fading task based on node distance.
     ///
     /// Only pairs within `nakagami.max_range_m` have an active channel; all others
     /// are absent from the map, saving ~3.4 GB of pre-allocated mpsc buffer memory
     /// compared to the old full-mesh approach.
-    #[cfg(feature = "mobility")]
     #[allow(clippy::type_complexity)]
     vanet_channels: Arc<RwLock<HashMap<String, HashMap<String, Arc<Channel>>>>>,
     /// MAC address and VANET TUN handle for every non-server node.
     ///
     /// Kept so the fading task can construct new `Channel` objects on demand without
     /// needing to borrow from the full node map.
-    #[cfg(feature = "mobility")]
     vanet_node_info: HashMap<String, (MacAddress, Arc<Tun>)>,
 }
 
@@ -143,6 +136,7 @@ impl Simulator {
     fn parse_topology(
         config_file: &str,
         callback: impl Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
+        rng_seed: Option<u64>,
     ) -> Result<(
         HashMap<String, HashMap<String, Arc<Channel>>>,
         Vec<NamespaceWrapper>,
@@ -154,6 +148,20 @@ impl Simulator {
 
         // Create namespace manager
         let mut ns_manager = NamespaceManager::new();
+        // Prepare per-channel RNG factory derived from an optional base seed
+        let mk_rng = |from: &str, to: &str| -> Option<Arc<Mutex<StdRng>>> {
+            if let Some(base) = rng_seed {
+                // derive a per-channel seed from base + names
+                let mut h = base.wrapping_add(0x9E3779B97F4A7C15u64);
+                for b in from.as_bytes().iter().chain(to.as_bytes().iter()) {
+                    h = h.wrapping_mul(0x100000001b3u64).wrapping_add(*b as u64);
+                    h = h.rotate_left(13) ^ h;
+                }
+                Some(Arc::new(Mutex::new(StdRng::seed_from_u64(h))))
+            } else {
+                None
+            }
+        };
         let mut node_map: HashMap<
             String,
             (Arc<Device>, crate::node_interfaces::NodeInterfaces, SimNode),
@@ -186,8 +194,10 @@ impl Simulator {
                                 *parameters,
                                 device.0.mac_address(),
                                 vanet_tun.clone(),
-                                tnode,
-                                node,
+                                tnode.to_string(),
+                                node.to_string(),
+                                None,
+                                mk_rng(tnode.as_str(), node.as_str()),
                             ),
                         );
                     }
@@ -208,6 +218,9 @@ impl Simulator {
             latency: std::time::Duration::ZERO,
             loss: 0.0,
             jitter: std::time::Duration::ZERO,
+            cached_sample_ts_ms: None,
+            cached_sample_loss: None,
+            last_distance_m: None,
         };
         let no_filter_mac = mac_address::MacAddress::new([0u8; 6]);
 
@@ -225,7 +238,15 @@ impl Simulator {
                 .or_default()
                 .entry(to_key.clone())
                 .or_insert_with(|| {
-                    Channel::new(params, no_filter_mac, to_cloud.clone(), &from_key, &to_key)
+                    Channel::new(
+                        params,
+                        no_filter_mac,
+                        to_cloud.clone(),
+                        from_key.clone(),
+                        to_key.clone(),
+                        None,
+                        mk_rng(&from_key, &to_key),
+                    )
                 });
             channels
                 .entry(to_key.clone())
@@ -236,8 +257,10 @@ impl Simulator {
                         params,
                         no_filter_mac,
                         from_cloud.clone(),
-                        &to_key,
-                        &from_key,
+                        to_key.clone(),
+                        from_key.clone(),
+                        None,
+                        mk_rng(&to_key, &from_key),
                     )
                 });
             tracing::info!(from = %from_node, to = %to_node, "Created bidirectional cloud channel");
@@ -326,14 +349,17 @@ impl Simulator {
     where
         F: Fn(&str, &HashMap<String, Value>) -> CallbackReturn + Clone,
     {
-        #[cfg_attr(not(feature = "mobility"), allow(unused_mut))]
-        let (channels, namespaces, nodes, node_namespace_map) =
-            Self::parse_topology(&args.config_file, callback)?;
+        let (channels, namespaces, nodes, node_namespace_map) = Self::parse_topology(
+            &args.config_file,
+            callback,
+            std::env::var("VPARAKEET_RNG_SEED")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok()),
+        )?;
 
         // Parse optional Nakagami-m fading config.
         // VANET channels are now created dynamically by the fading task based on
         // inter-node distance, so there is no full-mesh pre-allocation here.
-        #[cfg(feature = "mobility")]
         let nakagami_config = Self::parse_nakagami_config(&args.config_file);
 
         // Initialize metrics
@@ -344,14 +370,12 @@ impl Simulator {
         let total_channels: usize = channels.values().map(|m| m.len()).sum();
         metrics.set_active_channels(total_channels as u64);
 
-        #[cfg(feature = "mobility")]
         let (positions, override_queue, mobility_option) =
             Self::maybe_init_mobility(&args.config_file, &nodes).await;
 
         // Build per-OBU RSSI tables and wire them into each OBU's routing layer.
         // The fading task will populate them; the OBU routing reads them on every
         // RSU heartbeat to choose the nearest RSU.
-        #[cfg(feature = "mobility")]
         let rssi_tables: HashMap<String, obu_lib::RssiTable> = {
             let mut tables = HashMap::new();
             for (name, (_, _, sim_node)) in &nodes {
@@ -369,7 +393,6 @@ impl Simulator {
 
         // Collect VANET node info (MAC + TUN) so the fading task can create channels
         // on demand without borrowing from the full node map.
-        #[cfg(feature = "mobility")]
         let vanet_node_info: HashMap<String, (MacAddress, Arc<Tun>)> = nodes
             .iter()
             .filter(|(_, (_, _, sn))| !matches!(sn, SimNode::Server(_)))
@@ -386,25 +409,17 @@ impl Simulator {
             nodes,
             node_namespace_map,
             metrics,
-            #[cfg(feature = "mobility")]
             nakagami_config,
-            #[cfg(feature = "mobility")]
             positions,
-            #[cfg(feature = "mobility")]
             override_queue,
-            #[cfg(feature = "mobility")]
             mobility_manager: tokio::sync::Mutex::new(mobility_option),
-            #[cfg(feature = "mobility")]
             rssi_tables,
-            #[cfg(feature = "mobility")]
             vanet_channels: Arc::new(RwLock::new(HashMap::new())),
-            #[cfg(feature = "mobility")]
             vanet_node_info,
         })
     }
 
     /// Parse optional `nakagami:` section from the config file.
-    #[cfg(feature = "mobility")]
     fn parse_nakagami_config(config_file: &str) -> Option<NakagamiConfig> {
         let cfg = config::Config::builder()
             .add_source(config::File::with_name(config_file))
@@ -419,7 +434,6 @@ impl Simulator {
 
     /// Parse optional mobility config and per-node geo configs, then init the
     /// MobilityManager if `mobility.enabled` is set.
-    #[cfg(feature = "mobility")]
     async fn maybe_init_mobility(
         config_file: &str,
         nodes: &HashMap<String, (Arc<Device>, crate::node_interfaces::NodeInterfaces, SimNode)>,
@@ -520,7 +534,6 @@ impl Simulator {
 
     pub async fn run(&self) -> Result<()> {
         // Spawn mobility tick loop if the manager was initialised.
-        #[cfg(feature = "mobility")]
         {
             if let Some(mgr) = self.mobility_manager.lock().await.take() {
                 tracing::info!("Starting mobility tick loop");
@@ -529,6 +542,22 @@ impl Simulator {
         }
 
         // Spawn Nakagami-m fading task if enabled (requires mobility positions).
+        // Prepare optional RNG seed and per-channel RNG factory before spawning tasks
+        let rng_seed: Option<u64> = std::env::var("VPARAKEET_RNG_SEED")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok());
+        let mk_rng = move |from: &str, to: &str| -> Option<Arc<Mutex<StdRng>>> {
+            if let Some(base) = rng_seed {
+                let mut h = base.wrapping_add(0x9E3779B97F4A7C15u64);
+                for b in from.as_bytes().iter().chain(to.as_bytes().iter()) {
+                    h = h.wrapping_mul(0x100000001b3u64).wrapping_add(*b as u64);
+                    h = h.rotate_left(13) ^ h;
+                }
+                Some(Arc::new(Mutex::new(StdRng::seed_from_u64(h))))
+            } else {
+                None
+            }
+        };
         //
         // The task runs every `update_ms` and, for each ordered pair of VANET nodes:
         //   • distance < max_range_m → create the channel if absent, then update
@@ -538,7 +567,6 @@ impl Simulator {
         // This keeps the live channel set proportional to the number of in-range pairs
         // (~1 590 out of 13 806 for the 6×8 RSU + 70 OBU scenario), saving the ~3.4 GB
         // of pre-allocated mpsc buffers that the old full-mesh approach required.
-        #[cfg(feature = "mobility")]
         if let Some(ref nak_cfg) = self.nakagami_config {
             tracing::info!("Starting Nakagami-m fading task (dynamic range-based channels)");
             let positions = self.positions.clone();
@@ -561,6 +589,9 @@ impl Simulator {
                     latency: Duration::ZERO,
                     loss: 0.0,
                     jitter: Duration::ZERO,
+                    cached_sample_ts_ms: None,
+                    cached_sample_loss: None,
+                    last_distance_m: None,
                 };
                 let node_names: Vec<String> = vanet_node_info.keys().cloned().collect();
                 let mut ticker = tokio::time::interval(interval);
@@ -570,7 +601,8 @@ impl Simulator {
                 let mut to_create: Vec<(String, String)> = Vec::with_capacity(64);
                 let mut to_remove: Vec<(String, String)> = Vec::with_capacity(64);
                 // (from, to, loss, latency_ms, rssi_dbm)
-                let mut to_update: Vec<(String, String, f64, u64, f32)> = Vec::with_capacity(2048);
+                let mut to_update: Vec<(String, String, f64, u64, f32, f64)> =
+                    Vec::with_capacity(2048);
 
                 loop {
                     ticker.tick().await;
@@ -621,6 +653,7 @@ impl Simulator {
                                         loss,
                                         latency_ms,
                                         rssi_dbm,
+                                        d,
                                     ));
                                 } else if channels.get(from).and_then(|m| m.get(to)).is_some() {
                                     to_remove.push((from.clone(), to.clone()));
@@ -636,8 +669,15 @@ impl Simulator {
                             let (to_mac, to_tun) =
                                 vanet_node_info.get(to).expect("node in info map");
                             tracing::debug!(from = %from, to = %to, "Creating VANET channel");
-                            let ch =
-                                Channel::new(default_params, *to_mac, to_tun.clone(), from, to);
+                            let ch = Channel::new(
+                                default_params,
+                                *to_mac,
+                                to_tun.clone(),
+                                from.clone(),
+                                to.clone(),
+                                Some(cfg.clone()),
+                                mk_rng(from.as_str(), to.as_str()),
+                            );
                             channels
                                 .entry(from.clone())
                                 .or_default()
@@ -657,15 +697,15 @@ impl Simulator {
                     // so we only need the outer read lock to locate each channel.
                     {
                         let channels = vanet_channels.read().await;
-                        for (from, to, loss, latency_ms, _) in &to_update {
+                        for (from, to, loss, latency_ms, _, d) in &to_update {
                             if let Some(ch) = channels.get(from).and_then(|m| m.get(to)) {
-                                ch.set_fading_params(*loss, *latency_ms);
+                                ch.set_fading_params(*loss, *latency_ms, *d);
                             }
                         }
                     } // read lock released
 
                     // ── Phase 4: RSSI table updates (no tokio lock needed) ─────────────
-                    for (from, to, _, _, rssi_dbm) in &to_update {
+                    for (from, to, _, _, rssi_dbm, _) in &to_update {
                         if let (Some(to_mac), Some(tbl)) =
                             (name_to_mac.get(to), rssi_tables.get(from))
                         {
@@ -734,7 +774,6 @@ impl Simulator {
         }
 
         // Add a reader for every VANET node whose TUN isn't already covered above.
-        #[cfg(feature = "mobility")]
         for (name, (_mac, tun)) in &self.vanet_node_info {
             if seen_nodes.insert(name.clone()) {
                 let reader_ch = Channel::new(
@@ -742,12 +781,17 @@ impl Simulator {
                         latency: Duration::ZERO,
                         loss: 0.0,
                         jitter: Duration::ZERO,
+                        cached_sample_ts_ms: None,
+                        cached_sample_loss: None,
+                        last_distance_m: None,
                     },
                     // MAC filter is irrelevant for recv-only reader channels.
                     MacAddress::new([0u8; 6]),
                     tun.clone(),
-                    name,
-                    name,
+                    name.clone(),
+                    name.clone(),
+                    None,
+                    mk_rng(name.as_str(), name.as_str()),
                 );
                 future_set.push(Self::generate_channel_reads(name.clone(), reader_ch));
             }
@@ -784,7 +828,6 @@ impl Simulator {
                 }
 
                 // Fan-out through dynamic VANET channels (hold read lock, no Vec allocation).
-                #[cfg(feature = "mobility")]
                 {
                     let vanet_map = self.vanet_channels.read().await;
                     if let Some(connections) = vanet_map.get(&node) {
@@ -818,7 +861,6 @@ impl Simulator {
         Ok((buf, n, node, channel))
     }
 
-    #[cfg(feature = "webview")]
     pub fn get_channels(&self) -> HashMap<String, HashMap<String, Arc<Channel>>> {
         self.channels.clone()
     }
@@ -829,20 +871,17 @@ impl Simulator {
     }
 
     /// Get the shared positions map updated by the mobility manager.
-    #[cfg(feature = "mobility")]
     pub fn get_positions(&self) -> Arc<RwLock<HashMap<String, NodePosition>>> {
         self.positions.clone()
     }
 
     /// Get a reference to the mobility manager mutex for position overrides.
-    #[cfg(feature = "mobility")]
     #[allow(dead_code)]
     fn mobility_manager(&self) -> &tokio::sync::Mutex<Option<MobilityManager>> {
         &self.mobility_manager
     }
 
     /// Get the position override queue — write (name, lat, lon) here to replan a vehicle.
-    #[cfg(feature = "mobility")]
     pub fn get_override_queue(&self) -> Arc<tokio::sync::Mutex<HashMap<String, (f64, f64)>>> {
         // The queue lives inside the MobilityManager; we hold a pre-extracted Arc.
         self.override_queue.clone()
@@ -852,13 +891,11 @@ impl Simulator {
     ///
     /// Each inner table is an `Arc<RwLock<…>>` shared with the OBU; calling
     /// `read()` gives a current view without cloning the whole map.
-    #[cfg(feature = "mobility")]
     pub fn get_rssi_tables(&self) -> HashMap<String, obu_lib::RssiTable> {
         self.rssi_tables.clone()
     }
 
     /// Return the Nakagami fading config, if fading is enabled.
-    #[cfg(all(feature = "mobility", feature = "webview"))]
     pub fn get_nakagami_config(&self) -> Option<&NakagamiConfig> {
         self.nakagami_config.as_ref()
     }
@@ -876,7 +913,6 @@ impl Simulator {
     /// Return a clone of the created nodes (name -> (dev, tun, node)).
     /// For backward compatibility, this returns only the VANET interface.
     /// Use get_nodes_with_interfaces() for full interface access.
-    #[cfg(feature = "webview")]
     #[allow(clippy::type_complexity)]
     pub fn get_nodes(&self) -> HashMap<String, (Arc<Device>, Arc<Tun>, SimNode)> {
         self.nodes

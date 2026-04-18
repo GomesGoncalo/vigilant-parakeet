@@ -82,9 +82,9 @@ RUST_LOG=trace cargo test -p node_lib -- <test_name> -- --nocapture  # With logs
 | Flag | Purpose |
 |---|---|
 | `test_helpers` | Enables TUN shims and in-process Hub for non-privileged testing — **required for CI tests** |
-| `stats` | Enables metrics/counters collection |
-| `webview` | Enables HTTP API on port 3030 (warp-based, JSON metrics) |
-| `tui` | Enables terminal UI dashboard |
+| `stats` | Enables metrics/counters collection (library opt-in). The simulator enables metrics by default for experiment runs. |
+| `webview` | Enables HTTP API on port 3030 (warp-based, JSON metrics). The simulator includes the web API by default. |
+| `tui` | Enables terminal UI dashboard. The simulator includes the TUI by default. |
 
 ---
 
@@ -239,16 +239,9 @@ ip: 10.0.0.2
 
 ---
 
-## Visualization (WASM)
+## Visualization
 
-```bash
-rustup target add wasm32-unknown-unknown
-cargo install trunk
-
-cd visualization
-trunk build --release   # Build WASM frontend
-trunk serve             # Dev server
-```
+The visualization is now provided by the native visualization tooling and the simulator HTTP API. The repository no longer relies on a WASM frontend; see native_viz/README.md and the simulator HTTP API documentation for build and run instructions.
 
 ---
 

@@ -26,9 +26,7 @@ Arrows are drawn only for active upstream flows to reduce visual clutter.
 
 Large simulations require careful rendering choices. The dashboard:
 
-+ Bypasses Yew/WASM for high-frequency position updates using a JS-native
-  fetch path that updates Leaflet layers imperatively, reducing WASM
-  round-trips and improving latency.
++ Bypasses the main frontend rendering path for high-frequency position updates using a lower-overhead fetch path that updates Leaflet layers imperatively, reducing round-trips and improving latency.
 + Caches icon bitmaps and groups markers by type to reduce DOM overhead.
 + Supports configurable polling rates and a delta-update mode where only
   changed node fields are applied.

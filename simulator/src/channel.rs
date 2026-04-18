@@ -8,12 +8,17 @@ use common::channel_parameters::ChannelParameters;
 use common::tun::Tun;
 use mac_address::MacAddress;
 use node_lib::PACKET_BUFFER_SIZE;
+use rand::rngs::StdRng;
+use rand::Rng;
 use std::{
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 use tokio::sync::{mpsc, Notify};
 use tokio::time::Instant;
+
+// Nakagami config type alias (mobility always enabled now).
+type NakagamiCfg = crate::fading::NakagamiConfig;
 
 /// Channel send error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,9 +29,7 @@ pub enum ChannelError {
     Dropped,
 }
 
-#[cfg(any(test, feature = "webview"))]
 use anyhow::Context;
-#[cfg(any(test, feature = "webview"))]
 use std::{collections::HashMap, str::FromStr};
 
 /// Packet with timing information for latency simulation
@@ -66,10 +69,6 @@ pub struct Channel {
     /// Coalescing notifier for parameter changes. Uses `Notify` (not a channel)
     /// so multiple rapid updates from the fading/mobility task are collapsed into
     /// one wakeup — preventing unbounded memory growth in the notification buffer.
-    #[cfg_attr(
-        not(any(test, feature = "webview", feature = "mobility")),
-        allow(dead_code)
-    )]
     param_notify: Arc<Notify>,
     /// Shared with the background forwarding task so parameters can be updated
     /// without keeping the full `Arc<Channel>` alive inside the task.
@@ -80,6 +79,10 @@ pub struct Channel {
     from: String,
     /// Destination node name
     to: String,
+    /// Optional per-channel Nakagami configuration clone (if fading enabled)
+    nakagami_cfg: Option<NakagamiCfg>,
+    /// Optional per-channel RNG for deterministic or injected randomness
+    rng: Option<Arc<Mutex<StdRng>>>,
 }
 
 impl Channel {
@@ -103,7 +106,6 @@ impl Channel {
 
     /// Update only the loss field without changing latency or jitter.
     /// Used by the Nakagami-m fading task to update loss continuously.
-    #[cfg(feature = "mobility")]
     #[allow(dead_code)]
     pub fn set_loss(&self, loss: f64) {
         let mut inner = self
@@ -116,14 +118,14 @@ impl Channel {
 
     /// Update loss and latency atomically.
     /// Used by the Nakagami-m fading task so routing prefers nearby RSUs.
-    #[cfg(feature = "mobility")]
-    pub fn set_fading_params(&self, loss: f64, latency_ms: u64) {
+    pub fn set_fading_params(&self, loss: f64, latency_ms: u64, distance_m: f64) {
         let mut inner = self
             .parameters
             .write()
             .expect("channel parameters lock poisoned");
         inner.loss = loss.clamp(0.0, 1.0);
         inner.latency = std::time::Duration::from_millis(latency_ms);
+        inner.last_distance_m = Some(distance_m);
         self.param_notify.notify_one();
     }
 
@@ -135,7 +137,6 @@ impl Channel {
     /// - `jitter`: Jitter in milliseconds (optional, defaults to 0)
     ///
     /// Changes take effect immediately for new packets.
-    #[cfg(any(test, feature = "webview"))]
     pub fn set_params(&self, params: HashMap<String, String>) -> Result<()> {
         let result = ChannelParameters {
             latency: Duration::from_millis(
@@ -148,6 +149,9 @@ impl Channel {
                     .unwrap_or(&"0".to_string())
                     .parse::<u64>()?,
             ),
+            cached_sample_ts_ms: None,
+            cached_sample_loss: None,
+            last_distance_m: None,
         };
 
         let mut inner_params = self
@@ -175,8 +179,10 @@ impl Channel {
         parameters: ChannelParameters,
         mac: MacAddress,
         tun: Arc<Tun>,
-        from: &String,
-        to: &String,
+        from: String,
+        to: String,
+        nakagami_cfg: Option<NakagamiCfg>,
+        rng: Option<Arc<Mutex<StdRng>>>,
     ) -> Arc<Self> {
         // Bounded packet queue: prevents unbounded memory growth when latency > 0.
         // Packets beyond CHANNEL_QUEUE_DEPTH are congestion-dropped (realistic behaviour).
@@ -197,8 +203,11 @@ impl Channel {
         let parameters: Arc<RwLock<ChannelParameters>> = Arc::new(parameters.into());
         let params_for_task = parameters.clone();
         let tun_for_task = tun.clone();
+        let from_task = from.clone();
+        let to_task = to.clone();
+        let rng_for_task = rng.clone();
 
-        tracing::debug!(from, to, "Created channel");
+        tracing::debug!(target: "sim_channel", from = %from, to = %to, "Created channel");
 
         // Spawn task to process packets from channel with latency simulation.
         tokio::spawn(async move {
@@ -207,6 +216,8 @@ impl Channel {
                     // tx was dropped (Arc<Channel> freed) — exit cleanly.
                     break;
                 };
+
+                tracing::trace!(target: "sim_channel", from = %from_task, to = %to_task, size = packet.size, "Dequeued packet for delivery");
 
                 loop {
                     // Calculate latency with jitter in a separate scope to drop the lock.
@@ -220,7 +231,12 @@ impl Channel {
                         if !params.jitter.is_zero() {
                             // Generate random jitter in range [-jitter, +jitter]
                             let jitter_ms = params.jitter.as_millis() as i64;
-                            let random_normalized = rand::random::<f64>(); // [0.0, 1.0)
+                            let random_normalized = if let Some(ref rng_arc) = rng_for_task {
+                                let mut g = rng_arc.lock().unwrap();
+                                (g.next_u64() as f64) / (u64::MAX as f64)
+                            } else {
+                                rand::random::<f64>()
+                            };
                             let random_jitter =
                                 ((random_normalized * 2.0 - 1.0) * jitter_ms as f64) as i64;
                             if random_jitter >= 0 {
@@ -241,11 +257,13 @@ impl Channel {
                     let duration = (packet.instant + latency).duration_since(Instant::now());
 
                     if duration.is_zero() {
+                        tracing::trace!(target: "sim_channel", from = %from_task, to = %to_task, size = packet.size, "Delivering packet immediately");
                         let _ = tun_for_task.send_all(&packet.packet[..packet.size]).await;
                         break;
                     } else {
                         tokio::select! {
                             _ = tokio_timerfd::sleep(duration) => {
+                                tracing::trace!(target: "sim_channel", from = %from_task, to = %to_task, size = packet.size, latency = ?latency, "Delivering packet after latency");
                                 let _ = tun_for_task.send_all(&packet.packet[..packet.size]).await;
                                 break;
                             },
@@ -264,8 +282,10 @@ impl Channel {
             parameters,
             mac,
             tun,
-            from: from.clone(),
-            to: to.clone(),
+            from,
+            to,
+            nakagami_cfg,
+            rng,
         })
     }
 
@@ -285,7 +305,32 @@ impl Channel {
         packet: [u8; PACKET_BUFFER_SIZE],
         size: usize,
     ) -> Result<(), ChannelError> {
-        self.should_send(&packet[..size])?;
+        match self.should_send(&packet[..size]) {
+            Ok(()) => {
+                tracing::trace!(target: "sim_channel", from = %self.from, to = %self.to, size, "Packet accepted for send");
+            }
+            Err(ChannelError::Filtered) => {
+                // Print the first 32 bytes of the filtered packet as hex for debugging
+                let hex: String = packet[..size.min(32)]
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                tracing::debug!(
+                    target: "sim_channel",
+                    from = %self.from,
+                    to = %self.to,
+                    size,
+                    packet_hex = %hex,
+                    "Packet filtered by MAC"
+                );
+                return Err(ChannelError::Filtered);
+            }
+            Err(ChannelError::Dropped) => {
+                tracing::debug!(target: "sim_channel", from = %self.from, to = %self.to, size, "Packet dropped by loss simulation");
+                return Err(ChannelError::Dropped);
+            }
+        }
 
         // Try to enqueue; if the queue is full, treat as a congestion drop.
         if self
@@ -297,6 +342,7 @@ impl Channel {
             })
             .is_err()
         {
+            tracing::warn!(target: "sim_channel", from = %self.from, to = %self.to, size, "Packet dropped due to congestion (queue full)");
             return Err(ChannelError::Dropped);
         }
 
@@ -313,17 +359,120 @@ impl Channel {
         if self.mac != zero_mac {
             let bcast = [255u8; 6];
             let unicast = self.mac.bytes();
+            if buf.len() < 6 {
+                tracing::warn!(target: "sim_channel", from = %self.from, to = %self.to, "Packet too short for MAC filtering");
+                return Err(ChannelError::Filtered);
+            }
             if buf[0..6] != bcast && buf[0..6] != unicast {
                 return Err(ChannelError::Filtered);
             }
         }
 
-        let loss = self
+        // Fast path: if Nakagami not enabled or mode is periodic using stored loss,
+        // preserve current behaviour (read loss from parameters).
+        let params = self
             .parameters
             .read()
-            .expect("channel parameters lock poisoned")
-            .loss;
-        if loss > 0.0 && rand::random::<f64>() < loss {
+            .expect("channel parameters lock poisoned");
+
+        // If Nakagami config was attached to this channel (when created), use it.
+        if let Some(cfg) = &self.nakagami_cfg {
+            match cfg.mode {
+                crate::fading::NakagamiMode::Periodic => {
+                    let loss = params.loss;
+                    // Use per-channel RNG if present, else thread RNG
+                    let r = if let Some(ref rng_arc) = self.rng {
+                        let mut g = rng_arc.lock().unwrap();
+                        (g.next_u64() as f64) / (u64::MAX as f64)
+                    } else {
+                        rand::random::<f64>()
+                    };
+                    if loss > 0.0 && r < loss {
+                        return Err(ChannelError::Dropped);
+                    }
+                    return Ok(());
+                }
+                crate::fading::NakagamiMode::PerPacket | crate::fading::NakagamiMode::Hybrid => {
+                    // Attempt coherence cache lookup
+                    if let Some(ts_ms) = params.cached_sample_ts_ms {
+                        if let Some(sample_loss) = params.cached_sample_loss {
+                            if let Some(_coh_ms) = cfg.coherence_ms {
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis();
+                                if now_ms < ts_ms + _coh_ms as u128 {
+                                    // Use cached sample_loss
+                                    let r = if let Some(ref rng_arc) = self.rng {
+                                        let mut g = rng_arc.lock().unwrap();
+                                        (g.next_u64() as f64) / (u64::MAX as f64)
+                                    } else {
+                                        rand::random::<f64>()
+                                    };
+                                    if sample_loss > 0.0 && r < sample_loss {
+                                        return Err(ChannelError::Dropped);
+                                    }
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+
+                    // No valid cached sample — perform per-packet sampling.
+                    // Prefer explicit last_distance_m if present (set by fading task);
+                    // otherwise, approximate distance from latency.
+                    let approx_distance_m = params.last_distance_m.unwrap_or_else(|| {
+                        let latency_ms = params.latency.as_millis() as f64;
+                        let latency_per_100m = cfg.latency_ms_per_100m;
+                        (latency_ms / latency_per_100m) * 100.0
+                    });
+
+                    drop(params); // release read lock before RNG and writing cache
+
+                    // Sample loss probability and do Bernoulli trial here using channel RNG if present
+                    let p = crate::fading::sample_nakagami_loss(approx_distance_m, cfg);
+                    let r = if let Some(ref rng_arc) = self.rng {
+                        let mut g = rng_arc.lock().unwrap();
+                        (g.next_u64() as f64) / (u64::MAX as f64)
+                    } else {
+                        rand::random::<f64>()
+                    };
+                    let drop_decision = r < p;
+
+                    // If coherence requested, store sample in cache
+                    if let Some(_coh_ms) = cfg.coherence_ms {
+                        let mut params_w = self
+                            .parameters
+                            .write()
+                            .expect("channel parameters lock poisoned");
+                        params_w.cached_sample_ts_ms = Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis(),
+                        );
+                        // store the sampled loss probability as 1.0 or 0.0 depending on trial
+                        params_w.cached_sample_loss = Some(if drop_decision { 1.0 } else { 0.0 });
+                    }
+
+                    if drop_decision {
+                        return Err(ChannelError::Dropped);
+                    }
+
+                    return Ok(());
+                }
+            }
+        }
+
+        // Fallback: no Nakagami config found — behave as before using params.loss
+        let loss = params.loss;
+        let r = if let Some(ref rng_arc) = self.rng {
+            let mut g = rng_arc.lock().unwrap();
+            (g.next_u64() as f64) / (u64::MAX as f64)
+        } else {
+            rand::random::<f64>()
+        };
+        if loss > 0.0 && r < loss {
             return Err(ChannelError::Dropped);
         }
 
@@ -357,8 +506,10 @@ mod tests {
             params,
             mac,
             tun.clone(),
-            &"from".to_string(),
-            &"to".to_string(),
+            "from".to_string(),
+            "to".to_string(),
+            None,
+            None,
         );
 
         let mut map = HashMap::new();
@@ -385,8 +536,10 @@ mod tests {
             params,
             mac,
             tun.clone(),
-            &"from".to_string(),
-            &"to".to_string(),
+            "from".to_string(),
+            "to".to_string(),
+            None,
+            None,
         );
 
         // packet with a different destination MAC
@@ -407,8 +560,10 @@ mod tests {
             params,
             mac,
             tun.clone(),
-            &"from".to_string(),
-            &"to".to_string(),
+            "from".to_string(),
+            "to".to_string(),
+            None,
+            None,
         );
 
         // Set params with loss = 1.0 to force packet drop
@@ -436,8 +591,10 @@ mod tests {
             params,
             mac,
             tun.clone(),
-            &"from".to_string(),
-            &"to".to_string(),
+            "from".to_string(),
+            "to".to_string(),
+            None,
+            None,
         );
 
         // A unicast packet addressed to a completely different MAC should pass through.
@@ -459,8 +616,10 @@ mod tests {
             params,
             mac,
             tun.clone(),
-            &"from".to_string(),
-            &"to".to_string(),
+            "from".to_string(),
+            "to".to_string(),
+            None,
+            None,
         );
 
         let mut packet = [0u8; PACKET_BUFFER_SIZE];

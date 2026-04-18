@@ -25,10 +25,7 @@ Model (IDM) for realistic longitudinal and lane-change dynamics.
 Security features remain comprehensive: configurable classical and
 post‑quantum KEMs and signature schemes, HKDF-derived session keys, optional
 PKI or TOFU provisioning modes, and a signed session-revocation mechanism.
-The browser-based visualisation dashboard provides rAF-driven marker
-interpolation, canvas overlays for directional arrows, RSSI sparklines and
-N‑best/KE popups, and a JS-native high-frequency polling path to bypass WASM
-for performance-sensitive updates.
+The visualization dashboard provides rAF-driven marker interpolation, canvas overlays for directional arrows, RSSI sparklines and N‑best/KE popups, and a low-latency polling path for performance-sensitive updates.
 
 Contributions: a modular Rust workspace and test harness; a routing algorithm
 rework (RSSI-based next-hop and source selection with 3 dB hysteresis,
