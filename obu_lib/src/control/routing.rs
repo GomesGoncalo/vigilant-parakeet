@@ -42,7 +42,6 @@ use indexmap::IndexMap;
 use mac_address::MacAddress;
 use node_lib::messages::{control::Control, message::Message, packet_type::PacketType};
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 use tokio::time::{Duration, Instant};
 
 use crate::control::routing_utils::NextHopStats;
@@ -245,14 +244,7 @@ pub type RssiTable = std::sync::Arc<std::sync::RwLock<HashMap<MacAddress, f32>>>
 /// per relay so that longer chains must present a proportionally stronger
 /// signal to be preferred. 5 dB corresponds to roughly 78% closer in
 /// free-space path loss (20·log₁₀ model at 5.9 GHz).
-const RSSI_HOP_PENALTY_DB: f32 = 0.5;
-
-// Force-prefer multi-hop when direct RSSI drops below this threshold.
-const RSSI_FORCE_THRESHOLD_DB: f32 = -60.0; // user-chosen
-                                            // Minimum dB margin a multi-hop candidate must beat the cached effective RSSI by
-const RSSI_FORCE_MARGIN_DB: f32 = 0.0;
-// Per-source cooldown (seconds) to avoid flapping when forcing switches
-const SWITCH_COOLDOWN_SECS: u64 = 3;
+const RSSI_HOP_PENALTY_DB: f32 = 3.0;
 
 // ============================================================================
 // Route construction helpers
@@ -308,8 +300,6 @@ pub struct Routing {
     source_neighbors: HashMap<MacAddress, HashSet<MacAddress>>,
     /// Live RSSI readings, injected by the simulator or a real radio driver.
     rssi_table: Option<RssiTable>,
-    /// Last forced switch time per cached upstream MAC to avoid flapping.
-    last_switch: Mutex<HashMap<MacAddress, Instant>>,
 }
 
 impl Routing {
@@ -324,8 +314,6 @@ impl Routing {
             cache: RoutingCache::new(args.obu_params.cached_candidates),
             source_neighbors: HashMap::default(),
             rssi_table: None,
-            // Track when we last forced a switch for a cached upstream (per-MAC)
-            last_switch: Mutex::new(HashMap::default()),
         })
     }
 
@@ -397,25 +385,14 @@ impl Routing {
             if rssi_snap.is_empty() {
                 hop_routes.sort_by_key(|(_, _, hops)| *hops);
             } else {
-                // Nonlinear RSSI scaling: convert dBm → metres using the inverse
-                // path-loss approximation, then apply an exponent > 1 to
-                // exaggerate long/weak links. Subtract per-hop penalty afterwards.
-                // This makes very weak first-hop RSSI much worse and so multi-hop
-                // paths (with stronger first hops) become preferred.
-                const RSSI_NONLINEAR_EXPONENT: f32 = 3.0; // user-chosen
+                // Sort by effective RSSI descending: penalise relay chains so that
+                // a longer path must have a proportionally stronger first-hop signal.
                 hop_routes.sort_by(|(_, mac_a, hops_a), (_, mac_b, hops_b)| {
-                    let r_a_db = rssi_snap.get(*mac_a).copied().unwrap_or(-100.0_f32);
-                    let r_b_db = rssi_snap.get(*mac_b).copied().unwrap_or(-100.0_f32);
-                    // Invert RSSI ≈ −20 − 20·log₁₀(d)  →  d = 10^((-rssi − 20) / 20)
-                    let d_a = 10.0_f32.powf((-r_a_db - 20.0) / 20.0);
-                    let d_b = 10.0_f32.powf((-r_b_db - 20.0) / 20.0);
-                    let score_a = -d_a.powf(RSSI_NONLINEAR_EXPONENT)
+                    let ra = rssi_snap.get(*mac_a).copied().unwrap_or(-100.0_f32)
                         - RSSI_HOP_PENALTY_DB * (*hops_a).saturating_sub(1) as f32;
-                    let score_b = -d_b.powf(RSSI_NONLINEAR_EXPONENT)
+                    let rb = rssi_snap.get(*mac_b).copied().unwrap_or(-100.0_f32)
                         - RSSI_HOP_PENALTY_DB * (*hops_b).saturating_sub(1) as f32;
-                    score_b
-                        .partial_cmp(&score_a)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                    rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
                 });
             }
             let mut seen: HashSet<MacAddress> = out.iter().copied().collect();
@@ -977,39 +954,9 @@ impl Routing {
         let latency_stats = self.collect_downstream_stats(target_mac);
 
         if !latency_stats.is_empty() {
-            // Combine latency and RSSI into a single score per-candidate using the
-            // user-selected latency weight. Lower score = better.
-            const LATENCY_WEIGHT: f32 = 0.2; // user choice (favor RSSI heavily)
-            const MAX_LATENCY_MS: f32 = 200.0; // saturation for normalization
-            const MAX_DISTANCE_M: f32 = 1000.0; // saturation for RSSI→distance
-
-            let combined_score = |mac: MacAddress, avg_us: u128| -> f32 {
-                // Normalize latency (ms)
-                let latency_ms = if avg_us == u128::MAX {
-                    MAX_LATENCY_MS
-                } else {
-                    (avg_us as f32) / 1000.0
-                };
-                let norm_latency = (latency_ms.min(MAX_LATENCY_MS)) / MAX_LATENCY_MS;
-
-                // Get RSSI for this candidate if available, convert to distance
-                let rssi_db = self
-                    .rssi_table
-                    .as_ref()
-                    .and_then(|tbl| tbl.read().ok().and_then(|g| g.get(&mac).copied()))
-                    .unwrap_or(-100.0_f32);
-                let distance = 10.0_f32.powf((-rssi_db - 20.0) / 20.0);
-                let norm_distance = (distance.min(MAX_DISTANCE_M)) / MAX_DISTANCE_M;
-
-                LATENCY_WEIGHT * norm_latency + (1.0 - LATENCY_WEIGHT) * norm_distance
-            };
-
-            // Pick candidate with smallest combined score.
-            let (best_mac, best_avg) = latency_stats
-                .iter()
-                .map(|(mac, stats)| (*mac, stats_avg(stats)))
-                .min_by(|(_, a), (_, b)| a.cmp(b))
-                .expect("latency_stats non-empty");
+            let (best_mac, best_avg) =
+                crate::control::routing_utils::pick_best_from_latency_candidates(&latency_stats)
+                    .expect("latency_stats non-empty");
             let best_hops = latency_stats[&best_mac].hops;
 
             if let Some(cached_mac) = cached {
@@ -1021,12 +968,9 @@ impl Routing {
                 let cached_in_stats = latency_stats.get(&cached_mac).copied();
                 let keep_cached = match cached_in_stats {
                     Some(cs) => {
-                        // Both measured: compare combined scores with hysteresis.
+                        // Both candidates measured: apply latency hysteresis.
                         let cached_avg = stats_avg(&cs);
-                        let combined_best = combined_score(best_mac, best_avg);
-                        let combined_cached = combined_score(cached_mac, cached_avg);
-                        // Keep cached unless new one is clearly better (≥30% improvement)
-                        !(combined_best <= combined_cached * 0.6 || best_hops < cs.hops)
+                        !(best_hops < cs.hops || is_significantly_better(best_avg, cached_avg))
                     }
                     None => {
                         // Cached has no measurements. Switch if best is measured;
@@ -1103,49 +1047,9 @@ impl Routing {
                 if let Some(cached_mac) = cached {
                     if best_mac != cached_mac {
                         if let Some(&cached_hops) = upstream_hops.get(&cached_mac) {
-                            // If the cached direct link is already poor, prefer a
-                            // multi-hop candidate that beats the cached effective
-                            // RSSI by RSSI_FORCE_MARGIN_DB (if cooldown elapsed).
-                            let now = Instant::now();
-                            if let Some(&rssi_cached) = rssi_snapshot.get(&cached_mac) {
-                                if rssi_cached <= RSSI_FORCE_THRESHOLD_DB {
-                                    // Find the best multi-hop candidate by eff_rssi
-                                    let multi_candidate = upstream_hops
-                                        .keys()
-                                        .copied()
-                                        .filter(|m| upstream_hops.get(m).copied().unwrap_or(1) > 1)
-                                        .max_by(|&a, &b| {
-                                            eff_rssi(a)
-                                                .partial_cmp(&eff_rssi(b))
-                                                .unwrap_or(std::cmp::Ordering::Equal)
-                                        });
-                                    if let Some(mc) = multi_candidate {
-                                        if eff_rssi(mc)
-                                            >= eff_rssi(cached_mac) + RSSI_FORCE_MARGIN_DB
-                                        {
-                                            // Respect cooldown
-                                            let mut ls =
-                                                self.last_switch.lock().expect("last_switch lock");
-                                            let allow = ls.get(&cached_mac).map_or(true, |t| {
-                                                now.duration_since(*t).as_secs()
-                                                    >= SWITCH_COOLDOWN_SECS
-                                            });
-                                            if allow {
-                                                ls.insert(cached_mac, now);
-                                                let hops = upstream_hops[&mc];
-                                                return Some(Route {
-                                                    mac: mc,
-                                                    hops,
-                                                    latency: None,
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Original hysteresis: only switch if the new candidate is clearly better
-                            if eff_rssi(best_mac) <= eff_rssi(cached_mac) + 0.5 {
+                            // 3 dB hysteresis on effective RSSI: only switch if the
+                            // new next-hop is clearly better after the hop penalty.
+                            if eff_rssi(best_mac) <= eff_rssi(cached_mac) + 3.0 {
                                 return Some(Route {
                                     mac: cached_mac,
                                     hops: cached_hops,
