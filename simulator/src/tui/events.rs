@@ -34,17 +34,15 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
         }
 
         // Tab switching
-        KeyCode::Tab | KeyCode::BackTab => {
-            if !state.log_input_mode {
-                state.active_tab = match state.active_tab {
-                    Tab::Metrics => Tab::Channels,
-                    Tab::Channels => Tab::Upstreams,
-                    Tab::Upstreams => Tab::Logs,
-                    Tab::Logs => Tab::Nodes,
-                    Tab::Nodes => Tab::Topology,
-                    Tab::Topology => Tab::Metrics,
-                };
-            }
+        KeyCode::Tab | KeyCode::BackTab if !state.log_input_mode => {
+            state.active_tab = match state.active_tab {
+                Tab::Metrics => Tab::Channels,
+                Tab::Channels => Tab::Upstreams,
+                Tab::Upstreams => Tab::Logs,
+                Tab::Logs => Tab::Nodes,
+                Tab::Nodes => Tab::Topology,
+                Tab::Topology => Tab::Metrics,
+            };
         }
         KeyCode::Char('1') if !state.log_input_mode => {
             state.active_tab = Tab::Metrics;
@@ -82,10 +80,10 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
         }
 
         // Channel sort mode (Channels tab only)
-        KeyCode::Char('s') | KeyCode::Char('S') if !state.log_input_mode => {
-            if state.active_tab == Tab::Channels {
-                state.channel_sort_mode = state.channel_sort_mode.next();
-            }
+        KeyCode::Char('s') | KeyCode::Char('S')
+            if !state.log_input_mode && state.active_tab == Tab::Channels =>
+        {
+            state.channel_sort_mode = state.channel_sort_mode.next();
         }
 
         // Pause/unpause
@@ -94,34 +92,32 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
         }
 
         // Sort direction toggle (Channels tab only)
-        KeyCode::Char('d') | KeyCode::Char('D') if !state.log_input_mode => {
-            if state.active_tab == Tab::Channels {
-                state.channel_sort_direction = state.channel_sort_direction.toggle();
-            }
+        KeyCode::Char('d') | KeyCode::Char('D')
+            if !state.log_input_mode && state.active_tab == Tab::Channels =>
+        {
+            state.channel_sort_direction = state.channel_sort_direction.toggle();
         }
 
         // Log filter cycling (Logs tab only)
-        KeyCode::Char('f') | KeyCode::Char('F') if !state.log_input_mode => {
-            if state.active_tab == Tab::Logs {
-                state.log_filter = state.log_filter.next();
-                state.log_scroll = 0;
-                state.log_auto_scroll = true;
-            }
+        KeyCode::Char('f') | KeyCode::Char('F')
+            if !state.log_input_mode && state.active_tab == Tab::Logs =>
+        {
+            state.log_filter = state.log_filter.next();
+            state.log_scroll = 0;
+            state.log_auto_scroll = true;
         }
 
         // Toggle wrap mode for logs
-        KeyCode::Char('w') | KeyCode::Char('W') if !state.log_input_mode => {
-            if state.active_tab == Tab::Logs {
-                state.log_wrap = !state.log_wrap;
-            }
+        KeyCode::Char('w') | KeyCode::Char('W')
+            if !state.log_input_mode && state.active_tab == Tab::Logs =>
+        {
+            state.log_wrap = !state.log_wrap;
         }
 
         // Enter custom filter mode (Logs tab only)
-        KeyCode::Char('/') if !state.log_input_mode => {
-            if state.active_tab == Tab::Logs {
-                state.log_input_mode = true;
-                state.log_input_buffer.clear();
-            }
+        KeyCode::Char('/') if !state.log_input_mode && state.active_tab == Tab::Logs => {
+            state.log_input_mode = true;
+            state.log_input_buffer.clear();
         }
 
         // Input mode: add character
@@ -173,27 +169,23 @@ pub fn handle_key_event(key: KeyEvent, state: &mut TuiState) -> Result<bool> {
         }
 
         // Navigation: Left (horizontal scroll left)
-        KeyCode::Left => {
-            if state.active_tab == Tab::Logs {
-                let step = if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    20
-                } else {
-                    5
-                };
-                state.log_horizontal_scroll = state.log_horizontal_scroll.saturating_sub(step);
-            }
+        KeyCode::Left if state.active_tab == Tab::Logs => {
+            let step = if key.modifiers.contains(KeyModifiers::SHIFT) {
+                20
+            } else {
+                5
+            };
+            state.log_horizontal_scroll = state.log_horizontal_scroll.saturating_sub(step);
         }
 
         // Navigation: Right (horizontal scroll right)
-        KeyCode::Right => {
-            if state.active_tab == Tab::Logs {
-                let step = if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    20
-                } else {
-                    5
-                };
-                state.log_horizontal_scroll = state.log_horizontal_scroll.saturating_add(step);
-            }
+        KeyCode::Right if state.active_tab == Tab::Logs => {
+            let step = if key.modifiers.contains(KeyModifiers::SHIFT) {
+                20
+            } else {
+                5
+            };
+            state.log_horizontal_scroll = state.log_horizontal_scroll.saturating_add(step);
         }
 
         // Navigation: Page Up
