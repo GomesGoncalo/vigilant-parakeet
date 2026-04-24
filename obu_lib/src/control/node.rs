@@ -37,38 +37,6 @@ pub async fn handle_messages(
                         let send_res = dev.send_vectored(&vec).await;
                         if let Err(e) = send_res {
                             tracing::error!(error = %e, size = buf.len(), "Failed to send to device");
-
-                            // Failover logic for flat buffers
-                            if let Some(r) = &routing_clone {
-                                if let Ok(parsed) = Message::try_from(&buf[..]) {
-                                    if let Ok(dest) = parsed.to() {
-                                        let cached = match r.read() {
-                                            Ok(guard) => guard.get_cached_upstream(),
-                                            Err(poisoned) => {
-                                                tracing::error!("Routing lock poisoned during failover check, recovering");
-                                                poisoned.into_inner().get_cached_upstream()
-                                            }
-                                        };
-                                        if let Some(cached_mac) = cached {
-                                            if cached_mac == dest {
-                                                let promoted = match r.write() {
-                                                    Ok(guard) => guard.failover_cached_upstream(),
-                                                    Err(poisoned) => {
-                                                        tracing::error!("Routing write lock poisoned during failover, recovering");
-                                                        poisoned.into_inner().failover_cached_upstream()
-                                                    }
-                                                };
-                                                if let Some(new_upstream) = promoted {
-                                                    tracing::info!(
-                                                        new_upstream = %new_upstream,
-                                                        "Promoted next cached upstream after send failure"
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
                         }
                     }
                 };

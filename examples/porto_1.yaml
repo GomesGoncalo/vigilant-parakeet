@@ -1,12 +1,106 @@
 nodes:
   rsu1:
-    config_path: examples/porto_1/n_rsu1.yaml
+    config_path: examples/porto/n_rsu1.yaml
+  rsu2:
+    config_path: examples/porto/n_rsu2.yaml
+  rsu3:
+    config_path: examples/porto/n_rsu3.yaml
+  rsu4:
+    config_path: examples/porto/n_rsu4.yaml
+  rsu5:
+    config_path: examples/porto/n_rsu5.yaml
+  rsu6:
+    config_path: examples/porto/n_rsu6.yaml
+  rsu7:
+    config_path: examples/porto/n_rsu7.yaml
+  rsu8:
+    config_path: examples/porto/n_rsu8.yaml
+  rsu9:
+    config_path: examples/porto/n_rsu9.yaml
+  rsu10:
+    config_path: examples/porto/n_rsu10.yaml
+  rsu11:
+    config_path: examples/porto/n_rsu11.yaml
+  rsu12:
+    config_path: examples/porto/n_rsu12.yaml
+  rsu13:
+    config_path: examples/porto/n_rsu13.yaml
+  rsu14:
+    config_path: examples/porto/n_rsu14.yaml
+  rsu15:
+    config_path: examples/porto/n_rsu15.yaml
+  rsu16:
+    config_path: examples/porto/n_rsu16.yaml
+  rsu17:
+    config_path: examples/porto/n_rsu17.yaml
+  rsu18:
+    config_path: examples/porto/n_rsu18.yaml
+  rsu19:
+    config_path: examples/porto/n_rsu19.yaml
+  rsu20:
+    config_path: examples/porto/n_rsu20.yaml
+  rsu21:
+    config_path: examples/porto/n_rsu21.yaml
+  rsu22:
+    config_path: examples/porto/n_rsu22.yaml
+  rsu23:
+    config_path: examples/porto/n_rsu23.yaml
+  rsu24:
+    config_path: examples/porto/n_rsu24.yaml
+  rsu25:
+    config_path: examples/porto/n_rsu25.yaml
+  rsu26:
+    config_path: examples/porto/n_rsu26.yaml
+  rsu27:
+    config_path: examples/porto/n_rsu27.yaml
+  rsu28:
+    config_path: examples/porto/n_rsu28.yaml
+  rsu29:
+    config_path: examples/porto/n_rsu29.yaml
+  rsu30:
+    config_path: examples/porto/n_rsu30.yaml
+  rsu31:
+    config_path: examples/porto/n_rsu31.yaml
+  rsu32:
+    config_path: examples/porto/n_rsu32.yaml
+  rsu33:
+    config_path: examples/porto/n_rsu33.yaml
+  rsu34:
+    config_path: examples/porto/n_rsu34.yaml
+  rsu35:
+    config_path: examples/porto/n_rsu35.yaml
+  rsu36:
+    config_path: examples/porto/n_rsu36.yaml
+  rsu37:
+    config_path: examples/porto/n_rsu37.yaml
+  rsu38:
+    config_path: examples/porto/n_rsu38.yaml
+  rsu39:
+    config_path: examples/porto/n_rsu39.yaml
+  rsu40:
+    config_path: examples/porto/n_rsu40.yaml
+  rsu41:
+    config_path: examples/porto/n_rsu41.yaml
+  rsu42:
+    config_path: examples/porto/n_rsu42.yaml
+  rsu43:
+    config_path: examples/porto/n_rsu43.yaml
+  rsu44:
+    config_path: examples/porto/n_rsu44.yaml
+  rsu45:
+    config_path: examples/porto/n_rsu45.yaml
+  rsu46:
+    config_path: examples/porto/n_rsu46.yaml
+  rsu47:
+    config_path: examples/porto/n_rsu47.yaml
+  rsu48:
+    config_path: examples/porto/n_rsu48.yaml
   obu1:
     config_path: examples/porto_1/n_obu1.yaml
   obu2:
     config_path: examples/porto_1/n_obu2.yaml
   server1:
-    config_path: examples/porto/n_server1.yaml
+    config_path: examples/porto_1/n_server1.yaml
 
 mobility:
   enabled: true
@@ -23,9 +117,9 @@ mobility:
 nakagami:
   enabled: true
   m: 10.0              # Nakagami shape (1=Rayleigh, higher=more stable)
-  eta: 2.0            # Path-loss exponent: 2.7 for dense urban Porto
+  eta: 2.7            # Path-loss exponent: 2.7 for dense urban Porto
   snr_0_db: 85.0      # Mean SNR at 1 m reference (dB); realistic for V2X DSRC TX power
   snr_thresh_db: 10.0 # Standard DSRC SNR threshold (dB); avoids cliff near hard cutoff
-  max_range_m: 1500.0 # Hard cut-off (m); covers RSU spacing gaps (~1–1.5 km between RSUs)
-  latency_ms_per_100m: 0.5 # 0.5 ms/100m ≈ 5x realistic V2X propagation; keeps routing preference without inflating RTTs
+  max_range_m: 750.0 # Hard cut-off (m); covers RSU spacing gaps (~1–1.5 km between RSUs)
+  latency_ms_per_100m: 2 # 0.5 ms/100m ≈ 5x realistic V2X propagation; keeps routing preference without inflating RTTs
   update_ms: 20       # How often to recompute fading (ms)

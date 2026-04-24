@@ -17,6 +17,31 @@ Simulate and visualize vehicular network nodes (OBU/RSU) and their routing.
 
 <!-- toc -->
 
+- [Quick summary](#quick-summary)
+- [Checklist (what I'll cover in this README)](#checklist-what-ill-cover-in-this-readme)
+- [Features](#features)
+- [Project structure](#project-structure)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Running](#running)
+  * [Example: 3-node setup](#example-3-node-setup)
+- [Visualization](#visualization)
+- [DH Message Signing](#dh-message-signing)
+  * [How it works](#how-it-works)
+    + [Trust models](#trust-models)
+  * [Enabling DH signatures on an OBU node — TOFU mode (`n2.yaml`)](#enabling-dh-signatures-on-an-obu-node--tofu-mode-n2yaml)
+  * [Enabling DH signatures on a Server node — TOFU mode (`server.yaml`)](#enabling-dh-signatures-on-a-server-node--tofu-mode-serveryaml)
+  * [PKI mode — pre-registering OBU identities](#pki-mode--pre-registering-obu-identities)
+  * [Mixed deployments](#mixed-deployments)
+  * [Wire format summary](#wire-format-summary)
+- [Development tips](#development-tips)
+- [Testing & test helpers](#testing--test-helpers)
+- [Contributing](#contributing)
+- [License](#license)
+
+<!-- tocstop -->
+
 ## Quick summary
 
 `vigilant-parakeet` implements a simulator and visualization for experimenting
@@ -46,6 +71,8 @@ namespaces) and the `visualization` UI (browser-based dashboard).
 - HTTP API for runtime stats and for changing channel parameters
 - Browser visualization (in `visualization/`) to monitor traffic and change
   parameters interactively via the simulator HTTP API (webview).
+
+![Recording](/assets/recording.gif)
 
 ## Project structure
 
