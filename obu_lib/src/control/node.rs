@@ -22,7 +22,7 @@ pub async fn handle_messages(
     let future_vec = messages
         .iter()
         .map(|reply| {
-            let routing_clone = routing.clone();
+            let _routing_clone = routing.clone();
             async move {
                 match reply {
                     ReplyType::TapFlat(buf) => {

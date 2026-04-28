@@ -474,8 +474,8 @@ impl Server {
                 let routes = obu_routes.read().await;
                 let keys = dh_keys.read().await;
                 routes
-                    .iter()
-                    .filter_map(|(_, route)| {
+                    .values()
+                    .filter_map(|route| {
                         let payload = if enable_encryption {
                             Self::try_encrypt_for_obu(
                                 &tap_frame,

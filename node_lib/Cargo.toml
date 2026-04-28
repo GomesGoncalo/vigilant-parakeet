@@ -5,13 +5,13 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-tokio = {version = "*", features = ["full", "test-util"]}
+tokio = { version = "*", features = ["full", "test-util"] }
 tokio-tun = "*"
 anyhow = "*"
-socket2 = {version = "*", features = ["all"]}
+socket2 = { version = "*", features = ["all"] }
 uninit = "*"
 libc = "*"
-nix = {version = "*", features = ["socket", "net", "ioctl"]}
+nix = { version = "*", features = ["socket", "net", "ioctl"] }
 tracing = "*"
 clap = { version = "*", features = ["derive"] }
 futures = "*"
@@ -19,7 +19,7 @@ mac_address = "*"
 indexmap = "*"
 tokio-timerfd = "*"
 itertools = "*"
-serde = { version = "*", features = ["derive"]}
+serde = { version = "*", features = ["derive"] }
 common = { path = "../common/" }
 arc-swap = { version = "*" }
 tracing-subscriber = { version = "*", features = ["env-filter"] }
@@ -27,17 +27,17 @@ aes-gcm = { version = "0.10", features = ["aes"] }
 chacha20poly1305 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
-hkdf = "0.12"
-sha2 = "0.10"
-ml-kem = { version = "0.3.0-rc.1", features = ["getrandom"] }
-ml-dsa = "0.1.0-rc.8"
+hkdf = "0.13"
+sha2 = "0.11"
+ml-kem = { version = "0.3.0-rc.2", features = ["getrandom"] }
+ml-dsa = "0.0.4"
 zeroize = { version = "1", features = ["derive"] }
 thiserror = "*"
 bytes = "*"
 
 [features]
-stats = [ "common/stats" ]
-test_helpers = [ "common/test_helpers" ]
+stats = ["common/stats"]
+test_helpers = ["common/test_helpers"]
 
 [dev-dependencies]
 criterion = "0.5"
@@ -73,4 +73,3 @@ harness = false
 [[bench]]
 name = "zero_copy_data_messages"
 harness = false
-
