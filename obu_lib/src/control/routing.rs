@@ -286,19 +286,6 @@ fn make_route(mac: MacAddress, hops: u32, avg_us: u128) -> Route {
     }
 }
 
-/// Return `true` when `new_avg` is significantly better than `cached_avg`
-/// (at least 30% lower, or any finite measurement beats an unmeasured cached).
-fn is_significantly_better(new_avg: u128, cached_avg: u128) -> bool {
-    if cached_avg == u128::MAX && new_avg != u128::MAX {
-        true // prefer any measurement over none
-    } else if cached_avg == u128::MAX || new_avg == u128::MAX {
-        false
-    } else {
-        // new_avg <= cached_avg * 0.7
-        new_avg.saturating_mul(10) < cached_avg.saturating_mul(7)
-    }
-}
-
 pub struct Routing {
     args: ObuArgs,
     boot: Instant,
@@ -1126,7 +1113,7 @@ impl Routing {
                                             // Respect cooldown
                                             let mut ls =
                                                 self.last_switch.lock().expect("last_switch lock");
-                                            let allow = ls.get(&cached_mac).map_or(true, |t| {
+                                            let allow = ls.get(&cached_mac).is_none_or(|t| {
                                                 now.duration_since(*t).as_secs()
                                                     >= SWITCH_COOLDOWN_SECS
                                             });

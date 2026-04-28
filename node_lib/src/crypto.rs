@@ -6,7 +6,7 @@ use aes_gcm::{
 use chacha20poly1305::ChaCha20Poly1305;
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use hkdf::Hkdf;
-use ml_dsa::{ExpandedSigningKey, MlDsa65};
+use ml_dsa::{KeyGen, KeyPair, MlDsa65};
 use ml_kem::{Decapsulate, Encapsulate, EncapsulationKey, FromSeed, Kem, KeyExport, MlKem768};
 use sha2::{Sha256, Sha384, Sha512};
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
@@ -341,7 +341,7 @@ pub struct SigningKeypair {
 
 enum SigningKeypairInner {
     Ed25519(Box<ed25519_dalek::SigningKey>),
-    MlDsa65(Box<ExpandedSigningKey<MlDsa65>>),
+    MlDsa65(Box<KeyPair<MlDsa65>>),
 }
 
 impl SigningKeypair {
@@ -359,10 +359,7 @@ impl SigningKeypair {
                 SigningKeypairInner::Ed25519(Box::new(ed25519_dalek::SigningKey::from_bytes(&seed)))
             }
             SigningAlgorithm::MlDsa65 => {
-                let dsa_seed: ml_dsa::Seed = seed.into();
-                SigningKeypairInner::MlDsa65(Box::new(ExpandedSigningKey::<MlDsa65>::from_seed(
-                    &dsa_seed,
-                )))
+                SigningKeypairInner::MlDsa65(Box::new(MlDsa65::key_gen_internal((&seed).into())))
             }
         };
         Self {

@@ -758,7 +758,7 @@ mod tests {
             KeyExchangeInit::new_unsigned(DhGroup::MlKem768, key_id, encap_key.to_vec(), sender);
         assert_eq!(init.dh_group(), Some(DhGroup::MlKem768));
         assert_eq!(init.key_id(), key_id);
-        assert_eq!(init.key_material(), encap_key.as_ref());
+        assert_eq!(init.key_material(), &encap_key);
         assert!(!init.is_signed());
 
         let bytes: Vec<u8> = (&init).into();
@@ -768,7 +768,7 @@ mod tests {
         let parsed = KeyExchangeInit::try_from(&bytes[..]).expect("parse ml-kem init");
         assert_eq!(parsed.dh_group(), Some(DhGroup::MlKem768));
         assert_eq!(parsed.key_id(), key_id);
-        assert_eq!(parsed.key_material(), encap_key.as_ref());
+        assert_eq!(parsed.key_material(), &encap_key);
         assert_eq!(parsed.sender(), sender);
     }
 
@@ -781,14 +781,14 @@ mod tests {
         let reply =
             KeyExchangeReply::new_unsigned(DhGroup::MlKem768, key_id, ciphertext.to_vec(), sender);
         assert_eq!(reply.dh_group(), Some(DhGroup::MlKem768));
-        assert_eq!(reply.key_material(), ciphertext.as_ref());
+        assert_eq!(reply.key_material(), &ciphertext);
 
         let bytes: Vec<u8> = (&reply).into();
         // algo_id(1) + key_id(4) + km_len(2) + ct(1088) + sender(6)
         assert_eq!(bytes.len(), 1 + 4 + 2 + 1088 + 6);
 
         let parsed = KeyExchangeReply::try_from(&bytes[..]).expect("parse ml-kem reply");
-        assert_eq!(parsed.key_material(), ciphertext.as_ref());
+        assert_eq!(parsed.key_material(), &ciphertext);
         assert_eq!(parsed.sender(), sender);
     }
 
